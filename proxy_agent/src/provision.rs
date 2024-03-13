@@ -39,8 +39,8 @@ fn update_provision_state(state: u8, provision_dir: Option<PathBuf>) {
                     // write provision success state here
                     write_provision_state(true, provision_dir);
 
-                    // start event threads after provisioned is done
-                    start_event_threads(true, None);
+                    // start event threads right after provisioned is done
+                    start_event_threads();
                 }
             }
             Err(e) => {
@@ -51,7 +51,11 @@ fn update_provision_state(state: u8, provision_dir: Option<PathBuf>) {
     }
 }
 
-pub fn start_event_threads(provision_success: bool, provision_dir: Option<PathBuf>) {
+pub fn provision_timeout(provision_dir: Option<PathBuf>) {
+    write_provision_state(false, provision_dir);
+}
+ 
+pub fn start_event_threads() {
     unsafe {
         let cloned = Arc::clone(&LOGGER_THREADS_INITIALIZED);
         let cloned = cloned.lock();
@@ -61,10 +65,6 @@ pub fn start_event_threads(provision_success: bool, provision_dir: Option<PathBu
                     return;
                 }
 
-                // only write provision state if provision 'failed' here
-                if !provision_success {
-                    write_provision_state(false, provision_dir);
-                }
                 event_logger::start_async(
                     config::get_events_dir(),
                     Duration::default(),

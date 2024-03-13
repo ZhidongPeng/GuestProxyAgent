@@ -256,15 +256,8 @@ pub fn get_status(base_url: Url) -> std::io::Result<KeyStatus> {
 
     let response = http::get_response_in_string(&mut http_request)?;
     if response.status != Response::OK {
-        let kind: ErrorKind = if response.status == Response::NOT_FOUND {
-            // Interrupted operations can typically be retried
-            ErrorKind::Interrupted
-        } else {
-            ErrorKind::Other
-        };
-
         return Err(Error::new(
-            kind,
+            ErrorKind::Other,
             format!("{} - {}", response.status, response.get_body_as_string()?),
         ));
     }

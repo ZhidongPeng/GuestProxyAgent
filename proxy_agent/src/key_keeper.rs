@@ -9,7 +9,6 @@ use proxy_agent_shared::misc_helpers;
 use proxy_agent_shared::proxy_agent_aggregate_status::{ModuleState, ProxyAgentDetailStatus};
 use proxy_agent_shared::telemetry::event_logger;
 use std::collections::HashMap;
-use std::io::ErrorKind;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::{path::PathBuf, thread, time::Duration};
@@ -22,6 +21,7 @@ pub const MUST_SIG_WIRESERVER_IMDS: &str = "wireserverandimds";
 const UNKNOWN_STATE: &str = "Unknown";
 static FREQUENT_PULL_INTERVAL: Duration = Duration::from_secs(1); // 1 second
 const FREQUENT_PULL_TIMEOUT_IN_MILLISECONDS: u128 = 300000; // 5 minutes
+const KEY_LATCH_TIMEOUT_IN_MILLISECONDS: u128 = 120000; // 2 minute
 const DELAY_START_EVENT_THREADS_IN_MILLISECONDS: u128 = 60000; // 1 minute
 
 static mut CURRENT_SECURE_CHANNEL_STATE: Lazy<String> = Lazy::new(|| String::from(UNKNOWN_STATE)); // state starts from Unknown
@@ -99,6 +99,7 @@ fn poll_secure_channel_status(
 
     let mut first_iteration: bool = true;
     let mut started_event_threads: bool = false;
+    let mut key_latch_timeout: bool = false;
     let shutdown = SHUT_DOWN.clone();
     loop {
         if shutdown.load(Ordering::Relaxed) {
@@ -126,10 +127,18 @@ fn poll_secure_channel_status(
         }
         first_iteration = false;
 
+        if get_secure_channel_state() == UNKNOWN_STATE
+            && !key_latch_timeout
+            && helpers::get_elapsed_time_in_millisec() > KEY_LATCH_TIMEOUT_IN_MILLISECONDS
+        {
+            provision::provision_timeout(None);
+            key_latch_timeout = true;
+        }
+
         if !started_event_threads
             && helpers::get_elapsed_time_in_millisec() > DELAY_START_EVENT_THREADS_IN_MILLISECONDS
         {
-            provision::start_event_threads(false, None);
+            provision::start_event_threads();
             started_event_threads = true;
         }
 
@@ -139,19 +148,8 @@ fn poll_secure_channel_status(
             Err(e) => {
                 let message: String = format!("Failed to get key status: {:?}", e);
                 logger::write_warning(message.to_string());
-
-                let set_status_message;
-                if e.kind() == ErrorKind::Interrupted {
-                    // Interrupted error can be retried, set the failure message after the timeout
-                    set_status_message = helpers::get_elapsed_time_in_millisec()
-                        > FREQUENT_PULL_TIMEOUT_IN_MILLISECONDS;
-                } else {
-                    set_status_message = true;
-                }
-                if set_status_message {
-                    unsafe {
-                        *STATUS_MESSAGE = message.to_string();
-                    }
+                unsafe {
+                    *STATUS_MESSAGE = message.to_string();
                 }
                 continue;
             }
