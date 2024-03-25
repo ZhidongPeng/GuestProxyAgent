@@ -10,7 +10,6 @@ use aya::{Bpf, BpfLoader, Btf};
 use ebpf_obj::{
     destination_entry, sock_addr_aduit_key, sock_addr_audit_entry, sock_addr_skip_process_entry,
 };
-use interfaces::InterfaceFlags;
 use once_cell::unsync::Lazy;
 use proxy_agent_shared::misc_helpers;
 use proxy_agent_shared::telemetry::event_logger;
@@ -186,6 +185,7 @@ fn update_skip_process_map(bpf: &Bpf) -> bool {
 }
 
 fn get_local_ip() -> Option<String> {
+    /* todo: 
     match interfaces::Interface::get_all() {
         Ok(interfaces) => {
             for nic in interfaces {
@@ -219,7 +219,7 @@ fn get_local_ip() -> Option<String> {
             set_error_status(format!("Failed to get local ip with error: {}", err));
         }
     }
-
+*/
     return None;
 }
 
