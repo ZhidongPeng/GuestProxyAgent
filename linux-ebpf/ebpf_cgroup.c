@@ -12,6 +12,7 @@
     note: previous definition of 'bpf_map_def' is in <bpf/bpf_helpers.h>
     if you build failed could not find bpf_map_def,
     please comment out this struct.
+*/
 struct bpf_map_def
 {
     unsigned int type;
@@ -22,7 +23,7 @@ struct bpf_map_def
     unsigned int inner_map_idx;
     unsigned int numa_node;
 };
-*/
+
 
 SEC("maps")
 struct bpf_map_def skip_process_map = {
