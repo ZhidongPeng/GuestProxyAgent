@@ -38,4 +38,4 @@ chcon -t bin_t /usr/lib/azure-proxy-agent/package/GuestProxyAgent
 /usr/lib/azure-proxy-agent/Package_%{version}/ebpf_cgroup.o
 
 %changelog
-- Initial release 
+* Initial release 
