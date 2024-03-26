@@ -185,41 +185,41 @@ fn update_skip_process_map(bpf: &Bpf) -> bool {
 }
 
 fn get_local_ip() -> Option<String> {
-    /* todo: 
-    match interfaces::Interface::get_all() {
-        Ok(interfaces) => {
-            for nic in interfaces {
-                if nic.is_running()
-                    && nic.is_up()
-                    && !nic.is_loopback()
-                    && nic.flags.contains(InterfaceFlags::IFF_BROADCAST)
-                {
-                    // need to filter out the bridge interface
-                    let bridge_path = PathBuf::from("/sys/class/net/")
-                        .join(nic.name.to_string())
-                        .join("bridge");
-                    if bridge_path.exists() {
-                        continue;
-                    }
+    /* todo:
+        match interfaces::Interface::get_all() {
+            Ok(interfaces) => {
+                for nic in interfaces {
+                    if nic.is_running()
+                        && nic.is_up()
+                        && !nic.is_loopback()
+                        && nic.flags.contains(InterfaceFlags::IFF_BROADCAST)
+                    {
+                        // need to filter out the bridge interface
+                        let bridge_path = PathBuf::from("/sys/class/net/")
+                            .join(nic.name.to_string())
+                            .join("bridge");
+                        if bridge_path.exists() {
+                            continue;
+                        }
 
-                    for ip in nic.addresses.iter() {
-                        if ip.kind == interfaces::Kind::Ipv4 {
-                            match ip.addr {
-                                Some(addr) => {
-                                    return Some(addr.ip().to_string());
+                        for ip in nic.addresses.iter() {
+                            if ip.kind == interfaces::Kind::Ipv4 {
+                                match ip.addr {
+                                    Some(addr) => {
+                                        return Some(addr.ip().to_string());
+                                    }
+                                    _ => {}
                                 }
-                                _ => {}
                             }
                         }
                     }
                 }
             }
+            Err(err) => {
+                set_error_status(format!("Failed to get local ip with error: {}", err));
+            }
         }
-        Err(err) => {
-            set_error_status(format!("Failed to get local ip with error: {}", err));
-        }
-    }
-*/
+    */
     return None;
 }
 
@@ -529,6 +529,13 @@ mod tests {
         let mut bpf_file_path = misc_helpers::get_current_exe_dir();
         bpf_file_path.push(config::get_ebpf_program_name());
         let bpf = super::open_ebpf_file(bpf_file_path);
+        match bpf {
+            Ok(_) => {}
+            Err(err) => {
+                println!("open_ebpf_file error: {}", err);
+                assert!(false, "open_ebpf_file should not return Err");
+            }
+        }
         assert!(bpf.is_ok(), "open_ebpf_file should return Ok");
         let mut bpf = bpf.unwrap();
 
