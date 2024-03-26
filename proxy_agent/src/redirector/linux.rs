@@ -136,11 +136,13 @@ fn open_ebpf_file(bpf_file_path: PathBuf) -> Result<Bpf, bool> {
     {
         Ok(b) => bpf = b,
         Err(err) => {
-            set_error_status(format!(
+            let message = format!(
                 "Failed to load eBPF program from file {}: {}",
                 misc_helpers::path_to_string(bpf_file_path.to_path_buf()),
                 err
-            ));
+            );
+            println!("{}", message.to_string());
+            set_error_status(message);
             return Err(false);
         }
     }
@@ -528,6 +530,7 @@ mod tests {
 
         let mut bpf_file_path = misc_helpers::get_current_exe_dir();
         bpf_file_path.push(config::get_ebpf_program_name());
+        println!("bpf_file_path: {:?}", bpf_file_path.to_path_buf());
         let bpf = super::open_ebpf_file(bpf_file_path);
         match bpf {
             Ok(_) => {}
