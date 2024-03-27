@@ -11,7 +11,7 @@ struct
     __type(key, sock_addr_skip_process_entry);
     __type(value, sock_addr_skip_process_entry);
     __uint(max_entries, 10);
-} skip_process_map SEC("maps");
+} skip_process_map SEC(".maps");
 
 struct
 {
@@ -19,7 +19,7 @@ struct
     __type(key, destination_entry);
     __type(vlaue, destination_entry);
     __uint(max_entries, 10);
-} policy_map SEC("maps");
+} policy_map SEC(".maps");
 
 struct
 {
@@ -27,7 +27,7 @@ struct
     __type(key, sock_addr_aduit_key);     // source port and protocol
     __type(value, sock_addr_audit_entry); // audit entry
     __uint(max_entries, 200);             // some older kernel version cannot support over 200 entries.
-} audit_map SEC("maps");
+} audit_map SEC(".maps");
 
 struct
 {
@@ -35,7 +35,7 @@ struct
     __type(key, __u64);                   // socket cookie or pid-tgid
     __type(value, sock_addr_local_entry); // audit local entry
     __uint(max_entries, 200);             // some older kernel version cannot support over 200 entries.
-} local_map SEC("maps");
+} local_map SEC(".maps");
 
 /*
     check the current pid in the skip_process map.
