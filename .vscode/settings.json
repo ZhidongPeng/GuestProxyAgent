@@ -3,7 +3,8 @@
         "guiddef.h": "c",
         "socket.h": "c",
         "cstdint": "cpp",
-        "type_traits": "cpp"
+        "type_traits": "cpp",
+        "bpf_helpers.h": "c"
     },
     "spellright.language": [
         "en"

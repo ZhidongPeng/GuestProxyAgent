@@ -13,16 +13,18 @@
     if you build failed could not find bpf_map_def,
     please comment out this struct.
 */
-struct bpf_map_def
-{
-    unsigned int type;
-    unsigned int key_size;
-    unsigned int value_size;
-    unsigned int max_entries;
-    unsigned int map_flags;
-    unsigned int inner_map_idx;
-    unsigned int numa_node;
+/*
+ * Helper structure used by eBPF C program
+ * to describe BPF map attributes to libbpf loader
+ */
+struct bpf_map_def {
+	unsigned int type;
+	unsigned int key_size;
+	unsigned int value_size;
+	unsigned int max_entries;
+	unsigned int map_flags;
 };
+
 
 
 SEC("maps")
