@@ -4,7 +4,7 @@ mod iptable_redirect;
 use crate::common::{config, constants, helpers, logger};
 use crate::provision;
 use crate::redirector::AuditEntry;
-use aya::maps::HashMap;
+use aya::maps::{HashMap, MapData};
 use aya::programs::{CgroupSockAddr, KProbe};
 use aya::{Bpf, BpfLoader, Btf};
 use ebpf_obj::{
@@ -43,10 +43,10 @@ pub fn start(local_port: u16) -> bool {
     }
 
     // maps
-    if update_skip_process_map(&bpf) == false {
+    if update_skip_process_map(&mut bpf) == false {
         return false;
     }
-    if update_policy_map(&bpf, local_port) == false {
+    if update_policy_map(&mut bpf, local_port) == false {
         return false;
     }
 
@@ -149,9 +149,9 @@ fn open_ebpf_file(bpf_file_path: PathBuf) -> Result<Bpf, bool> {
     Ok(bpf)
 }
 
-fn update_skip_process_map(bpf: &Bpf) -> bool {
+fn update_skip_process_map(bpf: &mut Bpf) -> bool {
     match bpf.map_mut("skip_process_map") {
-        Ok(map) => match HashMap::try_from(map) {
+        Some(map) => match HashMap::<&mut MapData, [u32; 1], [u32; 1]>::try_from(map) {
             Ok(mut skip_process_map) => {
                 let pid = std::process::id();
                 let key = sock_addr_skip_process_entry::from_pid(pid);
@@ -175,11 +175,8 @@ fn update_skip_process_map(bpf: &Bpf) -> bool {
                 return false;
             }
         },
-        Err(err) => {
-            set_error_status(format!(
-                "Failed to get map 'skip_process_map' with error: {}",
-                err
-            ));
+        None => {
+            set_error_status("Failed to get map 'skip_process_map'.".to_string());
             return false;
         }
     }
@@ -225,10 +222,10 @@ fn get_local_ip() -> Option<String> {
     return None;
 }
 
-fn update_policy_map(bpf: &Bpf, local_port: u16) -> bool {
+fn update_policy_map(bpf: &mut Bpf, local_port: u16) -> bool {
     match bpf.map_mut("policy_map") {
-        Ok(map) => {
-            match HashMap::try_from(map) {
+        Some(map) => {
+            match HashMap::<&mut MapData, [u32; 6], [u32; 6]>::try_from(map) {
                 Ok(mut policy_map) => {
                     let local_ip = match get_local_ip() {
                         Some(ip) => ip,
@@ -301,11 +298,8 @@ fn update_policy_map(bpf: &Bpf, local_port: u16) -> bool {
                 }
             }
         }
-        Err(err) => {
-            set_error_status(format!(
-                "Failed to get map 'policy_map' with error: {}",
-                err
-            ));
+        None => {
+            set_error_status(format!("Failed to get map 'policy_map'."));
             return false;
         }
     }
@@ -459,7 +453,7 @@ pub fn lookup_audit(source_port: u16) -> std::io::Result<AuditEntry> {
 
 fn lookup_audit_internal(bpf: &Bpf, source_port: u16) -> std::io::Result<AuditEntry> {
     match bpf.map("audit_map") {
-        Ok(map) => match HashMap::try_from(map) {
+        Some(map) => match HashMap::try_from(map) {
             Ok(audit_map) => {
                 let key = sock_addr_aduit_key::from_source_port(source_port);
                 match audit_map.get(&key.to_array(), 0) {
@@ -489,8 +483,8 @@ fn lookup_audit_internal(bpf: &Bpf, source_port: u16) -> std::io::Result<AuditEn
                 ))
             }
         },
-        Err(err) => {
-            let message = format!("Failed to get map 'audit_map' with error: {}", err);
+        None => {
+            let message = format!("Failed to get map 'audit_map'.");
             Err(std::io::Error::new(
                 std::io::ErrorKind::Other,
                 message.to_string(),
@@ -568,7 +562,11 @@ mod tests {
         };
         {
             // drop map_mut("audit_map") within this scope
-            let mut audit_map = HashMap::try_from(bpf.map_mut("audit_map").unwrap()).unwrap();
+            let mut audit_map: HashMap<&mut aya::maps::MapData, [u32; 2], [u32; 5]> =
+                HashMap::<&mut aya::maps::MapData, [u32; 2], [u32; 5]>::try_from(
+                    bpf.map_mut("audit_map").unwrap(),
+                )
+                .unwrap();
             audit_map
                 .insert(key.to_array(), value.to_array(), 0)
                 .unwrap();

@@ -17,7 +17,7 @@ struct
 {
     __uint(type, BPF_MAP_TYPE_HASH);
     __type(key, destination_entry);
-    __type(vlaue, destination_entry);
+    __type(value, destination_entry);
     __uint(max_entries, 10);
 } policy_map SEC(".maps");
 
