@@ -530,6 +530,7 @@ mod tests {
             Ok(_) => {}
             Err(err) => {
                 println!("open_ebpf_file error: {}", err);
+                
                 assert!(false, "open_ebpf_file should not return Err");
             }
         }
