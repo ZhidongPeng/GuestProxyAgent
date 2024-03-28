@@ -533,6 +533,7 @@ mod tests {
                 println!("open_ebpf_file error: {}", err);
                 if fs::metadata("/.dockerenv").is_ok() {
                     println!("This docker image does not have BPF capacity, skip this test.");
+                    return;
                 } else {
                     assert!(false, "open_ebpf_file should not return Err");
                 }
