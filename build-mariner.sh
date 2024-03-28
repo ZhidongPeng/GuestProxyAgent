@@ -205,7 +205,7 @@ pushd rpmbuild
 popd
 rm -rf build 
 # copy rpm package file to Package folder
-cp -f $rootdir/rpmbuild/RPMS/x86_64/azure-proxy-agent-${pkgversion}-0.x86_64.rpm $out_package_dir/
+cp -f $rootdir/rpmbuild/RPMS/x86_64/azure-proxy-agent-${pkgversion}-0.cm2.x86_64.rpm $out_package_dir/
 
 # generate deb package
 echo "Generating deb package -------------- "

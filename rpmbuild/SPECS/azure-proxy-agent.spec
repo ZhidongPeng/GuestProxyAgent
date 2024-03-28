@@ -2,7 +2,7 @@
 
 Name:           azure-proxy-agent
 Version:        %{pkgversion}
-Release:        0%{?dist}
+Release:        0
 Summary:        Azure Proxy Agent
 
 License:        MIT
