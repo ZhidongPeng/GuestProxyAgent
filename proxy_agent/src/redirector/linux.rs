@@ -184,41 +184,40 @@ fn update_skip_process_map(bpf: &mut Bpf) -> bool {
 }
 
 fn get_local_ip() -> Option<String> {
-    /* todo:
-        match interfaces::Interface::get_all() {
-            Ok(interfaces) => {
-                for nic in interfaces {
-                    if nic.is_running()
-                        && nic.is_up()
-                        && !nic.is_loopback()
-                        && nic.flags.contains(InterfaceFlags::IFF_BROADCAST)
-                    {
-                        // need to filter out the bridge interface
-                        let bridge_path = PathBuf::from("/sys/class/net/")
-                            .join(nic.name.to_string())
-                            .join("bridge");
-                        if bridge_path.exists() {
-                            continue;
-                        }
+    match interfaces::Interface::get_all() {
+        Ok(interfaces) => {
+            for nic in interfaces {
+                if nic.is_running()
+                    && nic.is_up()
+                    && !nic.is_loopback()
+                    && nic.flags.contains(interfaces::InterfaceFlags::IFF_BROADCAST)
+                {
+                    // need to filter out the bridge interface
+                    let bridge_path = PathBuf::from("/sys/class/net/")
+                        .join(nic.name.to_string())
+                        .join("bridge");
+                    if bridge_path.exists() {
+                        continue;
+                    }
 
-                        for ip in nic.addresses.iter() {
-                            if ip.kind == interfaces::Kind::Ipv4 {
-                                match ip.addr {
-                                    Some(addr) => {
-                                        return Some(addr.ip().to_string());
-                                    }
-                                    _ => {}
+                    for ip in nic.addresses.iter() {
+                        if ip.kind == interfaces::Kind::Ipv4 {
+                            match ip.addr {
+                                Some(addr) => {
+                                    return Some(addr.ip().to_string());
                                 }
+                                _ => {}
                             }
                         }
                     }
                 }
             }
-            Err(err) => {
-                set_error_status(format!("Failed to get local ip with error: {}", err));
-            }
         }
-    */
+        Err(err) => {
+            set_error_status(format!("Failed to get local ip with error: {}", err));
+        }
+    }
+
     return None;
 }
 
