@@ -184,6 +184,10 @@ fn update_skip_process_map(bpf: &mut Bpf) -> bool {
 }
 
 fn get_local_ip() -> Option<String> {
+    /* Build failed at MarnierOS and Container
+    warning: interfaces@0.0.9: Failed to run: "musl-gcc" "--version"
+    error: failed to run custom build command for `interfaces v0.0.9`
+
     match interfaces::Interface::get_all() {
         Ok(interfaces) => {
             for nic in interfaces {
@@ -217,7 +221,7 @@ fn get_local_ip() -> Option<String> {
             set_error_status(format!("Failed to get local ip with error: {}", err));
         }
     }
-
+ */
     return None;
 }
 
