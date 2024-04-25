@@ -34,11 +34,6 @@ pub fn get_secure_channel_state() -> String {
     unsafe { CURRENT_SECURE_CHANNEL_STATE.to_string() }
 }
 
-pub fn is_wireserver_disabled() -> bool {
-    let state = get_secure_channel_state();
-    (state == DISABLE_STATE || state)
-}
-
 pub fn get_current_key_guid() -> String {
     unsafe { CURRENT_KEY.guid.to_string() }
 }
