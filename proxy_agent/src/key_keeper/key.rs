@@ -1,12 +1,14 @@
-use crate::common::{
+use crate::{common::{
     constants,
     http::{self, headers, http_request::HttpRequest, request::Request, response::Response},
-};
+}, proxy::{proxy_connection::Connection, Claims}};
 use proxy_agent_shared::misc_helpers;
 use serde_derive::{Deserialize, Serialize};
-use std::io::{Error, ErrorKind};
+use std::{
+    collections::HashMap,
+    io::{Error, ErrorKind},
+};
 use url::Url;
-
 
 const AUDIT_MODE: &str = "audit";
 const ENFORCE_MODE: &str = "enforce";
@@ -45,7 +47,9 @@ pub struct KeyStatus {
 #[derive(Serialize, Deserialize)]
 #[allow(non_snake_case)]
 pub struct AuthorizationRules {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub imds: Option<AuthorizationItem>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub wireserver: Option<AuthorizationItem>,
 }
 
@@ -56,6 +60,170 @@ pub struct AuthorizationItem {
     pub defaultAccess: String,
     // disabled, audit, enforce
     pub mode: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub privileges: Option<Vec<Privilege>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub roles: Option<Vec<Role>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub identities: Option<Vec<Identity>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub roleAssignments: Option<Vec<RoleAssignment>>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[allow(non_snake_case)]
+pub struct Privilege {
+    pub name: String,
+    pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub queryParameters: Option<HashMap<String, String>>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[allow(non_snake_case)]
+pub struct Role {
+    pub name: String,
+    pub privileges: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[allow(non_snake_case)]
+pub struct Identity {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub userName: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub groupName: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exePath: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub processName: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[allow(non_snake_case)]
+pub struct RoleAssignment {
+    pub role: String,
+    pub identities: Vec<String>,
+}
+
+impl Privilege {
+    pub fn clone(&self) -> Self {
+        Privilege {
+            name: self.name.to_string(),
+            path: self.path.to_string(),
+            queryParameters: self.queryParameters.clone(),
+        }
+    }
+
+    pub fn is_match(&self, connection_id: u128, request_url: url::Url) -> bool {
+        Connection::write_information(
+            connection_id,
+            format!("Start to match privilege '{}'", self.name.to_string()),
+        );
+        if request_url.path().to_lowercase().starts_with(&self.path){
+            Connection::write_information(
+                connection_id,
+                format!("Matched privilege path '{}'", self.path.to_string()),
+            );
+
+            match &self.queryParameters {
+                Some(query_parameters) => {
+                    Connection::write_information(
+                        connection_id,
+                        format!("Start to match query_parameters from privilege '{}'", self.name.to_string()),
+                    );
+              
+                    for (key, value) in query_parameters {
+                        match request_url.query_pairs().find(|(k, _)| k == key) {
+                            Some((_, v)) => {
+                                if v.to_lowercase() == value.to_lowercase() {
+                                    Connection::write_information(
+                                        connection_id,
+                                        format!("Matched query_parameters '{}:{}' from privilege '{}'", key, v, self.name.to_string()),
+                                    );
+                                } else {
+                                    Connection::write_information(
+                                        connection_id,
+                                        format!("Not matched query_parameters value '{}' from privilege '{}'", key, self.name.to_string()),
+                                    );
+                                    return false;
+                                }
+                            }
+                            None => {
+                                Connection::write_information(
+                                    connection_id,
+                                    format!("Not matched query_parameters key '{}' from privilege '{}'", key, self.name.to_string()),
+                                );
+                                return false;
+                            }
+                        }
+                        
+                    }
+                }
+                None => {}
+            }
+            return true;
+        }
+        return false;
+    }
+}
+
+impl Identity {
+    pub fn clone(&self) -> Self {
+        Identity {
+            name: self.name.to_string(),
+            userName: self.userName.clone(),
+            groupName: self.groupName.clone(),
+            exePath: self.exePath.clone(),
+            processName: self.processName.clone(),
+        }
+    }
+
+    pub fn is_match(&self, connection_id: u128, claims: Claims)-> bool {
+        Connection::write_information(
+            connection_id,
+            format!("Start to match identity '{}'", self.name.to_string()),
+        );
+        match self.userName {
+            Some(ref user_name) => {
+                if user_name.to_lowercase() == claims.userName.to_lowercase() {
+                    Connection::write_information(
+                        connection_id,
+                        format!("Matched user name '{}' from identity '{}'", user_name, self.name.to_string()),
+                    );
+                    
+                } else {
+                    Connection::write_information(
+                        connection_id,
+                        format!("Not matched user name '{}' from identity '{}'", user_name, self.name.to_string()),
+                    );
+                    return false;
+                }
+            }
+            None => {}
+        }
+        match self.processName{
+            Some(ref process_name) => {
+                if process_name.to_lowercase() == claims.processName.to_lowercase() {
+                    Connection::write_information(
+                        connection_id,
+                        format!("Matched process name '{}' from identity '{}'", process_name, self.name.to_string()),
+                    );
+                } else {
+                    Connection::write_information(
+                        connection_id,
+                        format!("Not matched process name '{}' from identity '{}'", process_name, self.name.to_string()),
+                    );
+                    return false;
+                }
+            }
+            None => {}
+        }
+        //TODO: need add exePath, groupName match
+
+        return true;
+    }
 }
 
 impl KeyStatus {
@@ -393,7 +561,10 @@ mod tests {
             status.validate().unwrap(),
             "Key status validation must be true"
         );
-        assert!(status.secureChannelEnabled.is_none(), "secureChannelEnabled must be None in version 1.0");
+        assert!(
+            status.secureChannelEnabled.is_none(),
+            "secureChannelEnabled must be None in version 1.0"
+        );
 
         let status_response = r#"{
             "authorizationScheme": "Azure-HMAC-SHA256",
@@ -420,9 +591,19 @@ mod tests {
             status.validate().unwrap(),
             "Key status validation must be true"
         );
-        assert!(status.secureChannelEnabled.is_some(), "secureChannelEnabled must have value in version 2.0");
-        assert!(status.secureChannelState.is_none(), "secureChannelState must be None in version 2.0");
-        assert_eq!("WireServer Enforce -  IMDS Audit", status.get_secure_channel_state(), "secureChannelState mismatch in version 2.0");
+        assert!(
+            status.secureChannelEnabled.is_some(),
+            "secureChannelEnabled must have value in version 2.0"
+        );
+        assert!(
+            status.secureChannelState.is_none(),
+            "secureChannelState must be None in version 2.0"
+        );
+        assert_eq!(
+            "WireServer Enforce -  IMDS Audit",
+            status.get_secure_channel_state(),
+            "secureChannelState mismatch in version 2.0"
+        );
     }
 
     #[test]
