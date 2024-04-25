@@ -137,6 +137,28 @@ pub fn is_started() -> bool {
     }
 }
 
+pub fn update_imds_redirect_policy(redirect: bool) {
+    #[cfg(windows)]
+    {
+        windows::update_imds_redirect_policy(redirect);
+    }
+    #[cfg(not(windows))]
+    {
+        linux::update_imds_redirect_policy(redirect);
+    }
+}
+
+pub fn update_wire_server_redirect_policy(redirect: bool) {
+    #[cfg(windows)]
+    {
+        windows::update_wire_server_redirect_policy(redirect);
+    }
+    #[cfg(not(windows))]
+    {
+        linux::update_wire_server_redirect_policy(redirect);
+    }
+}
+
 pub fn lookup_audit(source_port: u16) -> std::io::Result<AuditEntry> {
     #[cfg(windows)]
     {

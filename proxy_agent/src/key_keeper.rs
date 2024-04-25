@@ -34,6 +34,11 @@ pub fn get_secure_channel_state() -> String {
     unsafe { CURRENT_SECURE_CHANNEL_STATE.to_string() }
 }
 
+pub fn is_wireserver_disabled() -> bool {
+    let state = get_secure_channel_state();
+    (state == DISABLE_STATE || state)
+}
+
 pub fn get_current_key_guid() -> String {
     unsafe { CURRENT_KEY.guid.to_string() }
 }
@@ -285,6 +290,12 @@ fn poll_secure_channel_status(
 
             // update the current secure channel state if different
             if state != *CURRENT_SECURE_CHANNEL_STATE {
+                // update the redirector poicy map
+                redirector::update_wire_server_redirect_policy(
+                    status.get_wire_server_mode() != DISABLE_STATE,
+                );
+                redirector::update_imds_redirect_policy(status.get_imds_mode() != DISABLE_STATE);
+
                 *CURRENT_SECURE_CHANNEL_STATE = state.to_string();
 
                 // customer has not enforce the secure channel state

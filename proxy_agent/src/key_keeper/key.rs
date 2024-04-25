@@ -1,7 +1,10 @@
-use crate::{common::{
-    constants,
-    http::{self, headers, http_request::HttpRequest, request::Request, response::Response},
-}, proxy::{proxy_connection::Connection, Claims}};
+use crate::{
+    common::{
+        constants,
+        http::{self, headers, http_request::HttpRequest, request::Request, response::Response},
+    },
+    proxy::{proxy_connection::Connection, Claims},
+};
 use proxy_agent_shared::misc_helpers;
 use serde_derive::{Deserialize, Serialize};
 use std::{
@@ -121,7 +124,7 @@ impl Privilege {
             connection_id,
             format!("Start to match privilege '{}'", self.name.to_string()),
         );
-        if request_url.path().to_lowercase().starts_with(&self.path){
+        if request_url.path().to_lowercase().starts_with(&self.path) {
             Connection::write_information(
                 connection_id,
                 format!("Matched privilege path '{}'", self.path.to_string()),
@@ -131,16 +134,24 @@ impl Privilege {
                 Some(query_parameters) => {
                     Connection::write_information(
                         connection_id,
-                        format!("Start to match query_parameters from privilege '{}'", self.name.to_string()),
+                        format!(
+                            "Start to match query_parameters from privilege '{}'",
+                            self.name.to_string()
+                        ),
                     );
-              
+
                     for (key, value) in query_parameters {
                         match request_url.query_pairs().find(|(k, _)| k == key) {
                             Some((_, v)) => {
                                 if v.to_lowercase() == value.to_lowercase() {
                                     Connection::write_information(
                                         connection_id,
-                                        format!("Matched query_parameters '{}:{}' from privilege '{}'", key, v, self.name.to_string()),
+                                        format!(
+                                            "Matched query_parameters '{}:{}' from privilege '{}'",
+                                            key,
+                                            v,
+                                            self.name.to_string()
+                                        ),
                                     );
                                 } else {
                                     Connection::write_information(
@@ -153,12 +164,15 @@ impl Privilege {
                             None => {
                                 Connection::write_information(
                                     connection_id,
-                                    format!("Not matched query_parameters key '{}' from privilege '{}'", key, self.name.to_string()),
+                                    format!(
+                                        "Not matched query_parameters key '{}' from privilege '{}'",
+                                        key,
+                                        self.name.to_string()
+                                    ),
                                 );
                                 return false;
                             }
                         }
-                        
                     }
                 }
                 None => {}
@@ -180,7 +194,7 @@ impl Identity {
         }
     }
 
-    pub fn is_match(&self, connection_id: u128, claims: Claims)-> bool {
+    pub fn is_match(&self, connection_id: u128, claims: Claims) -> bool {
         Connection::write_information(
             connection_id,
             format!("Start to match identity '{}'", self.name.to_string()),
@@ -190,30 +204,45 @@ impl Identity {
                 if user_name.to_lowercase() == claims.userName.to_lowercase() {
                     Connection::write_information(
                         connection_id,
-                        format!("Matched user name '{}' from identity '{}'", user_name, self.name.to_string()),
+                        format!(
+                            "Matched user name '{}' from identity '{}'",
+                            user_name,
+                            self.name.to_string()
+                        ),
                     );
-                    
                 } else {
                     Connection::write_information(
                         connection_id,
-                        format!("Not matched user name '{}' from identity '{}'", user_name, self.name.to_string()),
+                        format!(
+                            "Not matched user name '{}' from identity '{}'",
+                            user_name,
+                            self.name.to_string()
+                        ),
                     );
                     return false;
                 }
             }
             None => {}
         }
-        match self.processName{
+        match self.processName {
             Some(ref process_name) => {
                 if process_name.to_lowercase() == claims.processName.to_lowercase() {
                     Connection::write_information(
                         connection_id,
-                        format!("Matched process name '{}' from identity '{}'", process_name, self.name.to_string()),
+                        format!(
+                            "Matched process name '{}' from identity '{}'",
+                            process_name,
+                            self.name.to_string()
+                        ),
                     );
                 } else {
                     Connection::write_information(
                         connection_id,
-                        format!("Not matched process name '{}' from identity '{}'", process_name, self.name.to_string()),
+                        format!(
+                            "Not matched process name '{}' from identity '{}'",
+                            process_name,
+                            self.name.to_string()
+                        ),
                     );
                     return false;
                 }
@@ -345,6 +374,50 @@ impl KeyStatus {
             match &self.secureChannelState {
                 Some(s) => return s.to_lowercase(),
                 None => return super::DISABLE_STATE.to_string(),
+            }
+        }
+    }
+
+    pub fn get_wire_server_mode(&self) -> String {
+        if self.version == "2.0" {
+            match &self.authorizationRules {
+                Some(rules) => match &rules.wireserver {
+                    Some(item) => item.mode.to_lowercase(),
+                    None => "disabled".to_string(),
+                },
+                None => "disabled".to_string(),
+            }
+        } else {
+            let state = match &self.secureChannelState {
+                Some(s) => s.to_lowercase(),
+                None => "disabled".to_string(),
+            };
+            if state == "wireserver" || state == "wireserverandimds" {
+                return ENFORCE_MODE.to_string();
+            } else {
+                return AUDIT_MODE.to_string();
+            }
+        }
+    }
+
+    pub fn get_imds_mode(&self) -> String {
+        if self.version == "2.0" {
+            match &self.authorizationRules {
+                Some(rules) => match &rules.imds {
+                    Some(item) => item.mode.to_lowercase(),
+                    None => "disabled".to_string(),
+                },
+                None => "disabled".to_string(),
+            }
+        } else {
+            let state = match &self.secureChannelState {
+                Some(s) => s.to_lowercase(),
+                None => "disabled".to_string(),
+            };
+            if state == "wireserverandimds" {
+                return ENFORCE_MODE.to_string();
+            } else {
+                return AUDIT_MODE.to_string();
             }
         }
     }
