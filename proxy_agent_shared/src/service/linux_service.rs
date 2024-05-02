@@ -36,7 +36,6 @@ fn unmask_service(service_name: &str){
         service_name, output.0, output.1, output.2
     );
     logger_manager::write_info(message);
-
 }
 
 pub fn uninstall_service(service_name: &str) {
