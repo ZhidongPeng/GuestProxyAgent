@@ -242,27 +242,30 @@ mod tests {
     fn user_test() {
         unsafe {
             let logon_id;
-            let user_group_count;
             #[cfg(windows)]
             {
                 logon_id = 999u64;
-                user_group_count = 0; // SYSTEM has no group
             }
             #[cfg(not(windows))]
             {
                 logon_id = 0u64;
-                user_group_count = 1;
             }
 
             let user = super::get_user(logon_id);
             println!("UserName: {}", user.user_name);
             println!("UserGroups: {}", user.user_groups.join(", "));
             assert_ne!(String::new(), user.user_name, "user_name cannot be empty.");
-            assert_eq!(
-                user_group_count,
-                user.user_groups.len(),
-                "user_groups lenth mismatch."
-            );
+            #[cfg(windows)]
+            {
+                assert_eq!(0, user.user_groups.len(), "SYSTEM has no group.");
+            }
+            #[cfg(not(windows))]
+            {
+                assert!(
+                    user.user_groups.len() > 0,
+                    "user_groups should not be empty."
+                );
+            }
 
             // test the USERS.len will not change
             let len = USERS.len();

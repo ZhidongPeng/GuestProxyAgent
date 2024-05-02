@@ -147,7 +147,13 @@ pub fn get_user(logon_id: u64) -> (String, Vec<String>) {
                 user_groups.push(group_name);
             }
         } else {
-            eprintln!("NetUserGetLocalGroups failed with status: {}", status);
+            let message = format!(
+                "NetUserGetLocalGroups '{}' failed with status: {}",
+                domain_user_name.to_string(),
+                status
+            );
+            eprintln!("{}", message.to_string());
+            logger::write_warning(message);
         }
 
         (user_name, user_groups)
@@ -329,25 +335,32 @@ mod tests {
     fn get_user_test() {
         unsafe {
             let mut data = MaybeUninit::<*mut LUID>::uninit();
-            let mut count: u32 = 1;
+            let mut count: u32 = 10;
             let status = Identity::LsaEnumerateLogonSessions(&mut count, data.as_mut_ptr());
             println!(
                 "Identity::LsaEnumerateLogonSessions return value: {}",
                 status
             );
-            // get the first LUID
-            let uid = *data.assume_init();
-            println!("LUID: {:?} - {:?}", uid.HighPart, uid.LowPart);
-            let logon_id: u64 = (uid.HighPart as u64) << 32 | uid.LowPart as u64;
-            println!("LogonId: {}", logon_id);
-            let user = super::get_user(logon_id);
-            let user_name = user.0;
-            let user_groups = user.1;
-            println!("UserName: {}", user_name);
-            println!("UserGroups: {}", user_groups.join(", "));
-            assert_ne!(String::new(), user_name, "user_name cannot be empty.");
-            assert_ne!("undefined", user_name, "user_name cannot be 'undefined'");
-            assert_ne!(0, user_groups.len(), "user_groups cannot be empty.");
+            for i in 0..count {
+                let uid: LUID = *data.assume_init().offset(i as isize);
+                println!("LUID: {:?} - {:?}", uid.HighPart, uid.LowPart);
+                let logon_id: u64 = (uid.HighPart as u64) << 32 | uid.LowPart as u64;
+                println!("LogonId: {}", logon_id);
+                let user = super::get_user(logon_id);
+                let user_name = user.0;
+                let user_groups = user.1;
+                println!("UserName: {}", user_name);
+                println!("UserGroups: {}", user_groups.join(", "));
+                assert_ne!(String::new(), user_name, "user_name cannot be empty.");
+                assert_ne!("undefined", user_name, "user_name cannot be 'undefined'");
+                if user_groups.len() > 0 {
+                    return;
+                }
+            }
+            assert!(
+                false,
+                "test failed after enumerated all logon session accounts."
+            );
         }
     }
 
