@@ -133,14 +133,17 @@ impl AuthorizationRules {
             }
 
             if role_privilege_matched {
-                // privilege matched once, but no identity matched, block the request
+                Connection::write_information(
+                    connection_id,
+                    "Privilege matched once, but no identity matches.".to_string(),
+                );
                 return false;
             }
         }
 
         Connection::write_information(
             connection_id,
-            "No privilege matched, fall back to default access".to_string(),
+            "No privilege matched, fall back to default access.".to_string(),
         );
         self.defaultAllowed
     }
