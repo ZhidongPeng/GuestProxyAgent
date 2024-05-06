@@ -1,29 +1,31 @@
-use crate::key_keeper::key::AuthorizationItem;
-use crate::{common::config, common::constants, proxy::Claims};
-
 use super::authorization_rules::AuthorizationRules;
 use super::proxy_connection::Connection;
+use crate::key_keeper::key::AuthorizationItem;
+use crate::{common::config, common::constants, proxy::Claims};
+use once_cell::sync::Lazy;
+use std::sync::Mutex;
 
-static mut WIRESERVER_RULES: Option<AuthorizationRules> = None;
-static mut IMDS_RULES: Option<AuthorizationRules> = None;
+static mut WIRESERVER_RULES: Lazy<Mutex<Option<AuthorizationRules>>> =
+    Lazy::new(|| Mutex::new(None));
+static mut IMDS_RULES: Lazy<Mutex<Option<AuthorizationRules>>> = Lazy::new(|| Mutex::new(None));
 
 pub fn set_wireserver_rules(authorization_item: Option<AuthorizationItem>) {
+    let rules = match authorization_item {
+        Some(item) => Some(AuthorizationRules::from_authorization_item(item)),
+        None => None,
+    };
     unsafe {
-        let rules = match authorization_item {
-            Some(item) => Some(AuthorizationRules::from_authorization_item(item)),
-            None => None,
-        };
-        WIRESERVER_RULES = rules;
+        *WIRESERVER_RULES.lock().unwrap() = rules;
     }
 }
 
 pub fn set_imds_rules(authorization_item: Option<AuthorizationItem>) {
+    let rules = match authorization_item {
+        Some(item) => Some(AuthorizationRules::from_authorization_item(item)),
+        None => None,
+    };
     unsafe {
-        let rules = match authorization_item {
-            Some(item) => Some(AuthorizationRules::from_authorization_item(item)),
-            None => None,
-        };
-        IMDS_RULES = rules;
+        *IMDS_RULES.lock().unwrap() = rules;
     }
 }
 
@@ -107,22 +109,21 @@ impl Authenticate for WireServer {
         }
 
         if config::get_wire_server_support() == 2 {
-            unsafe {
-                match WIRESERVER_RULES {
-                    Some(ref rules) => {
-                        let allowed = rules.is_allowed(
-                            connection_id,
-                            request_url.to_string(),
-                            self.claims.clone(),
-                        );
-                        if !allowed && rules.mode.to_lowercase() == "audit" {
-                            Connection::write_information(connection_id, format!("WireServer request {} denied in audit mode, continue forward the request", request_url.to_string()));
-                            return true;
-                        }
-                        return allowed;
+            let wireserver_rules = unsafe { WIRESERVER_RULES.lock().unwrap() };
+            match &*wireserver_rules {
+                Some(rules) => {
+                    let allowed = rules.is_allowed(
+                        connection_id,
+                        request_url.to_string(),
+                        self.claims.clone(),
+                    );
+                    if !allowed && rules.mode.to_lowercase() == "audit" {
+                        Connection::write_information(connection_id, format!("WireServer request {} denied in audit mode, continue forward the request", request_url.to_string()));
+                        return true;
                     }
-                    None => {}
+                    return allowed;
                 }
+                None => {}
             }
         }
 
@@ -143,22 +144,21 @@ struct IMDS {
 impl Authenticate for IMDS {
     fn authenticate(&self, connection_id: u128, request_url: String) -> bool {
         if config::get_imds_support() == 2 {
-            unsafe {
-                match IMDS_RULES {
-                    Some(ref rules) => {
-                        let allowed = rules.is_allowed(
-                            connection_id,
-                            request_url.to_string(),
-                            self.claims.clone(),
-                        );
-                        if !allowed && rules.mode.to_lowercase() == "audit" {
-                            Connection::write_information(connection_id, format!("IMDS request {} denied in audit mode, continue forward the request", request_url.to_string()));
-                            return true;
-                        }
-                        return allowed;
+            let imds_rules = unsafe { IMDS_RULES.lock().unwrap() };
+            match &*imds_rules {
+                Some(rules) => {
+                    let allowed = rules.is_allowed(
+                        connection_id,
+                        request_url.to_string(),
+                        self.claims.clone(),
+                    );
+                    if !allowed && rules.mode.to_lowercase() == "audit" {
+                        Connection::write_information(connection_id, format!("IMDS request {} denied in audit mode, continue forward the request", request_url.to_string()));
+                        return true;
                     }
-                    None => {}
+                    return allowed;
                 }
+                None => {}
             }
         }
 
