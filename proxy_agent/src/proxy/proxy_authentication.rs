@@ -1,4 +1,31 @@
+use crate::key_keeper::key::AuthorizationItem;
 use crate::{common::config, common::constants, proxy::Claims};
+
+use super::authorization_rules::AuthorizationRules;
+use super::proxy_connection::Connection;
+
+static mut WIRESERVER_RULES: Option<AuthorizationRules> = None;
+static mut IMDS_RULES: Option<AuthorizationRules> = None;
+
+pub fn set_wireserver_rules(authorization_item: Option<AuthorizationItem>) {
+    unsafe {
+        let rules = match authorization_item {
+            Some(item) => Some(AuthorizationRules::from_authorization_item(item)),
+            None => None,
+        };
+        WIRESERVER_RULES = rules;
+    }
+}
+
+pub fn set_imds_rules(authorization_item: Option<AuthorizationItem>) {
+    unsafe {
+        let rules = match authorization_item {
+            Some(item) => Some(AuthorizationRules::from_authorization_item(item)),
+            None => None,
+        };
+        IMDS_RULES = rules;
+    }
+}
 
 #[cfg(windows)]
 mod default {
@@ -71,7 +98,7 @@ struct WireServer {
     claims: Claims,
 }
 impl Authenticate for WireServer {
-    fn authenticate(&self, _connection_id: u128, _request_url: String) -> bool {
+    fn authenticate(&self, connection_id: u128, request_url: String) -> bool {
         if !self.claims.runAsElevated {
             return false;
         }
@@ -80,7 +107,23 @@ impl Authenticate for WireServer {
         }
 
         if config::get_wire_server_support() == 2 {
-            // TODO: to apply the config rules
+            unsafe {
+                match WIRESERVER_RULES {
+                    Some(ref rules) => {
+                        let allowed = rules.is_allowed(
+                            connection_id,
+                            request_url.to_string(),
+                            self.claims.clone(),
+                        );
+                        if !allowed && rules.mode.to_lowercase() == "audit" {
+                            Connection::write_information(connection_id, format!("WireServer request {} denied in audit mode, continue forward the request", request_url.to_string()));
+                            return true;
+                        }
+                        return allowed;
+                    }
+                    None => {}
+                }
+            }
         }
 
         true
@@ -95,13 +138,28 @@ impl Authenticate for WireServer {
 }
 
 struct IMDS {
-    #[allow(dead_code)]
     claims: Claims,
 }
 impl Authenticate for IMDS {
-    fn authenticate(&self, _connection_id: u128, _request_url: String) -> bool {
+    fn authenticate(&self, connection_id: u128, request_url: String) -> bool {
         if config::get_imds_support() == 2 {
-            // TODO: to apply the config rules
+            unsafe {
+                match IMDS_RULES {
+                    Some(ref rules) => {
+                        let allowed = rules.is_allowed(
+                            connection_id,
+                            request_url.to_string(),
+                            self.claims.clone(),
+                        );
+                        if !allowed && rules.mode.to_lowercase() == "audit" {
+                            Connection::write_information(connection_id, format!("IMDS request {} denied in audit mode, continue forward the request", request_url.to_string()));
+                            return true;
+                        }
+                        return allowed;
+                    }
+                    None => {}
+                }
+            }
         }
 
         true
@@ -176,6 +234,7 @@ pub fn get_authenticate(ip: String, port: u16, claims: Claims) -> Box<dyn Authen
 
 #[cfg(test)]
 mod tests {
+    use crate::key_keeper::key::AuthorizationItem;
 
     #[test]
     fn get_authenticate_test() {
@@ -224,7 +283,10 @@ mod tests {
             claims.clone(),
         );
         assert_eq!(auth.to_string(), "IMDS");
-        assert!(auth.authenticate(1, "test".to_string()), "IMDS authentication must be true");
+        assert!(
+            auth.authenticate(1, "test".to_string()),
+            "IMDS authentication must be true"
+        );
 
         let auth = super::get_authenticate(
             crate::common::constants::PROXY_AGENT_IP.to_string(),
@@ -243,6 +305,200 @@ mod tests {
             claims.clone(),
         );
         assert_eq!(auth.to_string(), "Default");
+    }
+
+    #[test]
+    fn wireserver_authenticate_test() {
+        let claims = crate::proxy::Claims {
+            userId: 0,
+            userName: "test".to_string(),
+            userGroups: vec!["test".to_string()],
+            processId: std::process::id(),
+            processName: "test".to_string(),
+            processFullPath: "test".to_string(),
+            processCmdLine: "test".to_string(),
+            runAsElevated: true,
+            clientIp: "127.0.0.1".to_string(),
+        };
+        let auth = super::get_authenticate(
+            crate::common::constants::WIRE_SERVER_IP.to_string(),
+            crate::common::constants::WIRE_SERVER_PORT,
+            claims.clone(),
+        );
+        let url = "http://localhost/test?";
+
+        // validate disabled rules
+        let disabled_rules = AuthorizationItem {
+            defaultAccess: "deny".to_string(),
+            mode: "disabled".to_string(),
+            id: "id".to_string(),
+            privileges: None,
+            roles: None,
+            identities: None,
+            roleAssignments: None,
+        };
+        super::set_wireserver_rules(Some(disabled_rules));
+        assert!(
+            auth.authenticate(1, url.to_string()),
+            "WireServer authentication must be true with diabled rules"
+        );
+
+        // validate audit rules
+        let audit_deny_rules = AuthorizationItem {
+            defaultAccess: "deny".to_string(),
+            mode: "audit".to_string(),
+            id: "id".to_string(),
+            privileges: None,
+            roles: None,
+            identities: None,
+            roleAssignments: None,
+        };
+        let audit_allow_rules = AuthorizationItem {
+            defaultAccess: "deny".to_string(),
+            mode: "audit".to_string(),
+            id: "id".to_string(),
+            privileges: None,
+            roles: None,
+            identities: None,
+            roleAssignments: None,
+        };
+        super::set_wireserver_rules(Some(audit_allow_rules));
+        assert!(
+            auth.authenticate(1, url.to_string()),
+            "WireServer authentication must be true with audit allow rules"
+        );
+        super::set_wireserver_rules(Some(audit_deny_rules));
+        assert!(
+            auth.authenticate(1, url.to_string()),
+            "WireServer authentication must be true with audit deny rules"
+        );
+
+        // validate enforce rules
+        let enforce_allow_rules = AuthorizationItem {
+            defaultAccess: "allow".to_string(),
+            mode: "enforce".to_string(),
+            id: "id".to_string(),
+            privileges: None,
+            roles: None,
+            identities: None,
+            roleAssignments: None,
+        };
+        let enforce_deny_rules = AuthorizationItem {
+            defaultAccess: "deny".to_string(),
+            mode: "enforce".to_string(),
+            id: "id".to_string(),
+            privileges: None,
+            roles: None,
+            identities: None,
+            roleAssignments: None,
+        };
+        super::set_wireserver_rules(Some(enforce_allow_rules));
+        assert!(
+            auth.authenticate(1, url.to_string()),
+            "WireServer authentication must be true with enforce allow rules"
+        );
+        super::set_wireserver_rules(Some(enforce_deny_rules));
+        assert!(
+            !auth.authenticate(1, url.to_string()),
+            "WireServer authentication must be false with enforce deny rules"
+        );
+    }
+
+    #[test]
+    fn imds_authenticate_test() {
+        let claims = crate::proxy::Claims {
+            userId: 0,
+            userName: "test".to_string(),
+            userGroups: vec!["test".to_string()],
+            processId: std::process::id(),
+            processName: "test".to_string(),
+            processFullPath: "test".to_string(),
+            processCmdLine: "test".to_string(),
+            runAsElevated: true,
+            clientIp: "127.0.0.1".to_string(),
+        };
+        let auth = super::get_authenticate(
+            crate::common::constants::IMDS_IP.to_string(),
+            crate::common::constants::IMDS_PORT,
+            claims.clone(),
+        );
+        let url = "http://localhost/test?";
+
+        // validate disabled rules
+        let disabled_rules = AuthorizationItem {
+            defaultAccess: "deny".to_string(),
+            mode: "disabled".to_string(),
+            id: "id".to_string(),
+            privileges: None,
+            roles: None,
+            identities: None,
+            roleAssignments: None,
+        };
+        super::set_imds_rules(Some(disabled_rules));
+        assert!(
+            auth.authenticate(1, url.to_string()),
+            "IMDS authentication must be true with diabled rules"
+        );
+
+        // validate audit rules
+        let audit_deny_rules = AuthorizationItem {
+            defaultAccess: "deny".to_string(),
+            mode: "audit".to_string(),
+            id: "id".to_string(),
+            privileges: None,
+            roles: None,
+            identities: None,
+            roleAssignments: None,
+        };
+        let audit_allow_rules = AuthorizationItem {
+            defaultAccess: "deny".to_string(),
+            mode: "audit".to_string(),
+            id: "id".to_string(),
+            privileges: None,
+            roles: None,
+            identities: None,
+            roleAssignments: None,
+        };
+        super::set_imds_rules(Some(audit_allow_rules));
+        assert!(
+            auth.authenticate(1, url.to_string()),
+            "IMDS authentication must be true with audit allow rules"
+        );
+        super::set_imds_rules(Some(audit_deny_rules));
+        assert!(
+            auth.authenticate(1, url.to_string()),
+            "IMDS authentication must be true with audit deny rules"
+        );
+
+        // validate enforce rules
+        let enforce_allow_rules = AuthorizationItem {
+            defaultAccess: "allow".to_string(),
+            mode: "enforce".to_string(),
+            id: "id".to_string(),
+            privileges: None,
+            roles: None,
+            identities: None,
+            roleAssignments: None,
+        };
+        let enforce_deny_rules = AuthorizationItem {
+            defaultAccess: "deny".to_string(),
+            mode: "enforce".to_string(),
+            id: "id".to_string(),
+            privileges: None,
+            roles: None,
+            identities: None,
+            roleAssignments: None,
+        };
+        super::set_imds_rules(Some(enforce_allow_rules));
+        assert!(
+            auth.authenticate(1, url.to_string()),
+            "IMDS authentication must be true with enforce allow rules"
+        );
+        super::set_imds_rules(Some(enforce_deny_rules));
+        assert!(
+            !auth.authenticate(1, url.to_string()),
+            "IMDS authentication must be false with enforce deny rules"
+        );
     }
 
     #[test]

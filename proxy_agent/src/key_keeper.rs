@@ -3,6 +3,7 @@ pub mod key;
 use self::key::Key;
 use crate::common::{constants, helpers, logger};
 use crate::provision;
+use crate::proxy::proxy_authentication;
 use crate::{acl, redirector};
 use once_cell::sync::Lazy;
 use proxy_agent_shared::misc_helpers;
@@ -178,19 +179,25 @@ fn poll_secure_channel_status(
         let state = status.get_secure_channel_state();
 
         unsafe {
-            let wireserver_rule_id  = status.get_wireserver_rule_id();
+            let wireserver_rule_id = status.get_wireserver_rule_id();
             let imds_rule_id = status.get_imds_rule_id();
 
             if wireserver_rule_id != *WIRESERVER_RULE_ID {
-                logger::write_warning(format!("Wireserver rule id changed from {} to {}.", *WIRESERVER_RULE_ID, wireserver_rule_id));
+                logger::write_warning(format!(
+                    "Wireserver rule id changed from {} to {}.",
+                    *WIRESERVER_RULE_ID, wireserver_rule_id
+                ));
                 *WIRESERVER_RULE_ID = wireserver_rule_id.to_string();
-                //TODO update the authorization rule details for wireserver
+                proxy_authentication::set_wireserver_rules(status.get_wireserver_rules())
             }
 
             if imds_rule_id != *IMDS_RULE_ID {
-                logger::write_warning(format!("IMDS rule id changed from {} to {}.", *IMDS_RULE_ID, imds_rule_id));
+                logger::write_warning(format!(
+                    "IMDS rule id changed from {} to {}.",
+                    *IMDS_RULE_ID, imds_rule_id
+                ));
                 *IMDS_RULE_ID = imds_rule_id.to_string();
-                //TODO update the authorization rule details for imds
+                proxy_authentication::set_imds_rules(status.get_imds_rules())
             }
 
             // check if need fetch the key

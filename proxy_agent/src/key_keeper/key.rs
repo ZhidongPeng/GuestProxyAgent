@@ -87,6 +87,54 @@ impl AuthorizationItem {
             id: String::new(),
         }
     }
+
+    pub fn clone(&self) -> Self {
+        AuthorizationItem {
+            defaultAccess: self.defaultAccess.to_string(),
+            mode: self.mode.to_string(),
+            privileges: match self.privileges {
+                Some(ref p) => {
+                    let mut privileges: Vec<Privilege> = Vec::new();
+                    for privilege in p {
+                        privileges.push(privilege.clone());
+                    }
+                    Some(privileges)
+                }
+                None => None,
+            },
+            roles: match self.roles {
+                Some(ref r) => {
+                    let mut roles: Vec<Role> = Vec::new();
+                    for role in r {
+                        roles.push(role.clone());
+                    }
+                    Some(roles)
+                }
+                None => None,
+            },
+            identities: match self.identities {
+                Some(ref i) => {
+                    let mut identities: Vec<Identity> = Vec::new();
+                    for identity in i {
+                        identities.push(identity.clone());
+                    }
+                    Some(identities)
+                }
+                None => None,
+            },
+            roleAssignments: match self.roleAssignments {
+                Some(ref r) => {
+                    let mut role_assignments: Vec<RoleAssignment> = Vec::new();
+                    for role_assignment in r {
+                        role_assignments.push(role_assignment.clone());
+                    }
+                    Some(role_assignments)
+                }
+                None => None,
+            },
+            id: self.id.to_string(),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -196,6 +244,15 @@ impl Privilege {
             return true;
         }
         return false;
+    }
+}
+
+impl Role {
+    pub fn clone(&self) -> Self {
+        Role {
+            name: self.name.to_string(),
+            privileges: self.privileges.clone(),
+        }
     }
 }
 
@@ -326,6 +383,15 @@ impl Identity {
     }
 }
 
+impl RoleAssignment {
+    pub fn clone(&self) -> Self {
+        RoleAssignment {
+            role: self.role.to_string(),
+            identities: self.identities.clone(),
+        }
+    }
+}
+
 impl KeyStatus {
     fn validate(&self) -> std::io::Result<bool> {
         let mut validate_message = "key status validate failed: ".to_string();
@@ -450,26 +516,36 @@ impl KeyStatus {
     }
 
     pub fn get_wireserver_rule_id(&self) -> String {
-        match &self.authorizationRules {
-            Some(rules) => {
-                match &rules.wireserver {
-                    Some(item) => return item.id.to_string(),
-                    None => return String::new(),
-                }
-            }
+        match self.get_wireserver_rules() {
+            Some(item) => return item.id.to_string(),
             None => return String::new(),
         }
     }
 
     pub fn get_imds_rule_id(&self) -> String {
-        match &self.authorizationRules {
-            Some(rules) => {
-                match &rules.imds {
-                    Some(item) => return item.id.to_string(),
-                    None => return String::new(),
-                }
-            }
+        match self.get_imds_rules() {
+            Some(item) => return item.id.to_string(),
             None => return String::new(),
+        }
+    }
+
+    pub fn get_wireserver_rules(&self) -> Option<AuthorizationItem> {
+        match &self.authorizationRules {
+            Some(rules) => match &rules.wireserver {
+                Some(item) => return Some(item.clone()),
+                None => return None,
+            },
+            None => return None,
+        }
+    }
+
+    pub fn get_imds_rules(&self) -> Option<AuthorizationItem> {
+        match &self.authorizationRules {
+            Some(rules) => match &rules.imds {
+                Some(item) => return Some(item.clone()),
+                None => return None,
+            },
+            None => return None,
         }
     }
 
@@ -691,9 +767,16 @@ mod tests {
             status_v1.secureChannelEnabled.is_none(),
             "secureChannelEnabled must be None in version 1.0"
         );
-        assert_eq!("", status_v1.get_imds_rule_id(), "IMDS rule id must be empty");
-        assert_eq!("", status_v1.get_wireserver_rule_id(), "WireServer rule id must be empty");
-
+        assert_eq!(
+            "",
+            status_v1.get_imds_rule_id(),
+            "IMDS rule id must be empty"
+        );
+        assert_eq!(
+            "",
+            status_v1.get_wireserver_rule_id(),
+            "WireServer rule id must be empty"
+        );
     }
 
     #[test]
@@ -846,240 +929,90 @@ mod tests {
             "secureChannelState must be None in version 2.0"
         );
 
-        // deserizliaze authorizationRules
-        let rules = status.authorizationRules.as_ref().unwrap();
-        // validate authorizationRules
-        assert_eq!(
-            "deny",
-            rules.wireserver.as_ref().unwrap().defaultAccess,
-            "defaultAccess mismatch"
-        );
-        assert_eq!(
-            "enforce",
-            rules.wireserver.as_ref().unwrap().mode,
-            "mode mismatch"
-        );
-        assert_eq!("sigid", status.get_wireserver_rule_id(), "WireServer rule id mismatch");
-        assert_eq!(
-            "allow",
-            rules.imds.as_ref().unwrap().defaultAccess,
-            "defaultAccess mismatch"
-        );
-        assert_eq!(
-            "enforce",
-            rules.imds.as_ref().unwrap().mode,
-            "mode mismatch"
-        );
+        // validate IMDS rules
+        let imds_rules = status.get_imds_rules().unwrap();
+        assert_eq!("allow", imds_rules.defaultAccess, "defaultAccess mismatch");
+        assert_eq!("enforce", imds_rules.mode, "mode mismatch");
         assert_eq!("sigid", status.get_imds_rule_id(), "IMDS rule id mismatch");
+
+        // validate WireServer rules
+        let wireserver_rules = status.get_wireserver_rules().unwrap();
         assert_eq!(
-            "test",
-            rules
-                .wireserver
-                .as_ref()
-                .unwrap()
-                .privileges
-                .as_ref()
-                .unwrap()[0]
-                .name,
-            "privilege name mismatch"
+            "deny", wireserver_rules.defaultAccess,
+            "defaultAccess mismatch"
         );
+        assert_eq!("enforce", wireserver_rules.mode, "mode mismatch");
         assert_eq!(
-            "/test",
-            rules
-                .wireserver
-                .as_ref()
-                .unwrap()
-                .privileges
-                .as_ref()
-                .unwrap()[0]
-                .path,
-            "privilege path mismatch"
+            "sigid",
+            status.get_wireserver_rule_id(),
+            "WireServer rule id mismatch"
         );
+        // validate WireServer rule details
+        let first_privilege = &wireserver_rules.privileges.as_ref().unwrap()[0];
+        assert_eq!("test", first_privilege.name, "privilege name mismatch");
+        assert_eq!("/test", first_privilege.path, "privilege path mismatch");
         assert_eq!(
             "value1",
-            rules
-                .wireserver
-                .as_ref()
-                .unwrap()
-                .privileges
-                .as_ref()
-                .unwrap()[0]
-                .queryParameters
-                .as_ref()
-                .unwrap()["key1"],
+            first_privilege.queryParameters.as_ref().unwrap()["key1"],
             "privilege queryParameters mismatch"
         );
         assert_eq!(
             "value2",
-            rules
-                .wireserver
-                .as_ref()
-                .unwrap()
-                .privileges
-                .as_ref()
-                .unwrap()[0]
-                .queryParameters
-                .as_ref()
-                .unwrap()["key2"],
+            first_privilege.queryParameters.as_ref().unwrap()["key2"],
             "privilege queryParameters mismatch"
         );
+        let second_privilege = &wireserver_rules.privileges.as_ref().unwrap()[1];
         assert_eq!(
-            "test1",
-            rules
-                .wireserver
-                .as_ref()
-                .unwrap()
-                .privileges
-                .as_ref()
-                .unwrap()[1]
-                .name,
-            "privilege name mismatch"
+            "test1", second_privilege.name,
+            "second privilege name mismatch"
         );
         assert_eq!(
-            "/test1",
-            rules
-                .wireserver
-                .as_ref()
-                .unwrap()
-                .privileges
-                .as_ref()
-                .unwrap()[1]
-                .path,
-            "privilege path mismatch"
+            "/test1", second_privilege.path,
+            "second privilege path mismatch"
         );
         assert_eq!(
             "value1",
-            rules
-                .wireserver
-                .as_ref()
-                .unwrap()
-                .privileges
-                .as_ref()
-                .unwrap()[1]
-                .queryParameters
-                .as_ref()
-                .unwrap()["key1"],
-            "privilege queryParameters mismatch"
+            second_privilege.queryParameters.as_ref().unwrap()["key1"],
+            "second privilege queryParameters mismatch"
         );
         assert_eq!(
             "value2",
-            rules
-                .wireserver
-                .as_ref()
-                .unwrap()
-                .privileges
-                .as_ref()
-                .unwrap()[1]
-                .queryParameters
-                .as_ref()
-                .unwrap()["key2"],
-            "privilege queryParameters mismatch"
+            second_privilege.queryParameters.as_ref().unwrap()["key2"],
+            "second privilege queryParameters mismatch"
         );
+        let first_role = &wireserver_rules.roles.as_ref().unwrap()[0];
+        assert_eq!("test", first_role.name, "role name mismatch");
+        assert_eq!("test", first_role.privileges[0], "role privilege mismatch");
+        assert_eq!("test1", first_role.privileges[1], "role privilege mismatch");
+        let first_identity = &wireserver_rules.identities.as_ref().unwrap()[0];
+        assert_eq!("test", first_identity.name, "identity name mismatch");
         assert_eq!(
             "test",
-            rules.wireserver.as_ref().unwrap().roles.as_ref().unwrap()[0].name,
-            "role name mismatch"
-        );
-        assert_eq!(
-            "test",
-            rules.wireserver.as_ref().unwrap().roles.as_ref().unwrap()[0].privileges[0],
-            "role privilege mismatch"
-        );
-        assert_eq!(
-            "test1",
-            rules.wireserver.as_ref().unwrap().roles.as_ref().unwrap()[0].privileges[1],
-            "role privilege mismatch"
-        );
-        assert_eq!(
-            "test",
-            rules
-                .wireserver
-                .as_ref()
-                .unwrap()
-                .identities
-                .as_ref()
-                .unwrap()[0]
-                .name,
-            "identity name mismatch"
-        );
-        assert_eq!(
-            "test",
-            rules
-                .wireserver
-                .as_ref()
-                .unwrap()
-                .identities
-                .as_ref()
-                .unwrap()[0]
-                .userName
-                .as_ref()
-                .unwrap(),
+            first_identity.userName.as_ref().unwrap(),
             "identity userName mismatch"
         );
         assert_eq!(
             "test",
-            rules
-                .wireserver
-                .as_ref()
-                .unwrap()
-                .identities
-                .as_ref()
-                .unwrap()[0]
-                .groupName
-                .as_ref()
-                .unwrap(),
+            first_identity.groupName.as_ref().unwrap(),
             "identity groupName mismatch"
         );
         assert_eq!(
             "test",
-            rules
-                .wireserver
-                .as_ref()
-                .unwrap()
-                .identities
-                .as_ref()
-                .unwrap()[0]
-                .exePath
-                .as_ref()
-                .unwrap(),
+            first_identity.exePath.as_ref().unwrap(),
             "identity exePath mismatch"
         );
         assert_eq!(
             "test",
-            rules
-                .wireserver
-                .as_ref()
-                .unwrap()
-                .identities
-                .as_ref()
-                .unwrap()[0]
-                .processName
-                .as_ref()
-                .unwrap(),
+            first_identity.processName.as_ref().unwrap(),
             "identity processName mismatch"
         );
+        let first_role_assignment = &wireserver_rules.roleAssignments.as_ref().unwrap()[0];
         assert_eq!(
-            "test",
-            rules
-                .wireserver
-                .as_ref()
-                .unwrap()
-                .roleAssignments
-                .as_ref()
-                .unwrap()[0]
-                .role,
+            "test", first_role_assignment.role,
             "roleAssignment role mismatch"
         );
         assert_eq!(
-            "test",
-            rules
-                .wireserver
-                .as_ref()
-                .unwrap()
-                .roleAssignments
-                .as_ref()
-                .unwrap()[0]
-                .identities[0],
+            "test", first_role_assignment.identities[0],
             "roleAssignment identities mismatch"
         );
     }
