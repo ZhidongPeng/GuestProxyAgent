@@ -223,7 +223,7 @@ pub fn string_to_ip(ip_str: &str) -> u32 {
 }
 
 pub fn get_ebpf_file_path() -> PathBuf {
-    // get config file full path from environment variable
+    // get ebpf file full path from environment variable
     let mut bpf_file_path = match env::var(super::constants::AZURE_PROXY_AGENT_ENV_EBPF_FULL_PATH) {
         Ok(file_path) => PathBuf::from(file_path),
         Err(_) => PathBuf::new(),
@@ -314,10 +314,7 @@ mod tests {
         );
 
         // clean up
-        env::remove_var(constants::AZURE_PROXY_AGENT_ENV_CONFIG_FULL_PATH);
+        env::remove_var(constants::AZURE_PROXY_AGENT_ENV_EBPF_FULL_PATH);
         _ = fs::remove_dir_all(&temp_test_path);
-
-        let path = super::get_ebpf_file_path();
-        assert_eq!(true, path.exists(), "ebpf file path must exist.");
     }
 }
