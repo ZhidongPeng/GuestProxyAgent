@@ -21,11 +21,15 @@ static mut STATUS_MESSAGE: Lazy<String> =
     Lazy::new(|| String::from("Redirector has not started yet."));
 static mut BPF_OBJECT: Option<Bpf> = None;
 
-pub fn start(local_port: u16) -> bool {
+fn get_ebpf_file_path() -> PathBuf {
+    
     let mut bpf_file_path = misc_helpers::get_current_exe_dir();
     bpf_file_path.push(config::get_ebpf_program_name());
+    bpf_file_path
+}
 
-    let mut bpf = match open_ebpf_file(bpf_file_path) {
+pub fn start(local_port: u16) -> bool {
+    let mut bpf = match open_ebpf_file(get_ebpf_file_path()) {
         Ok(value) => value,
         Err(value) => return value,
     };
@@ -507,6 +511,7 @@ fn lookup_audit_internal(bpf: &Bpf, source_port: u16) -> std::io::Result<AuditEn
 }
 
 #[cfg(test)]
+#[cfg(feature = "test-with-root")]
 mod tests {
     use crate::common::config;
     use crate::common::logger;

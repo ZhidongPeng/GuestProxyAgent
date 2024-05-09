@@ -154,6 +154,7 @@ impl Config {
 mod tests {
     use crate::common::config::Config;
     use crate::common::constants;
+    use proxy_agent_shared::misc_helpers;
     use std::fs::File;
     use std::io::Write;
     use std::path::PathBuf;
@@ -162,11 +163,13 @@ mod tests {
     #[test]
     fn config_struct_test() {
         let mut temp_test_path: PathBuf = env::temp_dir();
-        temp_test_path.push("test_config.json");
-
-        if temp_test_path.exists() {
-            _ = fs::remove_file(&temp_test_path);
+        temp_test_path.push("config_struct_test");
+        _ = fs::remove_dir_all(&temp_test_path);
+        match misc_helpers::try_create_folder(temp_test_path.to_path_buf()) {
+            Ok(_) => {}
+            Err(err) => panic!("Failed to create folder: {}", err),
         }
+        temp_test_path.push("test_config.json");
 
         let data = r#"{
             "logFolder": "C:\\logFolderName",
