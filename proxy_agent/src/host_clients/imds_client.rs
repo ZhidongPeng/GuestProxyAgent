@@ -29,7 +29,7 @@ impl ImdsClient {
             url,
             req,
             key_keeper::get_current_key_guid(),
-            key_keeper::get_current_key(),
+            key_keeper::get_current_key_key(),
         )?;
 
         let response = http::get_response_in_string(&mut http_request)?;

@@ -283,7 +283,7 @@ fn handle_connection_with_signature(
     }
 
     // Add header x-ms-azure-host-authorization
-    let key = key_keeper::get_current_key();
+    let key = key_keeper::get_current_key_key();
     if key != "" {
         let input_to_sign = request.as_sig_input();
         match helpers::compute_signature(key.to_string(), &input_to_sign.as_slice()) {

@@ -56,7 +56,7 @@ impl WireServerClient {
             url,
             req,
             key_keeper::get_current_key_guid(),
-            key_keeper::get_current_key(),
+            key_keeper::get_current_key_key(),
         )?;
 
         Ok(http_request)

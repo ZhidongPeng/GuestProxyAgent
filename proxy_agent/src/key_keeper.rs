@@ -13,7 +13,7 @@ use proxy_agent_shared::proxy_agent_aggregate_status::{ModuleState, ProxyAgentDe
 use proxy_agent_shared::telemetry::event_logger;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::{path::PathBuf, thread, time::Duration};
 use url::Url;
 
@@ -28,7 +28,7 @@ const PROVISION_TIMEUP_IN_MILLISECONDS: u128 = 120000; // 2 minute
 const DELAY_START_EVENT_THREADS_IN_MILLISECONDS: u128 = 60000; // 1 minute
 
 static mut CURRENT_SECURE_CHANNEL_STATE: Lazy<String> = Lazy::new(|| String::from(UNKNOWN_STATE)); // state starts from Unknown
-static mut CURRENT_KEY: Lazy<Key> = Lazy::new(|| Key::empty());
+static CURRENT_KEY: Lazy<Arc<Mutex<Key>>> = Lazy::new(|| Arc::new(Mutex::new(Key::empty())));
 static SHUT_DOWN: Lazy<Arc<AtomicBool>> = Lazy::new(|| Arc::new(AtomicBool::new(false)));
 static mut STATUS_MESSAGE: Lazy<String> =
     Lazy::new(|| String::from("Key latch thread has not started yet."));
@@ -39,16 +39,25 @@ pub fn get_secure_channel_state() -> String {
     unsafe { CURRENT_SECURE_CHANNEL_STATE.to_string() }
 }
 
-pub fn get_current_key_guid() -> String {
-    unsafe { CURRENT_KEY.guid.to_string() }
+fn get_current_key() -> Key {
+    CURRENT_KEY.lock().unwrap().clone()
 }
 
-pub fn get_current_key() -> String {
-    unsafe { CURRENT_KEY.key.to_string() }
+fn set_current_key(key: Key) {
+    let current_key = Arc::clone(&CURRENT_KEY);
+    *current_key.lock().unwrap() = key;
+}
+
+pub fn get_current_key_guid() -> String {
+    get_current_key().guid.to_string()
+}
+
+pub fn get_current_key_key() -> String {
+    get_current_key().key.to_string()
 }
 
 fn get_current_key_incarnation() -> Option<u32> {
-    unsafe { CURRENT_KEY.incarnationId.clone() }
+    get_current_key().incarnationId.clone()
 }
 
 pub fn poll_status_async(
@@ -214,9 +223,7 @@ fn poll_secure_channel_status(
                     match misc_helpers::json_read_from_file(key_file.to_path_buf()) {
                         Ok(key) => {
                             // update in memory
-                            unsafe {
-                                *CURRENT_KEY = key;
-                            }
+                            set_current_key(key);
                             let message = helpers::write_startup_event(
                                 "Found key details from local and ready to use.",
                                 "poll_secure_channel_status",
@@ -286,9 +293,7 @@ fn poll_secure_channel_status(
                     match key::attest_key(base_url.clone(), &key) {
                         Ok(()) => {
                             // update in memory
-                            unsafe {
-                                *CURRENT_KEY = key;
-                            }
+                            set_current_key(key);
                             helpers::write_startup_event(
                                 "Successfully attest the key and ready to use.",
                                 "poll_secure_channel_status",
