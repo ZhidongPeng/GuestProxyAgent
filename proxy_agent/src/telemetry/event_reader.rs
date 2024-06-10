@@ -462,6 +462,7 @@ mod tests {
             THREAD_PRIORITY_VERIFY_SUCCESS
         );
         assert!(THREAD_PRIORITY_VERFIY_DONE.load(Ordering::Relaxed));
+        _ = sender.send(crate::data_vessel::DataAction::Stop);
     }
 
     #[test]
