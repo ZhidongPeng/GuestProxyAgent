@@ -1,11 +1,11 @@
 // Copyright (c) Microsoft Corporation
 // SPDX-License-Identifier: MIT
 use crate::common::{config, logger};
-use crate::key_keeper;
+use crate::{key_keeper, shared_state::SharedState};
 use once_cell::sync::Lazy;
 use proxy_agent_shared::proxy_agent_aggregate_status::{ModuleState, ProxyAgentDetailStatus};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -13,15 +13,15 @@ static SHUT_DOWN: Lazy<Arc<AtomicBool>> = Lazy::new(|| Arc::new(AtomicBool::new(
 static mut STATUS_MESSAGE: Lazy<String> =
     Lazy::new(|| String::from("Monitor thread has not started yet."));
 
-pub fn start_async(interval: Duration) {
+pub fn start_async(interval: Duration, shared_state: Arc<Mutex<SharedState>>) {
     _ = thread::Builder::new()
         .name("monitor".to_string())
         .spawn(move || {
-            start(interval);
+            start(interval, shared_state);
         });
 }
 
-fn start(mut interval: Duration) {
+fn start(mut interval: Duration, shared_state: Arc<Mutex<SharedState>>) {
     let shutdown = SHUT_DOWN.clone();
     if interval == Duration::default() {
         interval = Duration::from_secs(60);
@@ -42,7 +42,7 @@ fn start(mut interval: Duration) {
             break;
         }
 
-        if redirect_should_run() {
+        if redirect_should_run(shared_state.clone()) {
             // TODO:: check redirector started or not
         }
 
@@ -50,8 +50,8 @@ fn start(mut interval: Duration) {
     }
 }
 
-fn redirect_should_run() -> bool {
-    if key_keeper::get_secure_channel_state() != key_keeper::DISABLE_STATE {
+fn redirect_should_run(shared_state: Arc<Mutex<SharedState>>) -> bool {
+    if shared_state.lock().unwrap().current_secure_channel_state != key_keeper::DISABLE_STATE {
         true
     } else {
         config::get_start_redirector()
