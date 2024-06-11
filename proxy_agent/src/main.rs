@@ -51,8 +51,10 @@ fn main() {
             if args.len() >= 4 && args[2].to_lowercase() == "--wait" {
                 wait_time = args[3].parse::<u64>().unwrap_or(0);
             }
-            let status =
-                provision::get_provision_status_wait(None, Some(Duration::from_secs(wait_time)));
+            let status = provision::get_provision_status_wait(
+                constants::PROXY_AGENT_PORT,
+                Some(Duration::from_secs(wait_time)),
+            );
             if !status.0 {
                 // exit code 1 means provision not finished yet.
                 process::exit(1);

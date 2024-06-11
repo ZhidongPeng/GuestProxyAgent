@@ -177,10 +177,16 @@ async fn handle_request(
     mut connection: ConnectionContext,
     shared_state: Arc<Mutex<SharedState>>,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
+    let reqeust_url = request.uri().to_string();
+    // handle GPA provsion state request
+    if reqeust_url == provision::PROVISION_URL_PATH {
+        return handle_provision_state_check_request(shared_state).await;
+    }
+
     let connection_id = proxy_listener_wrapper::increase_connection_count(shared_state.clone());
     connection.id = connection_id;
     connection.method = request.method().to_string();
-    connection.url = request.uri().to_string();
+    connection.url = reqeust_url;
     Connection::write_warning(
         connection_id,
         format!(
@@ -446,6 +452,18 @@ fn empty_response(status_code: StatusCode) -> Response<BoxBody<Bytes, hyper::Err
     *response.status_mut() = status_code;
 
     response
+}
+
+async fn handle_provision_state_check_request(
+    shared_state: Arc<Mutex<SharedState>>,
+) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
+    let provision_state = provision::get_provision_state(shared_state);
+    return Ok(Response::new(http::full_body(
+        serde_json::to_string(&provision_state)
+            .unwrap()
+            .as_bytes()
+            .to_vec(),
+    )));
 }
 
 async fn handle_request_with_signature(

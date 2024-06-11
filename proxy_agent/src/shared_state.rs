@@ -36,6 +36,7 @@ pub struct SharedState {
     wireserver_rules: Option<AuthorizationRules>,
     imds_rules: Option<AuthorizationRules>,
     // provision
+    provision_finished: bool,
     provision_state: u8,
     provision_event_log_threads_initialized: bool,
     // redirector
@@ -96,6 +97,7 @@ impl Default for SharedState {
             wireserver_rules: None,
             imds_rules: None,
             // provision
+            provision_finished: false,
             provision_state: 0,
             provision_event_log_threads_initialized: false,
             // redirector
@@ -423,6 +425,14 @@ pub mod provision_wrapper {
             .lock()
             .unwrap()
             .provision_event_log_threads_initialized
+    }
+
+    pub fn set_provision_finished(shared_state: Arc<Mutex<SharedState>>) {
+        shared_state.lock().unwrap().provision_finished = true;
+    }
+
+    pub fn get_provision_finished(shared_state: Arc<Mutex<SharedState>>) -> bool {
+        shared_state.lock().unwrap().provision_finished
     }
 }
 
