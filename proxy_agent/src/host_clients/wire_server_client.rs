@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::{io::prelude::*, net::TcpStream};
 use url::{Position, Url};
 
-pub struct WireServerClient {
+pub struct WireServerClient<T: KeyKeeper> {
     ip: String,
     port: u16,
     shared_state: Arc<Mutex<SharedState>>,

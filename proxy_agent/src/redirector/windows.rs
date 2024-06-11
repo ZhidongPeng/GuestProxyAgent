@@ -6,7 +6,7 @@ mod bpf_obj;
 mod bpf_prog;
 
 use crate::common::{self, config, constants, helpers, logger};
-use crate::key_keeper;
+use crate::data_vessel::DataVessel;
 use crate::provision;
 use crate::redirector::AuditEntry;
 use crate::shared_state::SharedState;

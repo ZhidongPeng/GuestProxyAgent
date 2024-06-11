@@ -4,6 +4,7 @@ use super::telemetry_event::TelemetryData;
 use super::telemetry_event::TelemetryEvent;
 use crate::common::constants;
 use crate::common::logger;
+use crate::data_vessel;
 use crate::host_clients::imds_client::ImdsClient;
 use crate::host_clients::wire_server_client::WireServerClient;
 use crate::shared_state::SharedState;

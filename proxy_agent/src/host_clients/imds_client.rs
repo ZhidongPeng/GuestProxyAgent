@@ -7,7 +7,7 @@ use std::io::{Error, ErrorKind};
 use std::sync::{Arc, Mutex};
 use url::Url;
 
-pub struct ImdsClient {
+pub struct ImdsClient<T: KeyKeeper> {
     ip: String,
     port: u16,
     shared_state: Arc<Mutex<SharedState>>,
