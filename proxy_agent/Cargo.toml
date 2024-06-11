@@ -24,7 +24,8 @@ tokio-util = "0.7.11"
 http-body-util = "0.1"
 hyper-util = { version = "0.1", features = ["tokio"] }
 http = "1.1.0"
-reqwest = "0.12.5"            # http client
+## reqwest doesnot build for x86_64-unknown-linux-musl
+# reqwest = "0.12.5"            # http client
 
 [dependencies.uuid]
 version = "1.3.0"

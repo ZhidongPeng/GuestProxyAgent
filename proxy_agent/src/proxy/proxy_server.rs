@@ -603,6 +603,7 @@ mod tests {
         // start listener, the port must different from the one used in production code
         let shared_state = SharedState::new();
         let s = shared_state.clone();
+        let host = "127.0.0.1";
         let port: u16 = 8091;
         proxy_server::start_async(port, s.clone()).await;
 
@@ -610,7 +611,7 @@ mod tests {
         let sleep_duration = Duration::from_millis(100);
         thread::sleep(sleep_duration);
 
-        let url = format!("http://127.0.0.1:{}/", port);
+        let url = format!("http://{}:{}/", host, port);
         let request = crate::common::http::get_request(
             "GET",
             &url,
@@ -620,7 +621,10 @@ mod tests {
             key_keeper_wrapper::get_current_key_value(shared_state.clone()),
         )
         .unwrap();
-        let response = request.send().await.unwrap();
+        let response =
+            crate::common::http::send_request(host, port, request, logger::write_warning)
+                .await
+                .unwrap();
 
         // stop listener
         proxy_server::stop(port, shared_state);

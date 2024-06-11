@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 use super::instance_info::InstanceInfo;
 use crate::common::http::{self};
+use crate::common::logger;
 use crate::shared_state::{key_keeper_wrapper, SharedState};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -32,6 +33,7 @@ impl ImdsClient {
             &headers,
             key_keeper_wrapper::get_current_key_guid(self.shared_state.clone()),
             key_keeper_wrapper::get_current_key_value(self.shared_state.clone()),
+            logger::write_warning,
         )
         .await
     }

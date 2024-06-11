@@ -2,14 +2,20 @@
 // SPDX-License-Identifier: MIT
 
 use super::{constants, helpers};
+use http::request::Builder;
 use http::request::Parts;
-use http::{HeaderName, HeaderValue};
+use http_body_util::combinators::BoxBody;
+use http_body_util::BodyExt;
+use http_body_util::Empty;
+use http_body_util::Full;
 use hyper::body::Bytes;
+use hyper::Request;
+use hyper_util::rt::TokioIo;
 use itertools::Itertools;
 use proxy_agent_shared::misc_helpers;
-use reqwest::Request;
 use serde::de::DeserializeOwned;
 use std::collections::HashMap;
+use tokio::net::TcpStream;
 use url::Url;
 
 pub fn htons(u: u16) -> u16 {
@@ -20,22 +26,26 @@ pub fn ntohs(u: u16) -> u16 {
     u16::from_be(u)
 }
 
-pub async fn get<T>(
-    url: &str,
+pub async fn get<T, F>(
+    uri_str: &str,
     headers: &HashMap<String, String>,
     key_guid: Option<String>,
     key: Option<String>,
+    log_fun: F,
 ) -> std::io::Result<T>
 where
     T: DeserializeOwned,
+    F: Fn(String) + Send + 'static,
 {
-    let request = get_request("GET", url, headers, None, key_guid, key)?;
-    let response = match request.send().await {
+    let request = get_request("GET", uri_str, headers, None, key_guid, key)?;
+
+    let (host, port) = host_port_from_uri(uri_str)?;
+    let response = match send_request(&host, port, request, log_fun).await {
         Ok(r) => r,
         Err(e) => {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::Other,
-                format!("Failed to send request to {}: {}", url, e),
+                format!("Failed to send request to {}: {}", uri_str, e),
             ))
         }
     };
@@ -45,149 +55,165 @@ where
             std::io::ErrorKind::Other,
             format!(
                 "Failed to get response from {}, status code: {}",
-                url, status
+                uri_str, status
             ),
         ));
     }
-    let body = match response.text().await {
-        Ok(b) => b,
-        Err(e) => {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("Failed to get response body from {}: {}", url, e),
-            ))
-        }
-    };
 
-    match serde_json::from_str(&body) {
-        Ok(obj) => Ok(obj),
+    read_response_body(response).await
+}
+
+pub async fn read_response_body<T>(
+    mut response: hyper::Response<hyper::body::Incoming>,
+) -> std::io::Result<T>
+where
+    T: DeserializeOwned,
+{
+    let mut body_string = String::new();
+    while let Some(next) = response.frame().await {
+        let frame = match next {
+            Ok(f) => f,
+            Err(e) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("Failed to get next frame from response: {}", e),
+                ))
+            }
+        };
+        if let Some(chunk) = frame.data_ref() {
+            body_string.push_str(&String::from_utf8_lossy(chunk));
+        }
+    }
+    match serde_json::from_str(&body_string) {
+        Ok(t) => Ok(t),
         Err(e) => Err(std::io::Error::new(
             std::io::ErrorKind::Other,
-            format!("Failed to deserialize the response: {}", e),
+            format!("Failed to deserialize response body from: {}", e),
         )),
     }
 }
 
 pub fn get_request(
     method: &str,
-    uri: &str,
+    uri_str: &str,
     headers: &HashMap<String, String>,
-    body: Option<Vec<u8>>,
+    body: Option<&[u8]>,
     key_guid: Option<String>,
     key: Option<String>,
-) -> std::io::Result<reqwest::RequestBuilder> {
-    let uri = match url::Url::parse(uri) {
-        Ok(u) => u,
-        Err(e) => {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("Failed to parse uri {}: {}", uri, e),
-            ))
-        }
-    };
-    let mut request = reqwest::Client::new().request(
-        match reqwest::Method::from_bytes(method.as_bytes()) {
-            Ok(m) => m,
-            Err(e) => {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("Failed to create method {}: {}", method, e),
-                ))
-            }
-        },
-        uri.clone(),
-    );
-
-    let content_length = match body {
-        Some(b) => {
-            let content_length = b.len();
-            request = request.body(b);
-            content_length
-        }
-        None => 0,
-    };
-
-    for (key, value) in headers {
-        request = request.header(
-            match HeaderName::from_bytes(key.as_bytes()) {
-                Ok(h) => h,
-                Err(e) => {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        format!("Failed to create header name {}: {}", key, e),
-                    ))
-                }
-            },
-            match HeaderValue::from_str(value) {
-                Ok(v) => v,
-                Err(e) => {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        format!("Failed to parse header value {}: {}", value, e),
-                    ))
-                }
+) -> std::io::Result<Request<BoxBody<Bytes, hyper::Error>>> {
+    let (host, _) = host_port_from_uri(uri_str)?;
+    let mut request_builder = Request::builder()
+        .method(method)
+        .uri(uri_str)
+        .header(
+            constants::DATE_HEADER,
+            misc_helpers::get_date_time_rfc1123_string(),
+        )
+        .header("Host", host)
+        .header(
+            constants::CLAIMS_HEADER,
+            format!("{{ \"{}\": \"{}\"}}", constants::CLAIMS_IS_ROOT, true,),
+        )
+        .header(
+            "Content-Length",
+            match body {
+                Some(b) => b.len().to_string(),
+                None => "0".to_string(),
             },
         );
+
+    for (key, value) in headers {
+        request_builder = request_builder.header(key, value);
     }
 
-    request = request.header(
-        constants::DATE_HEADER.to_string(),
-        misc_helpers::get_date_time_rfc1123_string(),
-    );
-    request = request.header(
-        constants::CLAIMS_HEADER.to_string(),
-        format!("{{ \"{}\": \"{}\"}}", constants::CLAIMS_IS_ROOT, true,),
-    );
-    request = request.header(
-        "Host",
-        match uri.host_str() {
-            Some(h) => h,
-            None => {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("Failed to get host from uri {}", uri),
-                ))
-            }
-        },
-    );
-    request = request.header("Content-Length", content_length.to_string());
-
     if let (Some(key), Some(key_guid)) = (key, key_guid) {
-        let cloned_request = match request.try_clone() {
-            Some(r) => r.build(),
-            None => {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "Failed to clone request",
-                ))
-            }
-        };
-        let cloned_request = match cloned_request {
-            Ok(r) => r,
-            Err(e) => {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("Failed to build cloned request: {}", e),
-                ))
-            }
-        };
-
-        let input_to_sign = request_to_sign_input(cloned_request);
+        let body_vec = body.map(|b| b.to_vec());
+        let input_to_sign = request_to_sign_input(&request_builder, body_vec)?;
         let authorization_value = format!(
             "{} {} {}",
             constants::AUTHORIZATION_SCHEME,
             key_guid,
             helpers::compute_signature(key.to_string(), input_to_sign.as_slice())?
         );
-        request = request.header(
+        request_builder = request_builder.header(
             constants::AUTHORIZATION_HEADER.to_string(),
             authorization_value.to_string(),
         );
     }
 
-    Ok(request)
+    let boxed_body = match body {
+        Some(body) => full_body(body.to_vec()),
+        None => empty_body(),
+    };
+    match request_builder.body(boxed_body) {
+        Ok(r) => Ok(r),
+        Err(e) => Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!("Failed to build request body: {}", e),
+        )),
+    }
 }
 
+pub fn host_port_from_uri(uri_str: &str) -> std::io::Result<(String, u16)> {
+    let uri = parse_uri(uri_str)?;
+    let host = match uri.host() {
+        Some(h) => h.to_string(),
+        None => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("Failed to get host from uri {}", uri),
+            ))
+        }
+    };
+    let port = uri.port().unwrap_or(80);
+    Ok((host, port))
+}
+fn parse_uri(uri_str: &str) -> std::io::Result<Url> {
+    match url::Url::parse(uri_str) {
+        Ok(u) => Ok(u),
+        Err(e) => Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!("Failed to parse uri {} with error: {}", uri_str, e),
+        )),
+    }
+}
+
+pub async fn send_request<F>(
+    host: &str,
+    port: u16,
+    request: Request<BoxBody<Bytes, hyper::Error>>,
+    log_fun: F,
+) -> std::io::Result<hyper::Response<hyper::body::Incoming>>
+where
+    F: Fn(String) + Send + 'static,
+{
+    let addr = format!("{}:{}", host, port);
+    let stream = TcpStream::connect(addr.to_string()).await?;
+    let io = TokioIo::new(stream);
+
+    let (mut sender, conn) = match hyper::client::conn::http1::handshake(io).await {
+        Ok((s, c)) => (s, c),
+        Err(e) => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("Failed to establish connection to {}: {}", addr, e),
+            ))
+        }
+    };
+    tokio::task::spawn(async move {
+        if let Err(err) = conn.await {
+            log_fun(format!("Connection failed: {:?}", err));
+        }
+    });
+
+    match sender.send_request(request).await {
+        Ok(r) => Ok(r),
+        Err(e) => Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            format!("Failed to send request: {:?}", e),
+        )),
+    }
+}
 /*
     StringToSign = Method + "\n" +
            HexEncoded(Body) + "\n" +
@@ -210,27 +236,50 @@ pub fn as_sig_input(head: Parts, body: Bytes) -> Vec<u8> {
     data
 }
 
-pub fn request_to_sign_input(request: Request) -> Vec<u8> {
-    let mut data: Vec<u8> = request.method().as_str().as_bytes().to_vec();
+pub fn request_to_sign_input(
+    request_builder: &Builder,
+    body: Option<Vec<u8>>,
+) -> std::io::Result<Vec<u8>> {
+    let mut data: Vec<u8> = match request_builder.method_ref() {
+        Some(m) => m.as_str().as_bytes().to_vec(),
+        None => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Failed to get method from request builder",
+            ))
+        }
+    };
     data.extend(constants::LF.as_bytes());
-    if let Some(body) = request.body() {
-        let body = match body.as_bytes() {
-            Some(b) => b,
-            None => {
-                return Vec::new();
-            }
-        };
+    if let Some(body) = body {
         data.extend(body);
     }
     data.extend(constants::LF.as_bytes());
 
-    data.extend(headers_to_canonicalized_string(request.headers()).as_bytes());
-    let path_para = get_path_and_canonicalized_parameters(request.url().clone());
-    data.extend(path_para.0.as_bytes());
-    data.extend(constants::LF.as_bytes());
-    data.extend(path_para.1.as_bytes());
+    match request_builder.headers_ref() {
+        Some(h) => {
+            data.extend(headers_to_canonicalized_string(h).as_bytes());
+        }
+        None => {
+            // no headers
+            data.extend(constants::LF.as_bytes());
+        }
+    }
+    match request_builder.uri_ref() {
+        Some(u) => {
+            let path_para = get_path_and_canonicalized_parameters(into_url(u));
+            data.extend(path_para.0.as_bytes());
+            data.extend(constants::LF.as_bytes());
+            data.extend(path_para.1.as_bytes());
+        }
+        None => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Failed to get uri from request builder",
+            ))
+        }
+    }
 
-    data
+    Ok(data)
 }
 
 fn headers_to_canonicalized_string(headers: &hyper::HeaderMap) -> String {
@@ -292,4 +341,16 @@ fn get_path_and_canonicalized_parameters(url: Url) -> (String, String) {
     }
 
     (path, canonicalized_parameters)
+}
+
+pub fn empty_body() -> BoxBody<Bytes, hyper::Error> {
+    Empty::<Bytes>::new()
+        .map_err(|never| match never {})
+        .boxed()
+}
+
+pub fn full_body<T: Into<Bytes>>(chunk: T) -> BoxBody<Bytes, hyper::Error> {
+    Full::new(chunk.into())
+        .map_err(|never| match never {})
+        .boxed()
 }

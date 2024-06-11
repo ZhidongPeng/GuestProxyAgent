@@ -1,12 +1,10 @@
 // Copyright (c) Microsoft Corporation
 // SPDX-License-Identifier: MIT
-use crate::common::logger;
+use crate::common::{http, logger};
 use crate::key_keeper;
 use crate::key_keeper::key::{Key, KeyStatus};
 use crate::shared_state::{proxy_listener_wrapper, SharedState};
 use http_body_util::combinators::BoxBody;
-use http_body_util::Full;
-use http_body_util::{BodyExt, Empty};
 use hyper::body::Bytes;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
@@ -101,7 +99,7 @@ async fn handle_request(
                             Some(key_keeper::MUST_SIG_WIRESERVER.to_string());
                     }
                 }
-                return Ok(Response::new(full(
+                return Ok(Response::new(http::full_body(
                     serde_json::to_string(&status).unwrap().as_bytes().to_vec(),
                 )));
             }
@@ -140,7 +138,9 @@ async fn handle_request(
             </GoalState>"#;
             let goal_state_str = goal_state_str.replace("##ip##", &ip);
             let goal_state_str = goal_state_str.replace("##port##", &port.to_string());
-            return Ok(Response::new(full(goal_state_str.as_bytes().to_vec())));
+            return Ok(Response::new(http::full_body(
+                goal_state_str.as_bytes().to_vec(),
+            )));
         } else if path.starts_with("machine/") && path.contains("type=sharedConfig") {
             let shared_config_str = r#"<?xml version="1.0" encoding="utf-8"?>
             <SharedConfig version="1.0.0.0" goalStateIncarnation="16">
@@ -171,7 +171,7 @@ async fn handle_request(
                 </Instance>
               </Instances>
             </SharedConfig>"#;
-            return Ok(Response::new(full(shared_config_str.as_bytes())));
+            return Ok(Response::new(http::full_body(shared_config_str.as_bytes())));
         } else if path.starts_with("metadata/instance") {
             let response_data = r#"{
                 "compute": {
@@ -330,7 +330,7 @@ async fn handle_request(
                     }]
                 }
             }"#;
-            return Ok(Response::new(full(response_data.as_bytes())));
+            return Ok(Response::new(http::full_body(response_data.as_bytes())));
         }
     } else if request.method() == "POST" {
         if !segments.is_empty() && segments[0] == "secure-channel" {
@@ -350,7 +350,7 @@ async fn handle_request(
                         key.guid = GUID.to_string();
                     }
                 }
-                return Ok(Response::new(full(
+                return Ok(Response::new(http::full_body(
                     serde_json::to_string(&key).unwrap().as_bytes().to_vec(),
                 )));
             }
@@ -359,25 +359,13 @@ async fn handle_request(
             && segments.len() > 1
             && segments[1] == "?comp=telemetrydata"
         {
-            return Ok(Response::new(empty()));
+            return Ok(Response::new(http::empty_body()));
         }
     }
 
-    let mut not_found = Response::new(empty());
+    let mut not_found = Response::new(http::empty_body());
     *not_found.status_mut() = StatusCode::NOT_FOUND;
     Ok(not_found)
-}
-
-fn empty() -> BoxBody<Bytes, hyper::Error> {
-    Empty::<Bytes>::new()
-        .map_err(|never| match never {})
-        .boxed()
-}
-
-fn full<T: Into<Bytes>>(chunk: T) -> BoxBody<Bytes, hyper::Error> {
-    Full::new(chunk.into())
-        .map_err(|never| match never {})
-        .boxed()
 }
 
 pub fn set_secure_channel_state(enabled: bool) {

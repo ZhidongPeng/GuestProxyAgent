@@ -1,6 +1,6 @@
 // Copyright (c) Microsoft Corporation
 // SPDX-License-Identifier: MIT
-use crate::common::http;
+use crate::common::{http, logger};
 use crate::host_clients::goal_state::{GoalState, SharedConfig};
 use crate::shared_state::{key_keeper_wrapper, SharedState};
 use std::collections::HashMap;
@@ -41,11 +41,18 @@ impl WireServerClient {
             "POST",
             &url,
             &headers,
-            Some(xml_data.as_bytes().to_vec()),
+            Some(xml_data.as_bytes()),
             None, // post telemetry data does not require signing
             None,
         )?;
-        let response = match request.send().await {
+        let response = match http::send_request(
+            &self.ip.to_string(),
+            self.port,
+            request,
+            logger::write_warning,
+        )
+        .await
+        {
             Ok(r) => r,
             Err(e) => {
                 return Err(std::io::Error::new(
@@ -80,6 +87,7 @@ impl WireServerClient {
             &headers,
             key_keeper_wrapper::get_current_key_guid(self.shared_state.clone()),
             key_keeper_wrapper::get_current_key_value(self.shared_state.clone()),
+            logger::write_warning,
         )
         .await
     }
@@ -93,6 +101,7 @@ impl WireServerClient {
             &headers,
             key_keeper_wrapper::get_current_key_guid(self.shared_state.clone()),
             key_keeper_wrapper::get_current_key_value(self.shared_state.clone()),
+            logger::write_warning,
         )
         .await
     }

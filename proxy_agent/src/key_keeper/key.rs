@@ -1,9 +1,10 @@
 // Copyright (c) Microsoft Corporation
 // SPDX-License-Identifier: MIT
 use crate::{
-    common::{constants, http},
+    common::{constants, http, logger},
     proxy::{proxy_connection::Connection, Claims},
 };
+use hyper::StatusCode;
 use proxy_agent_shared::misc_helpers;
 use serde_derive::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
@@ -638,7 +639,7 @@ pub async fn get_status(base_url: Url) -> std::io::Result<KeyStatus> {
         constants::DATE_HEADER.to_string(),
         misc_helpers::get_date_time_rfc1123_string(),
     );
-    let status: KeyStatus = http::get(&url, &headers, None, None).await?;
+    let status: KeyStatus = http::get(&url, &headers, None, None, logger::write_warning).await?;
     status.validate()?;
 
     Ok(status)
@@ -647,6 +648,7 @@ pub async fn get_status(base_url: Url) -> std::io::Result<KeyStatus> {
 // base_url must end with '/'
 pub async fn acquire_key(base_url: Url) -> std::io::Result<Key> {
     let url = format!("{}{}", base_url, KEY_URL);
+    let (host, port) = http::host_port_from_uri(&url)?;
     let mut headers = HashMap::new();
 
     headers.insert(constants::METADATA_HEADER.to_string(), "True ".to_string());
@@ -656,15 +658,8 @@ pub async fn acquire_key(base_url: Url) -> std::io::Result<Key> {
     );
     headers.insert("Content-Type".to_string(), "application/json".to_string());
     let body = r#"{"authorizationScheme": "Azure-HMAC-SHA256"}"#.to_string();
-    let request = http::get_request(
-        "POST",
-        &url,
-        &headers,
-        Some(body.as_bytes().to_vec()),
-        None,
-        None,
-    )?;
-    let response = match request.send().await {
+    let request = http::get_request("POST", &url, &headers, Some(body.as_bytes()), None, None)?;
+    let response = match http::send_request(&host, port, request, logger::write_warning).await {
         Ok(r) => r,
         Err(e) => {
             return Err(Error::new(
@@ -673,42 +668,20 @@ pub async fn acquire_key(base_url: Url) -> std::io::Result<Key> {
             ));
         }
     };
-    if response.status() != 200 {
+    if response.status() != StatusCode::OK {
         return Err(Error::new(
             ErrorKind::Other,
             format!("Failed to acquire key, status code: {}", response.status()),
         ));
     }
-
-    let body = match response.text().await {
-        Ok(b) => b,
-        Err(e) => {
-            return Err(Error::new(
-                ErrorKind::Other,
-                format!("Failed to read acquire key response body, error: {}", e),
-            ));
-        }
-    };
-
-    let key: Key = match serde_json::from_str(&body) {
-        Ok(k) => k,
-        Err(e) => {
-            return Err(Error::new(
-                ErrorKind::Other,
-                format!(
-                    "Failed to parse acquired key response body {}, error: {}",
-                    body, e
-                ),
-            ));
-        }
-    };
-    Ok(key)
+    http::read_response_body(response).await
 }
 
 // base_url must end with '/'
 pub async fn attest_key(base_url: Url, key: &Key) -> std::io::Result<()> {
     // secure-channel/key/{key_guid}/key-attestation
     let url = format!("{}{}/{}/key-attestation", base_url, KEY_URL, key.guid);
+    let (host, port) = http::host_port_from_uri(&url)?;
     let mut headers = HashMap::new();
     headers.insert(constants::METADATA_HEADER.to_string(), "True ".to_string());
     headers.insert(
@@ -723,7 +696,7 @@ pub async fn attest_key(base_url: Url, key: &Key) -> std::io::Result<()> {
         Some(key.guid.to_string()),
         Some(key.key.to_string()),
     )?;
-    let response = match request.send().await {
+    let response = match http::send_request(&host, port, request, logger::write_warning).await {
         Ok(r) => r,
         Err(e) => {
             return Err(Error::new(
@@ -732,7 +705,7 @@ pub async fn attest_key(base_url: Url, key: &Key) -> std::io::Result<()> {
             ));
         }
     };
-    if response.status() != 200 {
+    if response.status() != StatusCode::OK {
         return Err(Error::new(
             ErrorKind::Other,
             format!("Failed to acquire key, status code: {}", response.status()),
