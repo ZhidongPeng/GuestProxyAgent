@@ -1,7 +1,6 @@
 // Copyright (c) Microsoft Corporation
 // SPDX-License-Identifier: MIT
 use crate::common::{config, helpers, logger};
-use crate::data_vessel::DataVessel;
 use crate::proxy::proxy_listener;
 use crate::shared_state::SharedState;
 use crate::telemetry::event_reader;
