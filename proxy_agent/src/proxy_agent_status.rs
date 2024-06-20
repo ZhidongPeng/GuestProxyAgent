@@ -175,11 +175,8 @@ pub fn write_aggregate_status_to_file(
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        proxy_agent_status::{
-            guest_proxy_agent_aggregate_status_new, write_aggregate_status_to_file,
-        },
-        shared_state,
+    use crate::proxy_agent_status::{
+        guest_proxy_agent_aggregate_status_new, write_aggregate_status_to_file,
     };
     use proxy_agent_shared::{
         misc_helpers, proxy_agent_aggregate_status::GuestProxyAgentAggregateStatus,
