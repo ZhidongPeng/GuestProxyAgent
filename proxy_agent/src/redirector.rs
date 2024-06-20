@@ -54,7 +54,7 @@ fn start(local_port: u16, shared_state: Arc<Mutex<SharedState>>) -> bool {
         }
         #[cfg(not(windows))]
         {
-            linux::start(local_port, vessel.clone());
+            linux::start(local_port, shared_state.clone());
         }
 
         let level = if is_started() {
