@@ -15,7 +15,7 @@ use crate::proxy::proxy_summary::ProxySummary;
 use crate::proxy::Claims;
 use crate::proxy_agent_status;
 use crate::redirector;
-use crate::shared_state::SharedState;
+use crate::shared_state::{key_keeper_wrapper, proxy_listener_wrapper, SharedState};
 use proxy_agent_shared::misc_helpers;
 use proxy_agent_shared::proxy_agent_aggregate_status::{ModuleState, ProxyAgentDetailStatus};
 use proxy_agent_shared::telemetry::event_logger;
@@ -47,7 +47,7 @@ fn start(port: u16, pool_size: u16, shared_state: Arc<Mutex<SharedState>>) {
         Ok(l) => l,
         Err(e) => {
             let message = format!("Failed to bind TcpListener '{}' with error {}.", addr, e);
-            shared_state.lock().unwrap().proxy_listner_status_message = message.to_string();
+            proxy_listener_wrapper::set_status_message(shared_state.clone(), message.to_string());
             logger::write_error(message);
             return;
         }
@@ -59,25 +59,26 @@ fn start(port: u16, pool_size: u16, shared_state: Arc<Mutex<SharedState>>) {
         "proxy_listener",
         logger::AGENT_LOGGER_KEY,
     );
-    shared_state.lock().unwrap().proxy_listner_status_message = message.to_string();
+    proxy_listener_wrapper::set_status_message(shared_state.clone(), message.to_string());
     provision::listener_started(shared_state.clone());
 
     let pool = ProxyPool::new(pool_size as usize);
 
     for connection in listener.incoming() {
-        if shared_state.lock().unwrap().proxy_listner_shutdown {
+        if proxy_listener_wrapper::get_shutdown(shared_state.clone()) {
             let message = "Stop signal received, stop the listener.";
-            shared_state.lock().unwrap().proxy_listner_status_message = message.to_string();
+            proxy_listener_wrapper::set_status_message(shared_state.clone(), message.to_string());
             logger::write_warning(message.to_string());
             break;
         }
-        let mut connection_count: u128 = shared_state.lock().unwrap().connection_count;
+        let mut connection_count: u128 =
+            proxy_listener_wrapper::get_connection_count(shared_state.clone());
         if connection_count == u128::MAX {
             // reset connection count
             connection_count = 0;
         }
         connection_count += 1;
-        shared_state.lock().unwrap().connection_count = connection_count;
+        proxy_listener_wrapper::set_connection_count(shared_state.clone(), connection_count);
 
         let cloned_shared_state = shared_state.clone();
         match connection {
@@ -105,7 +106,7 @@ fn start(port: u16, pool_size: u16, shared_state: Arc<Mutex<SharedState>>) {
 }
 
 pub fn stop(port: u16, shared_state: Arc<Mutex<SharedState>>) {
-    shared_state.lock().unwrap().proxy_listner_shutdown = true;
+    proxy_listener_wrapper::set_shutdown(shared_state.clone(), true);
     let _ = TcpStream::connect(format!("127.0.0.1:{}", port));
     logger::write_warning("Sending stop signal.".to_string());
 }
@@ -289,8 +290,8 @@ fn handle_connection_with_signature(
     }
 
     // Add header x-ms-azure-host-authorization
-    if let Some(key) = shared_state.lock().unwrap().get_current_key_value() {
-        if let Some(key_guid) = shared_state.lock().unwrap().get_current_key_guid() {
+    if let Some(key) = key_keeper_wrapper::get_current_key_value(shared_state.clone()) {
+        if let Some(key_guid) = key_keeper_wrapper::get_current_key_guid(shared_state.clone()) {
             let input_to_sign = request.as_sig_input();
             match helpers::compute_signature(key.to_string(), input_to_sign.as_slice()) {
                 Ok(sig) => {
@@ -594,7 +595,7 @@ fn send_response(mut client_stream: &TcpStream, status: &str) {
 }
 
 pub fn get_status(shared_state: Arc<Mutex<SharedState>>) -> ProxyAgentDetailStatus {
-    let status = if shared_state.lock().unwrap().proxy_listner_shutdown {
+    let status = if proxy_listener_wrapper::get_shutdown(shared_state.clone()) {
         ModuleState::STOPPED.to_string()
     } else {
         ModuleState::RUNNING.to_string()
@@ -602,11 +603,7 @@ pub fn get_status(shared_state: Arc<Mutex<SharedState>>) -> ProxyAgentDetailStat
 
     ProxyAgentDetailStatus {
         status,
-        message: shared_state
-            .lock()
-            .unwrap()
-            .proxy_listner_status_message
-            .clone(),
+        message: proxy_listener_wrapper::get_status_message(shared_state.clone()),
         states: None,
     }
 }
@@ -623,6 +620,7 @@ mod tests {
     use crate::proxy::proxy_listener;
     use crate::proxy::proxy_listener::Connection;
     use crate::proxy::Claims;
+    use crate::shared_state::key_keeper_wrapper;
     use proxy_agent_shared::logger_manager;
     use std::env;
     use std::fs;
@@ -838,7 +836,7 @@ mod tests {
         }
 
         let shared_state = crate::shared_state::new_shared_state();
-        shared_state.lock().unwrap().set_key(Key::empty());
+        key_keeper_wrapper::set_key(shared_state.clone(), Key::empty());
         super::handle_connection_with_signature(
             connection,
             request,

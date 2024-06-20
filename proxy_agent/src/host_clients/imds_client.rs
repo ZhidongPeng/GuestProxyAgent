@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 use super::instance_info::InstanceInfo;
 use crate::common::http::{self, http_request::HttpRequest, request::Request, response::Response};
-use crate::shared_state::SharedState;
+use crate::shared_state::{key_keeper_wrapper, SharedState};
 use std::io::{Error, ErrorKind};
 use std::sync::{Arc, Mutex};
 use url::Url;
@@ -31,8 +31,8 @@ impl ImdsClient {
         let mut http_request = HttpRequest::new_proxy_agent_request(
             url,
             req,
-            self.shared_state.lock().unwrap().get_current_key_guid(),
-            self.shared_state.lock().unwrap().get_current_key_value(),
+            key_keeper_wrapper::get_current_key_guid(self.shared_state.clone()),
+            key_keeper_wrapper::get_current_key_value(self.shared_state.clone()),
         )?;
 
         let response = http::get_response_in_string(&mut http_request)?;

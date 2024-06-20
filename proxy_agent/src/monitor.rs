@@ -1,7 +1,10 @@
 // Copyright (c) Microsoft Corporation
 // SPDX-License-Identifier: MIT
 use crate::common::{config, logger};
-use crate::{key_keeper, shared_state::SharedState};
+use crate::{
+    key_keeper,
+    shared_state::{key_keeper_wrapper, SharedState},
+};
 use once_cell::sync::Lazy;
 use proxy_agent_shared::proxy_agent_aggregate_status::{ModuleState, ProxyAgentDetailStatus};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -51,7 +54,9 @@ fn start(mut interval: Duration, shared_state: Arc<Mutex<SharedState>>) {
 }
 
 fn redirect_should_run(shared_state: Arc<Mutex<SharedState>>) -> bool {
-    if shared_state.lock().unwrap().current_secure_channel_state != key_keeper::DISABLE_STATE {
+    if key_keeper_wrapper::get_current_secure_channel_state(shared_state.clone())
+        != key_keeper::DISABLE_STATE
+    {
         true
     } else {
         config::get_start_redirector()

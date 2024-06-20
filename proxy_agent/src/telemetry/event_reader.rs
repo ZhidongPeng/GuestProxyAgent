@@ -358,6 +358,7 @@ mod tests {
     use super::*;
     use crate::common::logger;
     use crate::key_keeper::key::Key;
+    use crate::shared_state::key_keeper_wrapper;
     use crate::test_mock::server_mock;
     use proxy_agent_shared::{logger_manager, misc_helpers};
     #[cfg(windows)]
@@ -437,7 +438,7 @@ mod tests {
 
         let temp_dir = env::temp_dir();
         let shared_state = crate::shared_state::new_shared_state();
-        shared_state.lock().unwrap().set_key(Key::empty());
+        key_keeper_wrapper::set_key(shared_state.clone(), Key::empty());
         start_async(temp_dir, Duration::from_millis(1000), false, shared_state);
 
         let mut wait_milli_sec: i32 = 100;
@@ -492,7 +493,7 @@ mod tests {
             MOCK_WIRE_SERVER_PORT = Some(port);
         }
         let shared_state = crate::shared_state::new_shared_state();
-        shared_state.lock().unwrap().set_key(Key::empty());
+        key_keeper_wrapper::set_key(shared_state.clone(), Key::empty());
 
         thread::spawn(move || {
             server_mock::start(ip.to_string(), port);

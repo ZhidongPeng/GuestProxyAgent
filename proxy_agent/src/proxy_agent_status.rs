@@ -4,7 +4,7 @@ use crate::common::{config, logger};
 use crate::monitor;
 use crate::proxy::proxy_listener;
 use crate::proxy::proxy_summary::ProxySummary;
-use crate::shared_state::SharedState;
+use crate::shared_state::{proxy_listener_wrapper, SharedState};
 use crate::{key_keeper, redirector};
 use once_cell::sync::Lazy;
 use proxy_agent_shared::misc_helpers;
@@ -100,7 +100,7 @@ pub fn proxy_agent_status_new(shared_state: Arc<Mutex<SharedState>>) -> ProxyAge
         ebpfProgramStatus: ebpf_status,
         proxyListenerStatus: proxy_status,
         telemetryLoggerStatus: event_logger::get_status(),
-        proxyConnectionsCount: shared_state.lock().unwrap().connection_count,
+        proxyConnectionsCount: proxy_listener_wrapper::get_connection_count(shared_state),
     }
 }
 

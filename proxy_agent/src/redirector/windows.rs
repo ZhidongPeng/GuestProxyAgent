@@ -9,7 +9,7 @@ use crate::common::{self, config, constants, helpers, logger};
 use crate::key_keeper;
 use crate::provision;
 use crate::redirector::AuditEntry;
-use crate::shared_state::SharedState;
+use crate::shared_state::{key_keeper_wrapper, SharedState};
 use core::ffi::c_void;
 use once_cell::unsync::Lazy;
 use std::mem;
@@ -62,7 +62,8 @@ pub fn start(local_port: u16, shared_state: Arc<Mutex<SharedState>>) -> bool {
         ));
     }
 
-    if (shared_state.lock().unwrap().current_secure_channel_state != key_keeper::DISABLE_STATE)
+    if (key_keeper_wrapper::get_current_secure_channel_state(shared_state.clone())
+        != key_keeper::DISABLE_STATE)
         || (config::get_wire_server_support() > 0)
     {
         let result = bpf_prog::update_policy_elem_bpf_map(
@@ -94,7 +95,7 @@ pub fn start(local_port: u16, shared_state: Arc<Mutex<SharedState>>) -> bool {
             logger::write("Success updated bpf map for Host GAPlugin support.".to_string());
         }
     }
-    if (shared_state.lock().unwrap().current_secure_channel_state
+    if (key_keeper_wrapper::get_current_secure_channel_state(shared_state.clone())
         == key_keeper::MUST_SIG_WIRESERVER_IMDS)
         || (config::get_imds_support() > 0)
     {
