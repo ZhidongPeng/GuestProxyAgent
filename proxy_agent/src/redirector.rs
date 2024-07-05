@@ -92,11 +92,11 @@ pub fn close(local_port: u16, shared_state: Arc<Mutex<SharedState>>) {
 fn get_status_message(shared_state: Arc<Mutex<SharedState>>) -> String {
     #[cfg(windows)]
     {
-        windows::get_status(shared_state.clone())
+        windows::get_status(shared_state)
     }
     #[cfg(not(windows))]
     {
-        linux::get_status()
+        linux::get_status(shared_state)
     }
 }
 
