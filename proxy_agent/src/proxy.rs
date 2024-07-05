@@ -1,6 +1,6 @@
 // Copyright (c) Microsoft Corporation
 // SPDX-License-Identifier: MIT
-mod authorization_rules;
+pub mod authorization_rules;
 pub mod proxy_authentication;
 pub mod proxy_connection;
 pub mod proxy_listener;

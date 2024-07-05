@@ -218,7 +218,7 @@ fn handle_connection(connection: &mut Connection, shared_state: Arc<Mutex<Shared
     // authenticate the connection
     let auth = proxy_authentication::get_authenticate(ip.to_string(), port, claims.clone());
     Connection::write(connection.id, format!("Got auth: {}", auth.to_string()));
-    if !auth.authenticate(connection.id, request.url.to_string()) {
+    if !auth.authenticate(connection.id, request.url.to_string(), shared_state.clone()) {
         Connection::write_warning(
             connection.id,
             format!("Denied unauthorize request: {}", claim_details),

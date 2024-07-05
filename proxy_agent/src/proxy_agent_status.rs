@@ -83,7 +83,7 @@ fn start(mut interval: Duration, shared_state: Arc<Mutex<SharedState>>) {
 
 pub fn proxy_agent_status_new(shared_state: Arc<Mutex<SharedState>>) -> ProxyAgentStatus {
     let key_latch_status = key_keeper::get_status(shared_state.clone());
-    let ebpf_status = redirector::get_status();
+    let ebpf_status = redirector::get_status(shared_state.clone());
     let proxy_status = proxy_listener::get_status(shared_state.clone());
     let mut status = OverallState::SUCCESS.to_string();
     if key_latch_status.status != ModuleState::RUNNING

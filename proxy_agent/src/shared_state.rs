@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 use crate::key_keeper::key::Key;
+use crate::proxy::authorization_rules::AuthorizationRules;
 use std::sync::{Arc, Mutex};
 
 const UNKNOWN_STATUS_MESSAGE: &str = "Status unknown.";
@@ -19,6 +20,16 @@ pub struct SharedState {
     proxy_listner_shutdown: bool,
     connection_count: u128,
     proxy_listner_status_message: String,
+    // proxy_authenticator
+    wireserver_rules: Option<AuthorizationRules>,
+    imds_rules: Option<AuthorizationRules>,
+    // provision
+    provision_state: u8,
+    provision_event_log_threads_initialized: bool,
+    // redirector
+    redirector_is_started: bool,
+    redirector_status_message: String,
+    redirector_local_port: u16,
     // Add more state fields as needed,
     // keep the fields related to the same module together
     // keep the fields as private to avoid the direct access from outside via Arc<Mutex<SharedState>>.lock().unwrap()
@@ -45,6 +56,16 @@ impl Default for SharedState {
             proxy_listner_shutdown: false,
             connection_count: 0,
             proxy_listner_status_message: UNKNOWN_STATUS_MESSAGE.to_string(),
+            // proxy_authenticator
+            wireserver_rules: None,
+            imds_rules: None,
+            // provision
+            provision_state: 0,
+            provision_event_log_threads_initialized: false,
+            // redirector
+            redirector_is_started: false,
+            redirector_status_message: UNKNOWN_STATUS_MESSAGE.to_string(),
+            redirector_local_port: 0,
         }
     }
 }
@@ -214,5 +235,108 @@ pub mod proxy_listener_wrapper {
             .unwrap()
             .proxy_listner_status_message
             .to_string()
+    }
+}
+
+pub mod proxy_authenticator_wrapper {
+    use super::SharedState;
+    use crate::proxy::authorization_rules::AuthorizationRules;
+    use std::sync::{Arc, Mutex};
+
+    pub fn set_wireserver_rules(
+        shared_state: Arc<Mutex<SharedState>>,
+        rules: Option<AuthorizationRules>,
+    ) {
+        shared_state.lock().unwrap().wireserver_rules = rules;
+    }
+
+    pub fn get_wireserver_rules(
+        shared_state: Arc<Mutex<SharedState>>,
+    ) -> Option<AuthorizationRules> {
+        shared_state.lock().unwrap().wireserver_rules.clone()
+    }
+
+    pub fn set_imds_rules(
+        shared_state: Arc<Mutex<SharedState>>,
+        rules: Option<AuthorizationRules>,
+    ) {
+        shared_state.lock().unwrap().imds_rules = rules;
+    }
+
+    pub fn get_imds_rules(shared_state: Arc<Mutex<SharedState>>) -> Option<AuthorizationRules> {
+        shared_state.lock().unwrap().imds_rules.clone()
+    }
+}
+
+pub mod provision_wrapper {
+    use super::SharedState;
+    use std::sync::{Arc, Mutex};
+
+    /// Update the provision state
+    /// # Arguments
+    /// * `shared_state` - Arc<Mutex<SharedState>>
+    /// * `state` - u8
+    /// # Returns
+    /// * `u8` - the updated provision state
+    /// # Remarks
+    /// * The provision state is a bit field, the state is updated by OR operation
+    pub fn update_state(shared_state: Arc<Mutex<SharedState>>, state: u8) -> u8 {
+        let mut shared_state = shared_state.lock().unwrap();
+        shared_state.provision_state |= state;
+        shared_state.provision_state
+    }
+
+    pub fn get_state(shared_state: Arc<Mutex<SharedState>>) -> u8 {
+        shared_state.lock().unwrap().provision_state
+    }
+
+    pub fn set_event_log_threads_initialized(
+        shared_state: Arc<Mutex<SharedState>>,
+        initialized: bool,
+    ) {
+        shared_state
+            .lock()
+            .unwrap()
+            .provision_event_log_threads_initialized = initialized;
+    }
+
+    pub fn get_event_log_threads_initialized(shared_state: Arc<Mutex<SharedState>>) -> bool {
+        shared_state
+            .lock()
+            .unwrap()
+            .provision_event_log_threads_initialized
+    }
+}
+
+pub mod redirector_wrapper {
+    use super::SharedState;
+    use std::sync::{Arc, Mutex};
+
+    pub fn set_is_started(shared_state: Arc<Mutex<SharedState>>, is_started: bool) {
+        shared_state.lock().unwrap().redirector_is_started = is_started;
+    }
+
+    pub fn get_is_started(shared_state: Arc<Mutex<SharedState>>) -> bool {
+        shared_state.lock().unwrap().redirector_is_started
+    }
+
+    pub fn set_status_message(shared_state: Arc<Mutex<SharedState>>, status_message: String) {
+        shared_state.lock().unwrap().redirector_status_message = status_message;
+    }
+
+    pub fn get_status_message(shared_state: Arc<Mutex<SharedState>>) -> String {
+        shared_state
+            .lock()
+            .unwrap()
+            .redirector_status_message
+            .to_string()
+    }
+
+    pub fn set_local_port(shared_state: Arc<Mutex<SharedState>>, local_port: u16) {
+        shared_state.lock().unwrap().redirector_local_port = local_port;
+    }
+
+    pub fn get_local_port(shared_state: Arc<Mutex<SharedState>>) -> u16 {
+        shared_state.lock().unwrap().redirector_local_port
     }
 }

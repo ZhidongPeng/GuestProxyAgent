@@ -57,42 +57,42 @@ fn start(local_port: u16, shared_state: Arc<Mutex<SharedState>>) -> bool {
             linux::start(local_port, shared_state.clone());
         }
 
-        let level = if is_started() {
+        let level = if is_started(shared_state.clone()) {
             event_logger::INFO_LEVEL
         } else {
             event_logger::ERROR_LEVEL
         };
         event_logger::write_event(
             level,
-            get_status_message(),
+            get_status_message(shared_state.clone()),
             "start",
             "redirector",
             logger::AGENT_LOGGER_KEY,
         );
-        if is_started() {
+        if is_started(shared_state.clone()) {
             return true;
         }
         thread::sleep(std::time::Duration::from_millis(10));
     }
 
-    is_started()
+    is_started(shared_state.clone())
 }
 
-pub fn close(local_port: u16) {
+pub fn close(local_port: u16, shared_state: Arc<Mutex<SharedState>>) {
     #[cfg(windows)]
     {
-        windows::close(local_port);
+        windows::close(local_port, shared_state);
     }
     #[cfg(not(windows))]
     {
-        linux::close(local_port);
+        linux::close(local_port, shared_state);
     }
 }
 
-fn get_status_message() -> String {
+fn get_status_message(shared_state: Arc<Mutex<SharedState>>) -> String {
     #[cfg(windows)]
     {
-        windows::get_status()
+        windows::get_status(shared_state.clone())
     }
     #[cfg(not(windows))]
     {
@@ -100,8 +100,8 @@ fn get_status_message() -> String {
     }
 }
 
-pub fn get_status() -> ProxyAgentDetailStatus {
-    let mut message = get_status_message();
+pub fn get_status(shared_state: Arc<Mutex<SharedState>>) -> ProxyAgentDetailStatus {
+    let mut message = get_status_message(shared_state.clone());
     if message.len() > MAX_STATUS_MESSAGE_LENGTH {
         event_logger::write_event(
             event_logger::WARN_LEVEL,
@@ -117,7 +117,7 @@ pub fn get_status() -> ProxyAgentDetailStatus {
         message = format!("{}...", &message[0..MAX_STATUS_MESSAGE_LENGTH]);
     }
 
-    let status = if is_started() {
+    let status = if is_started(shared_state.clone()) {
         ModuleState::RUNNING.to_string()
     } else {
         ModuleState::STOPPED.to_string()
@@ -130,14 +130,14 @@ pub fn get_status() -> ProxyAgentDetailStatus {
     }
 }
 
-pub fn is_started() -> bool {
+pub fn is_started(shared_state: Arc<Mutex<SharedState>>) -> bool {
     #[cfg(windows)]
     {
-        windows::is_started()
+        windows::is_started(shared_state)
     }
     #[cfg(not(windows))]
     {
-        linux::is_started()
+        linux::is_started(shared_state)
     }
 }
 
