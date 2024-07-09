@@ -2,12 +2,16 @@
 // SPDX-License-Identifier: MIT
 
 use crate::proxy::authorization_rules::AuthorizationRules;
+use crate::telemetry::event_reader::VMMetaData;
 use crate::{key_keeper::key::Key, proxy::User};
 use proxy_agent_shared::proxy_agent_aggregate_status::ProxyConnectionSummary;
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
 };
+
+#[cfg(windows)]
+use windows_service::service_control_handler::ServiceStatusHandle;
 
 const UNKNOWN_STATUS_MESSAGE: &str = "Status unknown.";
 
@@ -43,10 +47,15 @@ pub struct SharedState {
     failed_authenticate_summary: HashMap<String, ProxyConnectionSummary>,
     // proxy
     proxy_uers: HashMap<u64, User>,
-    // Add more state fields as needed,
-    // keep the fields related to the same module together
-    // keep the fields as private to avoid the direct access from outside via Arc<Mutex<SharedState>>.lock().unwrap()
-    // use wrapper functions to access the state fields, it does quick release the lock
+    // telemetry
+    vm_metadata: Option<VMMetaData>,
+    telemetry_reader_shutdown: bool,
+    // service
+    #[cfg(windows)]
+    service_status_handle: Option<ServiceStatusHandle>, // Add more state fields as needed,
+                                                        // keep the fields related to the same module together
+                                                        // keep the fields as private to avoid the direct access from outside via Arc<Mutex<SharedState>>.lock().unwrap()
+                                                        // use wrapper functions to access the state fields, it does quick release the lock
 }
 
 impl SharedState {
@@ -88,6 +97,12 @@ impl Default for SharedState {
             failed_authenticate_summary: HashMap::new(),
             // proxy
             proxy_uers: HashMap::new(),
+            // telemetry
+            vm_metadata: None,
+            telemetry_reader_shutdown: false,
+            // service
+            #[cfg(windows)]
+            service_status_handle: None,
         }
     }
 }
@@ -479,5 +494,47 @@ pub mod proxy_wrapper {
     // TODO:: need caller to refresh the users info regularly
     pub fn clear_all_users(shared_state: Arc<Mutex<SharedState>>) {
         shared_state.lock().unwrap().proxy_uers.clear();
+    }
+}
+
+pub mod telemetry_wrapper {
+    use super::SharedState;
+    use crate::telemetry::event_reader::VMMetaData;
+    use std::sync::{Arc, Mutex};
+
+    pub fn set_vm_metadata(shared_state: Arc<Mutex<SharedState>>, vm_metadata: VMMetaData) {
+        shared_state.lock().unwrap().vm_metadata = Some(vm_metadata);
+    }
+
+    pub fn get_vm_metadata(shared_state: Arc<Mutex<SharedState>>) -> Option<VMMetaData> {
+        shared_state.lock().unwrap().vm_metadata.clone()
+    }
+
+    pub fn set_reader_shutdown(shared_state: Arc<Mutex<SharedState>>, shutdown: bool) {
+        shared_state.lock().unwrap().telemetry_reader_shutdown = shutdown;
+    }
+
+    pub fn get_reader_shutdown(shared_state: Arc<Mutex<SharedState>>) -> bool {
+        shared_state.lock().unwrap().telemetry_reader_shutdown
+    }
+}
+
+#[cfg(windows)]
+pub mod service_wrapper {
+    use super::SharedState;
+    use std::sync::{Arc, Mutex};
+    use windows_service::service_control_handler::ServiceStatusHandle;
+
+    pub fn set_service_status_handle(
+        shared_state: Arc<Mutex<SharedState>>,
+        status_handle: ServiceStatusHandle,
+    ) {
+        shared_state.lock().unwrap().service_status_handle = Some(status_handle);
+    }
+
+    pub fn get_service_status_handle(
+        shared_state: Arc<Mutex<SharedState>>,
+    ) -> Option<ServiceStatusHandle> {
+        shared_state.lock().unwrap().service_status_handle
     }
 }

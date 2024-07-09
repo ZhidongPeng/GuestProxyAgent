@@ -65,5 +65,5 @@ pub fn stop_service(shared_state: Arc<Mutex<SharedState>>) {
     crate::key_keeper::stop(shared_state.clone());
     proxy_listener::stop(constants::PROXY_AGENT_PORT, shared_state.clone());
     event_logger::stop();
-    event_reader::stop();
+    event_reader::stop(shared_state.clone());
 }
