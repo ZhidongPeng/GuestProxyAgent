@@ -17,8 +17,6 @@ use std::sync::{Arc, Mutex};
 use std::{net::IpAddr, path::PathBuf};
 
 #[cfg(not(windows))]
-use std::sync::{Arc, Mutex};
-#[cfg(not(windows))]
 use sysinfo::{Pid, PidExt, ProcessExt, System, SystemExt};
 
 #[derive(Serialize, Deserialize)]
@@ -70,19 +68,17 @@ fn get_process_info(process_id: u32) -> (String, String) {
     let mut process_cmd_line = UNDEFINED.to_string();
 
     let pid = Pid::from_u32(process_id);
-    unsafe {
-        let mut sys = System::new();
-        sys.refresh_processes();
-        if let Some(p) = sys.process(pid) {
-            match p.exe().to_str() {
-                Some(name) => process_name = name.to_string(),
-                None => process_name = UNDEFINED.to_string(),
-            };
-            process_cmd_line = p.cmd().join(" ");
-        }
-
-        (process_name, process_cmd_line)
+    let mut sys = System::new();
+    sys.refresh_processes();
+    if let Some(p) = sys.process(pid) {
+        match p.exe().to_str() {
+            Some(name) => process_name = name.to_string(),
+            None => process_name = UNDEFINED.to_string(),
+        };
+        process_cmd_line = p.cmd().join(" ");
     }
+
+    (process_name, process_cmd_line)
 }
 
 impl Claims {
@@ -224,7 +220,6 @@ impl User {
 mod tests {
     use super::Claims;
     use crate::{
-        proxy,
         redirector::AuditEntry,
         shared_state::{self, proxy_wrapper},
     };
@@ -232,49 +227,47 @@ mod tests {
 
     #[test]
     fn user_test() {
-        unsafe {
-            let logon_id;
-            let expected_user_name;
-            #[cfg(windows)]
-            {
-                logon_id = 999u64;
-                expected_user_name = "SYSTEM";
-            }
-            #[cfg(not(windows))]
-            {
-                logon_id = 0u64;
-                expected_user_name = "root";
-            }
-            let shared_state = shared_state::SharedState::new();
-
-            let user = super::get_user(logon_id, shared_state.clone());
-            println!("UserName: {}", user.user_name);
-            println!("UserGroups: {}", user.user_groups.join(", "));
-            assert_eq!(expected_user_name, user.user_name, "user name mismatch.");
-            #[cfg(windows)]
-            {
-                assert_eq!(0, user.user_groups.len(), "SYSTEM has no group.");
-            }
-            #[cfg(not(windows))]
-            {
-                assert!(
-                    !user.user_groups.is_empty(),
-                    "user_groups should not be empty."
-                );
-            }
-
-            // test the USERS.len will not change
-            let len = proxy_wrapper::get_users_count(shared_state.clone());
-            _ = super::get_user(logon_id, shared_state.clone());
-            _ = super::get_user(logon_id, shared_state.clone());
-            _ = super::get_user(logon_id, shared_state.clone());
-            _ = super::get_user(logon_id, shared_state.clone());
-            assert_eq!(
-                len,
-                proxy_wrapper::get_users_count(shared_state.clone()),
-                "users count should not change"
-            )
+        let logon_id;
+        let expected_user_name;
+        #[cfg(windows)]
+        {
+            logon_id = 999u64;
+            expected_user_name = "SYSTEM";
         }
+        #[cfg(not(windows))]
+        {
+            logon_id = 0u64;
+            expected_user_name = "root";
+        }
+        let shared_state = shared_state::SharedState::new();
+
+        let user = super::get_user(logon_id, shared_state.clone());
+        println!("UserName: {}", user.user_name);
+        println!("UserGroups: {}", user.user_groups.join(", "));
+        assert_eq!(expected_user_name, user.user_name, "user name mismatch.");
+        #[cfg(windows)]
+        {
+            assert_eq!(0, user.user_groups.len(), "SYSTEM has no group.");
+        }
+        #[cfg(not(windows))]
+        {
+            assert!(
+                !user.user_groups.is_empty(),
+                "user_groups should not be empty."
+            );
+        }
+
+        // test the USERS.len will not change
+        let len = proxy_wrapper::get_users_count(shared_state.clone());
+        _ = super::get_user(logon_id, shared_state.clone());
+        _ = super::get_user(logon_id, shared_state.clone());
+        _ = super::get_user(logon_id, shared_state.clone());
+        _ = super::get_user(logon_id, shared_state.clone());
+        assert_eq!(
+            len,
+            proxy_wrapper::get_users_count(shared_state.clone()),
+            "users count should not change"
+        )
     }
 
     #[test]
