@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 use crate::proxy::authorization_rules::AuthorizationRules;
+use crate::redirector;
 use crate::telemetry::event_reader::VMMetaData;
 use crate::{key_keeper::key::Key, proxy::User};
 use proxy_agent_shared::proxy_agent_aggregate_status::ProxyConnectionSummary;
@@ -38,6 +39,7 @@ pub struct SharedState {
     redirector_is_started: bool,
     redirector_status_message: String,
     redirector_local_port: u16,
+    bpf_object: Option<Arc<Mutex<redirector::RedirectorObject>>>,
     // monitor
     monitor_shutdown: bool,
     monitor_status_message: String,
@@ -52,10 +54,11 @@ pub struct SharedState {
     telemetry_reader_shutdown: bool,
     // service
     #[cfg(windows)]
-    service_status_handle: Option<ServiceStatusHandle>, // Add more state fields as needed,
-                                                        // keep the fields related to the same module together
-                                                        // keep the fields as private to avoid the direct access from outside via Arc<Mutex<SharedState>>.lock().unwrap()
-                                                        // use wrapper functions to access the state fields, it does quick release the lock
+    service_status_handle: Option<ServiceStatusHandle>,
+    // Add more state fields as needed,
+    // keep the fields related to the same module together
+    // keep the fields as private to avoid the direct access from outside via Arc<Mutex<SharedState>>.lock().unwrap()
+    // use wrapper functions to access the state fields, it does quick release the lock
 }
 
 impl SharedState {
@@ -88,6 +91,7 @@ impl Default for SharedState {
             redirector_is_started: false,
             redirector_status_message: UNKNOWN_STATUS_MESSAGE.to_string(),
             redirector_local_port: 0,
+            bpf_object: None,
             // monitor
             monitor_shutdown: false,
             monitor_status_message: UNKNOWN_STATUS_MESSAGE.to_string(),
@@ -347,6 +351,7 @@ pub mod provision_wrapper {
 
 pub mod redirector_wrapper {
     use super::SharedState;
+    use crate::redirector;
     use std::sync::{Arc, Mutex};
 
     pub fn set_is_started(shared_state: Arc<Mutex<SharedState>>, is_started: bool) {
@@ -375,6 +380,25 @@ pub mod redirector_wrapper {
 
     pub fn get_local_port(shared_state: Arc<Mutex<SharedState>>) -> u16 {
         shared_state.lock().unwrap().redirector_local_port
+    }
+
+    pub fn set_bpf_object(
+        shared_state: Arc<Mutex<SharedState>>,
+        bpf_object: redirector::BpfObject,
+    ) {
+        shared_state.lock().unwrap().bpf_object = Some(Arc::new(Mutex::new(
+            redirector::RedirectorObject(bpf_object),
+        )));
+    }
+
+    pub fn clear_bpf_object(shared_state: Arc<Mutex<SharedState>>) {
+        shared_state.lock().unwrap().bpf_object = None;
+    }
+
+    pub fn get_bpf_object(
+        shared_state: Arc<Mutex<SharedState>>,
+    ) -> Option<Arc<Mutex<redirector::RedirectorObject>>> {
+        shared_state.lock().unwrap().bpf_object.clone()
     }
 }
 

@@ -154,7 +154,7 @@ fn handle_connection(connection: &mut Connection, shared_state: Arc<Mutex<Shared
         }
     };
     let entry;
-    match redirector::lookup_audit(client_source_port) {
+    match redirector::lookup_audit(client_source_port, shared_state.clone()) {
         Ok(data) => entry = data,
         Err(e) => {
             let err = format!("Failed to get lookup_audit: {}", e);

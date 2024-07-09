@@ -18,6 +18,8 @@ use std::ptr;
 use std::sync::{Arc, Mutex};
 use windows_sys::Win32::Networking::WinSock;
 
+pub type BpfObject = *mut bpf_obj::bpf_object;
+
 pub fn initialized_success(shared_state: Arc<Mutex<SharedState>>) -> bool {
     if !bpf_api::ebpf_api_is_loaded() {
         redirector_wrapper::set_status_message(
@@ -30,7 +32,7 @@ pub fn initialized_success(shared_state: Arc<Mutex<SharedState>>) -> bool {
 }
 
 pub fn start_internal(local_port: u16, shared_state: Arc<Mutex<SharedState>>) -> bool {
-    let result = bpf_prog::load_bpf_object(super::get_ebpf_file_path());
+    let result = bpf_prog::load_bpf_object(super::get_ebpf_file_path(), shared_state.clone());
     if result != 0 {
         set_error_status(
             format!("Failed to load bpf object with result: {result}"),
@@ -41,7 +43,7 @@ pub fn start_internal(local_port: u16, shared_state: Arc<Mutex<SharedState>>) ->
         logger::write("Success loaded bpf object.".to_string());
     }
 
-    let result = bpf_prog::attach_bpf_prog();
+    let result = bpf_prog::attach_bpf_prog(shared_state.clone());
     if result != 0 {
         set_error_status(
             format!("Failed to attach bpf prog with result: {result}"),
@@ -53,7 +55,7 @@ pub fn start_internal(local_port: u16, shared_state: Arc<Mutex<SharedState>>) ->
     }
 
     let pid = std::process::id();
-    let result = bpf_prog::update_bpf_skip_process_map(pid);
+    let result = bpf_prog::update_bpf_skip_process_map(pid, shared_state.clone());
     if result != 0 {
         set_error_status(
             format!("Failed to update bpf skip_process map with result: {result}"),
@@ -74,6 +76,7 @@ pub fn start_internal(local_port: u16, shared_state: Arc<Mutex<SharedState>>) ->
             local_port,
             constants::WIRE_SERVER_IP_NETWORK_BYTE_ORDER, //0x10813FA8 - 168.63.129.16
             constants::WIRE_SERVER_PORT,
+            shared_state.clone(),
         );
         if result != 0 {
             set_error_status(
@@ -90,6 +93,7 @@ pub fn start_internal(local_port: u16, shared_state: Arc<Mutex<SharedState>>) ->
             local_port,
             constants::GA_PLUGIN_IP_NETWORK_BYTE_ORDER, //0x10813FA8, // 168.63.129.16
             constants::GA_PLUGIN_PORT,
+            shared_state.clone(),
         );
         if result != 0 {
             set_error_status(
@@ -109,6 +113,7 @@ pub fn start_internal(local_port: u16, shared_state: Arc<Mutex<SharedState>>) ->
             local_port,
             constants::IMDS_IP_NETWORK_BYTE_ORDER, //0xFEA9FEA9, // 169.254.169.254
             constants::IMDS_PORT,
+            shared_state.clone(),
         );
         if result != 0 {
             set_error_status(
@@ -146,7 +151,7 @@ pub fn get_status(shared_state: Arc<Mutex<SharedState>>) -> String {
 }
 
 pub fn close(_local_port: u16, shared_state: Arc<Mutex<SharedState>>) {
-    bpf_prog::close_bpf_object();
+    bpf_prog::close_bpf_object(shared_state.clone());
     logger::write("Success closed bpf object.".to_string());
     redirector_wrapper::set_is_started(shared_state.clone(), false);
 }
@@ -155,8 +160,11 @@ pub fn is_started(shared_state: Arc<Mutex<SharedState>>) -> bool {
     redirector_wrapper::get_is_started(shared_state.clone())
 }
 
-pub fn lookup_audit(source_port: u16) -> std::io::Result<AuditEntry> {
-    bpf_prog::lookup_bpf_audit_map(source_port)
+pub fn lookup_audit(
+    source_port: u16,
+    shared_state: Arc<Mutex<SharedState>>,
+) -> std::io::Result<AuditEntry> {
+    bpf_prog::lookup_bpf_audit_map(source_port, shared_state)
 }
 
 pub fn get_audit_from_redirect_context(tcp_stream: &TcpStream) -> std::io::Result<AuditEntry> {
@@ -191,6 +199,7 @@ pub fn update_wire_server_redirect_policy(redirect: bool, shared_state: Arc<Mute
             local_port,
             constants::WIRE_SERVER_IP_NETWORK_BYTE_ORDER,
             constants::WIRE_SERVER_PORT,
+            shared_state.clone(),
         );
         if result != 0 {
             set_error_status(
@@ -206,6 +215,7 @@ pub fn update_wire_server_redirect_policy(redirect: bool, shared_state: Arc<Mute
         let result = bpf_prog::remove_policy_elem_bpf_map(
             constants::WIRE_SERVER_IP_NETWORK_BYTE_ORDER,
             constants::WIRE_SERVER_PORT,
+            shared_state.clone(),
         );
         if result != 0 {
             set_error_status(
@@ -227,6 +237,7 @@ pub fn update_imds_redirect_policy(redirect: bool, shared_state: Arc<Mutex<Share
             local_port,
             constants::IMDS_IP_NETWORK_BYTE_ORDER,
             constants::IMDS_PORT,
+            shared_state.clone(),
         );
         if result != 0 {
             set_error_status(
@@ -240,6 +251,7 @@ pub fn update_imds_redirect_policy(redirect: bool, shared_state: Arc<Mutex<Share
         let result = bpf_prog::remove_policy_elem_bpf_map(
             constants::IMDS_IP_NETWORK_BYTE_ORDER,
             constants::IMDS_PORT,
+            shared_state.clone(),
         );
         if result != 0 {
             set_error_status(

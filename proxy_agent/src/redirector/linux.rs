@@ -19,6 +19,8 @@ use std::convert::TryFrom;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+pub type BpfObject = Bpf;
+
 static mut BPF_OBJECT: Option<Bpf> = None;
 
 pub fn start_internal(local_port: u16, shared_state: Arc<Mutex<SharedState>>) -> bool {

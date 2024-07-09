@@ -16,6 +16,14 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+#[cfg(not(windows))]
+pub use linux::BpfObject;
+#[cfg(windows)]
+pub use windows::BpfObject;
+/// This is a workaround to allow BpfObject to be sent between threads.
+pub struct RedirectorObject(pub BpfObject);
+unsafe impl Send for RedirectorObject {}
+
 #[derive(Serialize, Deserialize)]
 #[repr(C)]
 pub struct AuditEntry {
@@ -146,10 +154,13 @@ pub fn is_started(shared_state: Arc<Mutex<SharedState>>) -> bool {
     }
 }
 
-pub fn lookup_audit(source_port: u16) -> std::io::Result<AuditEntry> {
+pub fn lookup_audit(
+    source_port: u16,
+    shared_state: Arc<Mutex<SharedState>>,
+) -> std::io::Result<AuditEntry> {
     #[cfg(windows)]
     {
-        windows::lookup_audit(source_port)
+        windows::lookup_audit(source_port, shared_state)
     }
     #[cfg(not(windows))]
     {
