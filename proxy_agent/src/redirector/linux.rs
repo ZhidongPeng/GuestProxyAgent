@@ -21,8 +21,6 @@ use std::sync::{Arc, Mutex};
 
 pub type BpfObject = Bpf;
 
-static mut BPF_OBJECT: Option<Bpf> = None;
-
 pub fn start_internal(local_port: u16, shared_state: Arc<Mutex<SharedState>>) -> bool {
     let mut bpf = match open_ebpf_file(super::get_ebpf_file_path(), shared_state.clone()) {
         Ok(value) => value,
@@ -96,9 +94,7 @@ pub fn start_internal(local_port: u16, shared_state: Arc<Mutex<SharedState>>) ->
         iptable_redirect = true;
     }
 
-    unsafe {
-        BPF_OBJECT = Some(bpf);
-    }
+    redirector_wrapper::set_bpf_object(shared_state.clone(), bpf);
     redirector_wrapper::set_is_started(shared_state.clone(), true);
     redirector_wrapper::set_local_port(shared_state.clone(), local_port);
 
@@ -474,20 +470,19 @@ pub fn close(local_port: u16, shared_state: Arc<Mutex<SharedState>>) {
     // remove the firewall rules for redirection if has
     iptable_redirect::cleanup_firewall_redirection(local_port, shared_state.clone());
     // reset ebpf object
-    unsafe {
-        BPF_OBJECT = None;
-    }
+    redirector_wrapper::clear_bpf_object(shared_state);
 }
 
-pub fn lookup_audit(source_port: u16) -> std::io::Result<AuditEntry> {
-    unsafe {
-        match BPF_OBJECT {
-            Some(ref bpf) => lookup_audit_internal(bpf, source_port),
-            None => Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "BPF object is not initialized",
-            )),
-        }
+pub fn lookup_audit(
+    source_port: u16,
+    shared_state: Arc<Mutex<SharedState>>,
+) -> std::io::Result<AuditEntry> {
+    match redirector_wrapper::get_bpf_object(shared_state.clone()) {
+        Some(ref bpf) => lookup_audit_internal(&bpf.lock().unwrap().0, source_port),
+        None => Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "BPF object is not initialized",
+        )),
     }
 }
 
@@ -555,8 +550,8 @@ fn update_redirect_policy_internal(
     redirect: bool,
     shared_state: Arc<Mutex<SharedState>>,
 ) {
-    match unsafe { BPF_OBJECT.as_mut() } {
-        Some(ref mut bpf) => match bpf.map_mut("policy_map") {
+    match redirector_wrapper::get_bpf_object(shared_state.clone()) {
+        Some(bpf) => match bpf.lock().unwrap().0.map_mut("policy_map") {
             Some(map) => match HashMap::<&mut MapData, [u32; 6], [u32; 6]>::try_from(map) {
                 Ok(mut policy_map) => {
                     let key = destination_entry::from_ipv4(dest_ipv4, dest_port);

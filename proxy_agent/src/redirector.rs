@@ -164,7 +164,7 @@ pub fn lookup_audit(
     }
     #[cfg(not(windows))]
     {
-        linux::lookup_audit(source_port)
+        linux::lookup_audit(source_port, shared_state)
     }
 }
 
