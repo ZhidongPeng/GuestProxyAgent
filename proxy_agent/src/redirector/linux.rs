@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 
 static mut BPF_OBJECT: Option<Bpf> = None;
 
-pub fn start(local_port: u16, shared_state: Arc<Mutex<SharedState>>) -> bool {
+pub fn start_internal(local_port: u16, shared_state: Arc<Mutex<SharedState>>) -> bool {
     let mut bpf = match open_ebpf_file(super::get_ebpf_file_path(), shared_state.clone()) {
         Ok(value) => value,
         Err(value) => return value,

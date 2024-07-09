@@ -10,10 +10,11 @@ pub mod proxy_summary;
 #[cfg(windows)]
 mod windows;
 
-use crate::redirector::AuditEntry;
-use once_cell::sync::Lazy;
+use crate::shared_state::SharedState;
+use crate::{redirector::AuditEntry, shared_state::proxy_wrapper};
 use serde_derive::{Deserialize, Serialize};
-use std::{collections::HashMap, net::IpAddr, path::PathBuf};
+use std::sync::{Arc, Mutex};
+use std::{net::IpAddr, path::PathBuf};
 
 #[cfg(not(windows))]
 use std::sync::{Arc, Mutex};
@@ -41,30 +42,25 @@ struct Process {
     pub pid: u32,
 }
 
-struct User {
+#[derive(Clone)]
+pub struct User {
     pub logon_id: u64,
     pub user_name: String,
     pub user_groups: Vec<String>,
 }
 
-#[cfg(not(windows))]
-static mut CURRENT_SYSTEM: Lazy<Arc<Mutex<System>>> =
-    Lazy::new(|| Arc::new(Mutex::new(System::new())));
-
-static mut USERS: Lazy<HashMap<u64, User>> = Lazy::new(HashMap::new);
 const UNDEFINED: &str = "undefined";
 const EMPTY: &str = "empty";
 
-fn get_user(logon_id: u64) -> User {
-    unsafe {
-        // cache the logon_id -> user_name
-        if USERS.contains_key(&logon_id) {
-            return USERS[&logon_id].clone();
+fn get_user(logon_id: u64, shared_state: Arc<Mutex<SharedState>>) -> User {
+    // cache the logon_id -> user_name
+    match proxy_wrapper::get_user(shared_state.clone(), logon_id) {
+        Some(user) => user,
+        None => {
+            let user = User::from_logon_id(logon_id);
+            proxy_wrapper::add_user(shared_state.clone(), user.clone());
+            user
         }
-
-        let user = User::from_logon_id(logon_id);
-        USERS.insert(logon_id, user.clone());
-        user
     }
 }
 
@@ -75,8 +71,7 @@ fn get_process_info(process_id: u32) -> (String, String) {
 
     let pid = Pid::from_u32(process_id);
     unsafe {
-        let cloned_sys = Arc::clone(&*CURRENT_SYSTEM);
-        let mut sys = cloned_sys.lock().unwrap();
+        let mut sys = System::new();
         sys.refresh_processes();
         if let Some(p) = sys.process(pid) {
             match p.exe().to_str() {
@@ -105,9 +100,13 @@ impl Claims {
         }
     }
 
-    pub fn from_audit_entry(entry: &AuditEntry, client_ip: IpAddr) -> Self {
+    pub fn from_audit_entry(
+        entry: &AuditEntry,
+        client_ip: IpAddr,
+        shared_state: Arc<Mutex<SharedState>>,
+    ) -> Self {
         let p = Process::from_pid(entry.process_id);
-        let u = get_user(entry.logon_id);
+        let u = get_user(entry.logon_id, shared_state);
         Claims {
             userId: entry.logon_id,
             userName: u.user_name.to_string(),
@@ -183,14 +182,6 @@ impl Process {
 }
 
 impl User {
-    pub fn clone(&self) -> Self {
-        User {
-            logon_id: self.logon_id,
-            user_name: self.user_name.to_string(),
-            user_groups: self.user_groups.clone(),
-        }
-    }
-
     pub fn from_logon_id(logon_id: u64) -> Self {
         let user_name;
         let mut user_groups: Vec<String> = Vec::new();
@@ -231,11 +222,13 @@ impl User {
 
 #[cfg(test)]
 mod tests {
-    use std::net::IpAddr;
-
     use super::Claims;
-    use crate::proxy::USERS;
-    use crate::redirector::AuditEntry;
+    use crate::{
+        proxy,
+        redirector::AuditEntry,
+        shared_state::{self, proxy_wrapper},
+    };
+    use std::net::IpAddr;
 
     #[test]
     fn user_test() {
@@ -252,8 +245,9 @@ mod tests {
                 logon_id = 0u64;
                 expected_user_name = "root";
             }
+            let shared_state = shared_state::SharedState::new();
 
-            let user = super::get_user(logon_id);
+            let user = super::get_user(logon_id, shared_state.clone());
             println!("UserName: {}", user.user_name);
             println!("UserGroups: {}", user.user_groups.join(", "));
             assert_eq!(expected_user_name, user.user_name, "user name mismatch.");
@@ -270,12 +264,16 @@ mod tests {
             }
 
             // test the USERS.len will not change
-            let len = USERS.len();
-            _ = super::get_user(logon_id);
-            _ = super::get_user(logon_id);
-            _ = super::get_user(logon_id);
-            _ = super::get_user(logon_id);
-            assert_eq!(len, USERS.len(), "USERS.len() should not change")
+            let len = proxy_wrapper::get_users_count(shared_state.clone());
+            _ = super::get_user(logon_id, shared_state.clone());
+            _ = super::get_user(logon_id, shared_state.clone());
+            _ = super::get_user(logon_id, shared_state.clone());
+            _ = super::get_user(logon_id, shared_state.clone());
+            assert_eq!(
+                len,
+                proxy_wrapper::get_users_count(shared_state.clone()),
+                "users count should not change"
+            )
         }
     }
 
@@ -287,8 +285,10 @@ mod tests {
         entry.destination_ipv4 = 0x10813FA8;
         entry.destination_port = 80;
         entry.is_admin = 1;
+        let shared_state = shared_state::SharedState::new();
 
-        let claims = Claims::from_audit_entry(&entry, IpAddr::from([127, 0, 0, 1]));
+        let claims =
+            Claims::from_audit_entry(&entry, IpAddr::from([127, 0, 0, 1]), shared_state.clone());
         println!("{}", serde_json::to_string(&claims).unwrap());
 
         assert!(claims.runAsElevated, "runAsElevated must be true");

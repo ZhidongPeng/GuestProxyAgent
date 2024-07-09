@@ -1,9 +1,13 @@
 // Copyright (c) Microsoft Corporation
 // SPDX-License-Identifier: MIT
 
-use crate::key_keeper::key::Key;
 use crate::proxy::authorization_rules::AuthorizationRules;
-use std::sync::{Arc, Mutex};
+use crate::{key_keeper::key::Key, proxy::User};
+use proxy_agent_shared::proxy_agent_aggregate_status::ProxyConnectionSummary;
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 const UNKNOWN_STATUS_MESSAGE: &str = "Status unknown.";
 
@@ -30,6 +34,15 @@ pub struct SharedState {
     redirector_is_started: bool,
     redirector_status_message: String,
     redirector_local_port: u16,
+    // monitor
+    monitor_shutdown: bool,
+    monitor_status_message: String,
+    // agent_status
+    agent_status_shutdown: bool,
+    proxy_summary: HashMap<String, ProxyConnectionSummary>,
+    failed_authenticate_summary: HashMap<String, ProxyConnectionSummary>,
+    // proxy
+    proxy_uers: HashMap<u64, User>,
     // Add more state fields as needed,
     // keep the fields related to the same module together
     // keep the fields as private to avoid the direct access from outside via Arc<Mutex<SharedState>>.lock().unwrap()
@@ -66,6 +79,15 @@ impl Default for SharedState {
             redirector_is_started: false,
             redirector_status_message: UNKNOWN_STATUS_MESSAGE.to_string(),
             redirector_local_port: 0,
+            // monitor
+            monitor_shutdown: false,
+            monitor_status_message: UNKNOWN_STATUS_MESSAGE.to_string(),
+            // agent_status
+            agent_status_shutdown: false,
+            proxy_summary: HashMap::new(),
+            failed_authenticate_summary: HashMap::new(),
+            // proxy
+            proxy_uers: HashMap::new(),
         }
     }
 }
@@ -338,5 +360,124 @@ pub mod redirector_wrapper {
 
     pub fn get_local_port(shared_state: Arc<Mutex<SharedState>>) -> u16 {
         shared_state.lock().unwrap().redirector_local_port
+    }
+}
+
+pub mod monitor_wrapper {
+    use super::SharedState;
+    use std::sync::{Arc, Mutex};
+
+    pub fn set_shutdown(shared_state: Arc<Mutex<SharedState>>, shutdown: bool) {
+        shared_state.lock().unwrap().monitor_shutdown = shutdown;
+    }
+
+    pub fn get_shutdown(shared_state: Arc<Mutex<SharedState>>) -> bool {
+        shared_state.lock().unwrap().monitor_shutdown
+    }
+
+    pub fn set_status_message(shared_state: Arc<Mutex<SharedState>>, status_message: String) {
+        shared_state.lock().unwrap().monitor_status_message = status_message;
+    }
+
+    pub fn get_status_message(shared_state: Arc<Mutex<SharedState>>) -> String {
+        shared_state
+            .lock()
+            .unwrap()
+            .monitor_status_message
+            .to_string()
+    }
+}
+
+pub mod agent_status_wrapper {
+    use proxy_agent_shared::proxy_agent_aggregate_status::ProxyConnectionSummary;
+
+    use crate::proxy::proxy_summary::ProxySummary;
+
+    use super::SharedState;
+    use std::sync::{Arc, Mutex};
+
+    pub fn set_shutdown(shared_state: Arc<Mutex<SharedState>>, shutdown: bool) {
+        shared_state.lock().unwrap().agent_status_shutdown = shutdown;
+    }
+
+    pub fn get_shutdown(shared_state: Arc<Mutex<SharedState>>) -> bool {
+        shared_state.lock().unwrap().agent_status_shutdown
+    }
+
+    pub fn clear_all_summary(shared_state: Arc<Mutex<SharedState>>) {
+        let mut state = shared_state.lock().unwrap();
+        state.proxy_summary.clear();
+        state.failed_authenticate_summary.clear();
+    }
+
+    pub fn add_one_connection_summary(
+        shared_state: Arc<Mutex<SharedState>>,
+        summary: ProxySummary,
+        add_to_failed_authenticate_summry: bool,
+    ) {
+        let mut shared_state = shared_state.lock().unwrap();
+        let summary_map = if add_to_failed_authenticate_summry {
+            &mut shared_state.proxy_summary
+        } else {
+            &mut shared_state.failed_authenticate_summary
+        };
+
+        let summary_key = summary.to_key_string();
+        if let std::collections::hash_map::Entry::Vacant(e) = summary_map.entry(summary_key.clone())
+        {
+            e.insert(summary.to_proxy_connection_summary());
+        } else if let Some(connection_summary) = summary_map.get_mut(&summary_key) {
+            //increase_count(connection_summary);
+            connection_summary.count += 1;
+        }
+    }
+
+    pub fn get_all_connection_summary(
+        shared_state: Arc<Mutex<SharedState>>,
+        from_failed_authenticate: bool,
+    ) -> Vec<ProxyConnectionSummary> {
+        let shared_state = shared_state.lock().unwrap();
+        let summary_map = if from_failed_authenticate {
+            &shared_state.proxy_summary
+        } else {
+            &shared_state.failed_authenticate_summary
+        };
+        let mut copy_summary: Vec<ProxyConnectionSummary> = Vec::new();
+        for (_, connection_summary) in summary_map.iter() {
+            copy_summary.push(connection_summary.clone());
+        }
+        copy_summary
+    }
+}
+
+pub mod proxy_wrapper {
+    use super::SharedState;
+    use crate::proxy::User;
+    use std::sync::{Arc, Mutex};
+
+    pub fn add_user(shared_state: Arc<Mutex<SharedState>>, user: User) {
+        shared_state
+            .lock()
+            .unwrap()
+            .proxy_uers
+            .insert(user.logon_id, user);
+    }
+
+    pub fn get_user(shared_state: Arc<Mutex<SharedState>>, logon_id: u64) -> Option<User> {
+        shared_state
+            .lock()
+            .unwrap()
+            .proxy_uers
+            .get(&logon_id)
+            .cloned()
+    }
+
+    pub fn get_users_count(shared_state: Arc<Mutex<SharedState>>) -> usize {
+        shared_state.lock().unwrap().proxy_uers.len()
+    }
+
+    // TODO:: need caller to refresh the users info regularly
+    pub fn clear_all_users(shared_state: Arc<Mutex<SharedState>>) {
+        shared_state.lock().unwrap().proxy_uers.clear();
     }
 }

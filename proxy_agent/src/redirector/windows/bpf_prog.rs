@@ -6,13 +6,11 @@ use crate::common::constants;
 use crate::common::logger;
 use crate::redirector::AuditEntry;
 use proxy_agent_shared::misc_helpers;
-use std::env;
 use std::ffi::c_void;
 use std::io::{Error, ErrorKind};
 use std::mem::size_of_val;
 use std::path::PathBuf;
 
-const EBPF_API_FILE_NAME: &str = "EbpfApi.dll";
 const EBPF_OBJECT_NULL: i32 = 2022;
 const EBPF_OPEN_ERROR: i32 = 2023;
 const EBPF_LOAD_ERROR: i32 = 2024;
@@ -23,27 +21,6 @@ const EBPF_UPDATE_MAP_ERROR: i32 = 2028;
 const EBPF_DELETE_MAP_ERROR: i32 = 2029;
 
 pub static mut BPF_OBJECT: Option<*mut bpf_object> = None;
-
-pub fn init() -> std::io::Result<()> {
-    let program_files_dir = env::var("ProgramFiles").unwrap_or("C:\\Program Files".to_string());
-    let program_files_dir = PathBuf::from(program_files_dir);
-    let ebpf_for_windows_dir = program_files_dir.join("ebpf-for-windows");
-    let bpf_api_file_path = ebpf_for_windows_dir.join(EBPF_API_FILE_NAME);
-
-    logger::write_information(format!(
-        "Try to load ebpf api file from: {}",
-        misc_helpers::path_to_string(bpf_api_file_path.to_path_buf())
-    ));
-    match load_ebpf_api(bpf_api_file_path) {
-        Ok(_) => Ok(()),
-        Err(e) => {
-            let message = format!("{}", e);
-            logger::write_warning(message);
-            logger::write_warning("Try to load ebpf api file from default system path".to_string());
-            load_ebpf_api(PathBuf::from(EBPF_API_FILE_NAME))
-        }
-    }
-}
 
 /**
 Routine Description:

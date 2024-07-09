@@ -5,9 +5,9 @@ use super::proxy_connection::Connection;
 use super::proxy_summary::ProxySummary;
 use crate::common::http::response::Response;
 use crate::key_keeper::key::AuthorizationItem;
-use crate::shared_state::proxy_authenticator_wrapper;
+use crate::shared_state::SharedState;
+use crate::shared_state::{agent_status_wrapper, proxy_authenticator_wrapper};
 use crate::{common::config, common::constants, proxy::Claims};
-use crate::{proxy_agent_status, shared_state::SharedState};
 use std::sync::{Arc, Mutex};
 
 pub fn set_wireserver_rules(
@@ -137,7 +137,11 @@ impl Authenticate for WireServer {
                         responseStatus: Response::FORBIDDEN.to_string(),
                         elapsedTime: 0,
                     };
-                    proxy_agent_status::add_connection_summary(summary, true);
+                    agent_status_wrapper::add_one_connection_summary(
+                        shared_state.clone(),
+                        summary,
+                        true,
+                    );
 
                     if rules.mode.to_lowercase() == "audit" {
                         Connection::write_information(connection_id, format!("WireServer request {} denied in audit mode, continue forward the request", request_url));
@@ -192,7 +196,11 @@ impl Authenticate for Imds {
                         responseStatus: Response::FORBIDDEN.to_string(),
                         elapsedTime: 0,
                     };
-                    proxy_agent_status::add_connection_summary(summary, true);
+                    agent_status_wrapper::add_one_connection_summary(
+                        shared_state.clone(),
+                        summary,
+                        true,
+                    );
 
                     if rules.mode.to_lowercase() == "audit" {
                         Connection::write_information(connection_id, format!("IMDS request {} denied in audit mode, continue forward the request", request_url));

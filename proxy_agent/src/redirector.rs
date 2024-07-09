@@ -47,28 +47,33 @@ pub fn start_async(local_port: u16, shared_state: Arc<Mutex<SharedState>>) {
 }
 
 fn start(local_port: u16, shared_state: Arc<Mutex<SharedState>>) -> bool {
-    for _ in 0..5 {
-        #[cfg(windows)]
-        {
-            windows::start(local_port, shared_state.clone());
-        }
-        #[cfg(not(windows))]
-        {
-            linux::start(local_port, shared_state.clone());
-        }
+    let started = start_impl(local_port, shared_state.clone());
 
-        let level = if is_started(shared_state.clone()) {
-            event_logger::INFO_LEVEL
-        } else {
-            event_logger::ERROR_LEVEL
-        };
-        event_logger::write_event(
-            level,
-            get_status_message(shared_state.clone()),
-            "start",
-            "redirector",
-            logger::AGENT_LOGGER_KEY,
-        );
+    let level = if started {
+        event_logger::INFO_LEVEL
+    } else {
+        event_logger::ERROR_LEVEL
+    };
+    event_logger::write_event(
+        level,
+        get_status_message(shared_state.clone()),
+        "start",
+        "redirector",
+        logger::AGENT_LOGGER_KEY,
+    );
+
+    started
+}
+
+fn start_impl(local_port: u16, shared_state: Arc<Mutex<SharedState>>) -> bool {
+    #[cfg(windows)]
+    {
+        if !windows::initialized_success(shared_state.clone()) {
+            return false;
+        }
+    }
+    for _ in 0..5 {
+        start_internal(local_port, shared_state.clone());
         if is_started(shared_state.clone()) {
             return true;
         }
@@ -250,6 +255,11 @@ pub use windows::update_imds_redirect_policy;
 pub use linux::update_wire_server_redirect_policy;
 #[cfg(windows)]
 pub use windows::update_wire_server_redirect_policy;
+
+#[cfg(not(windows))]
+use linux::start_internal;
+#[cfg(windows)]
+use windows::start_internal;
 
 #[cfg(test)]
 mod tests {

@@ -18,18 +18,18 @@ use std::ptr;
 use std::sync::{Arc, Mutex};
 use windows_sys::Win32::Networking::WinSock;
 
-pub fn start(local_port: u16, shared_state: Arc<Mutex<SharedState>>) -> bool {
-    match bpf_prog::init() {
-        Ok(_) => (),
-        Err(e) => {
-            set_error_status(
-                format!("Failed to init bpf_prog with error: {e}"),
-                shared_state.clone(),
-            );
-            return false;
-        }
+pub fn initialized_success(shared_state: Arc<Mutex<SharedState>>) -> bool {
+    if !bpf_api::ebpf_api_is_loaded() {
+        redirector_wrapper::set_status_message(
+            shared_state.clone(),
+            "Failed to load eBPF API.".to_string(),
+        );
+        return false;
     }
+    true
+}
 
+pub fn start_internal(local_port: u16, shared_state: Arc<Mutex<SharedState>>) -> bool {
     let result = bpf_prog::load_bpf_object(super::get_ebpf_file_path());
     if result != 0 {
         set_error_status(
