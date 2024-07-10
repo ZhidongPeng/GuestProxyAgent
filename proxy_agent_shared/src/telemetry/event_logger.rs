@@ -5,7 +5,6 @@ use crate::misc_helpers;
 use crate::telemetry::Event;
 use concurrent_queue::ConcurrentQueue;
 use once_cell::sync::Lazy;
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -16,14 +15,11 @@ pub const INFO_LEVEL: &str = "Informational";
 pub const WARN_LEVEL: &str = "Warning";
 pub const ERROR_LEVEL: &str = "Error";
 pub const CRITICAL_LEVEL: &str = "Critical";
-pub const MAX_STATE_COUNT: u32 = 120;
 pub const MAX_MESSAGE_LENGTH: usize = 1024 * 4; // 4KB
 
 static EVENT_QUEUE: Lazy<ConcurrentQueue<Event>> =
     Lazy::new(|| ConcurrentQueue::<Event>::bounded(1000));
 static SHUT_DOWN: Lazy<Arc<AtomicBool>> = Lazy::new(|| Arc::new(AtomicBool::new(false)));
-static mut STATE_MAP: Lazy<HashMap<String, (String, u32)>> =
-    Lazy::new(HashMap::<String, (String, u32)>::new);
 
 pub fn start_async<F>(
     event_dir: PathBuf,
@@ -46,43 +42,6 @@ pub fn start_async<F>(
                 set_status_fn,
             );
         });
-}
-
-pub fn write_state_event(
-    state_key: &str,
-    state_value: &str,
-    level: &str,
-    message: String,
-    method_name: &str,
-    module_name: &str,
-    logger_key: &str,
-) {
-    unsafe {
-        match STATE_MAP.get(state_key) {
-            Some(v) => {
-                let value = v.0.to_string();
-                let count = v.1;
-                // State change or Timer expired
-                if value != state_value || count >= MAX_STATE_COUNT {
-                    // Update the state value and reset the count
-                    STATE_MAP.insert(state_key.to_string(), (state_value.to_string(), 1));
-                    write_event(
-                        level,
-                        message.to_string(),
-                        method_name,
-                        module_name,
-                        logger_key,
-                    );
-                } else {
-                    STATE_MAP.insert(state_key.to_string(), (state_value.to_string(), count + 1));
-                }
-            }
-            None => {
-                STATE_MAP.insert(state_key.to_string(), (state_value.to_string(), 1));
-                write_event(level, message, method_name, module_name, logger_key);
-            }
-        }
-    }
 }
 
 fn start<F>(
