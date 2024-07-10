@@ -3,13 +3,15 @@
 use crate::common::{config, logger};
 use crate::monitor;
 use crate::proxy::proxy_listener;
-use crate::shared_state::{agent_status_wrapper, proxy_listener_wrapper, SharedState};
+use crate::shared_state::{
+    agent_status_wrapper, proxy_listener_wrapper, telemetry_wrapper, SharedState,
+};
 use crate::{key_keeper, redirector};
 use proxy_agent_shared::misc_helpers;
 use proxy_agent_shared::proxy_agent_aggregate_status::{
-    GuestProxyAgentAggregateStatus, ModuleState, OverallState, ProxyAgentStatus,
+    GuestProxyAgentAggregateStatus, ModuleState, OverallState, ProxyAgentDetailStatus,
+    ProxyAgentStatus,
 };
-use proxy_agent_shared::telemetry::event_logger;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -64,6 +66,20 @@ fn start(mut interval: Duration, shared_state: Arc<Mutex<SharedState>>) {
     }
 }
 
+fn get_telemetry_log_status(shared_state: Arc<Mutex<SharedState>>) -> ProxyAgentDetailStatus {
+    let status = if telemetry_wrapper::get_logger_shutdown(shared_state.clone()) {
+        ModuleState::STOPPED.to_string()
+    } else {
+        ModuleState::RUNNING.to_string()
+    };
+
+    ProxyAgentDetailStatus {
+        status,
+        message: telemetry_wrapper::get_logger_status_message(shared_state),
+        states: None,
+    }
+}
+
 fn proxy_agent_status_new(shared_state: Arc<Mutex<SharedState>>) -> ProxyAgentStatus {
     let key_latch_status = key_keeper::get_status(shared_state.clone());
     let ebpf_status = redirector::get_status(shared_state.clone());
@@ -75,6 +91,7 @@ fn proxy_agent_status_new(shared_state: Arc<Mutex<SharedState>>) -> ProxyAgentSt
     {
         status = OverallState::ERROR.to_string();
     }
+
     ProxyAgentStatus {
         version: misc_helpers::get_current_version(),
         status,
@@ -82,7 +99,7 @@ fn proxy_agent_status_new(shared_state: Arc<Mutex<SharedState>>) -> ProxyAgentSt
         keyLatchStatus: key_latch_status,
         ebpfProgramStatus: ebpf_status,
         proxyListenerStatus: proxy_status,
-        telemetryLoggerStatus: event_logger::get_status(),
+        telemetryLoggerStatus: get_telemetry_log_status(shared_state.clone()),
         proxyConnectionsCount: proxy_listener_wrapper::get_connection_count(shared_state),
     }
 }

@@ -5,7 +5,7 @@ pub mod windows;
 
 use crate::common::{config, constants, helpers, logger};
 use crate::proxy::proxy_listener;
-use crate::shared_state::SharedState;
+use crate::shared_state::{telemetry_wrapper, SharedState};
 use crate::telemetry::event_reader;
 use proxy_agent_shared::logger_manager;
 use proxy_agent_shared::telemetry::event_logger;
@@ -65,5 +65,6 @@ pub fn stop_service(shared_state: Arc<Mutex<SharedState>>) {
     crate::key_keeper::stop(shared_state.clone());
     proxy_listener::stop(constants::PROXY_AGENT_PORT, shared_state.clone());
     event_logger::stop();
+    telemetry_wrapper::set_logger_shutdown(shared_state.clone(), true);
     event_reader::stop(shared_state.clone());
 }

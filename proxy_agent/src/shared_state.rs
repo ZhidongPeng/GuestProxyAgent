@@ -52,6 +52,8 @@ pub struct SharedState {
     // telemetry
     vm_metadata: Option<VMMetaData>,
     telemetry_reader_shutdown: bool,
+    telemetry_logger_shutdown: bool,
+    telemetry_logger_status_message: String,
     // service
     #[cfg(windows)]
     service_status_handle: Option<ServiceStatusHandle>,
@@ -104,6 +106,8 @@ impl Default for SharedState {
             // telemetry
             vm_metadata: None,
             telemetry_reader_shutdown: false,
+            telemetry_logger_shutdown: false,
+            telemetry_logger_status_message: UNKNOWN_STATUS_MESSAGE.to_string(),
             // service
             #[cfg(windows)]
             service_status_handle: None,
@@ -540,6 +544,29 @@ pub mod telemetry_wrapper {
 
     pub fn get_reader_shutdown(shared_state: Arc<Mutex<SharedState>>) -> bool {
         shared_state.lock().unwrap().telemetry_reader_shutdown
+    }
+
+    pub fn set_logger_shutdown(shared_state: Arc<Mutex<SharedState>>, shutdown: bool) {
+        shared_state.lock().unwrap().telemetry_logger_shutdown = shutdown;
+    }
+
+    pub fn get_logger_shutdown(shared_state: Arc<Mutex<SharedState>>) -> bool {
+        shared_state.lock().unwrap().telemetry_logger_shutdown
+    }
+
+    pub fn set_logger_status_message(
+        shared_state: Arc<Mutex<SharedState>>,
+        status_message: String,
+    ) {
+        shared_state.lock().unwrap().telemetry_logger_status_message = status_message;
+    }
+
+    pub fn get_logger_status_message(shared_state: Arc<Mutex<SharedState>>) -> String {
+        shared_state
+            .lock()
+            .unwrap()
+            .telemetry_logger_status_message
+            .to_string()
     }
 }
 

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 use crate::common::{config, helpers, logger};
 use crate::proxy::proxy_listener;
-use crate::shared_state::{provision_wrapper, SharedState};
+use crate::shared_state::{provision_wrapper, telemetry_wrapper, SharedState};
 use crate::telemetry::event_reader;
 use crate::{key_keeper, proxy_agent_status, redirector};
 use proxy_agent_shared::misc_helpers;
@@ -56,11 +56,15 @@ pub fn start_event_threads(shared_state: Arc<Mutex<SharedState>>) {
         return;
     }
 
+    let cloned_state = shared_state.clone();
     event_logger::start_async(
         config::get_events_dir(),
         Duration::default(),
         config::get_max_event_file_count(),
         logger::AGENT_LOGGER_KEY,
+        move |status: String| {
+            telemetry_wrapper::set_logger_status_message(cloned_state.clone(), status);
+        },
     );
     event_reader::start_async(
         config::get_events_dir(),
