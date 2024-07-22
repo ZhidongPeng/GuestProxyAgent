@@ -24,8 +24,25 @@ pub struct ConnectionContext {
     pub client_addr: SocketAddr,
     pub now: Instant,
     pub claims: Option<Claims>,
+    pub method: String,
+    pub url: String,
     pub ip: String,
     pub port: u16,
+}
+
+impl ConnectionContext {
+    // try make sure the request could skip the sig
+    // and stream the body to the server directly
+    pub fn need_skip_sig(&self) -> bool {
+        let method = self.method.to_uppercase();
+        let url = self.url.to_lowercase();
+
+        // currently, we agreed to skip the sig for those requests:
+        //      o PUT   /vmAgentLog
+        //      o POST  /machine/?comp=telemetrydata
+        (method == "PUT" || method == "POST")
+            && (url == "/machine/?comp=telemetrydata" || url == "/vmagentlog")
+    }
 }
 
 impl Connection {

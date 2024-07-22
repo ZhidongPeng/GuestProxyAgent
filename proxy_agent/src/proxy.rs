@@ -3,6 +3,7 @@
 mod authorization_rules;
 pub mod proxy_authentication;
 pub mod proxy_connection;
+mod proxy_extensions;
 pub mod proxy_listener;
 mod proxy_pool;
 pub mod proxy_server;

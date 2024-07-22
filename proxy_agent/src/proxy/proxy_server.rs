@@ -1,8 +1,10 @@
+// Copyright (c) Microsoft Corporation
+// SPDX-License-Identifier: MIT
 use crate::common::{config, constants, helpers, http, logger};
 use crate::proxy::proxy_connection::{Connection, ConnectionContext};
-use crate::proxy::{proxy_authentication, Claims};
+use crate::proxy::{proxy_authentication, proxy_extensions, proxy_summary::ProxySummary, Claims};
 use crate::shared_state::{key_keeper_wrapper, proxy_listener_wrapper, SharedState};
-use crate::{provision, redirector};
+use crate::{provision, proxy_agent_status, redirector};
 use http_body_util::{combinators::BoxBody, BodyExt, Empty};
 use hyper::body::{Bytes, Frame};
 use hyper::header::{HeaderName, HeaderValue};
@@ -10,16 +12,12 @@ use hyper::service::service_fn;
 use hyper::StatusCode;
 use hyper::{Request, Response};
 use hyper_util::rt::TokioIo;
-use itertools::Itertools;
 use proxy_agent_shared::misc_helpers;
 use proxy_agent_shared::telemetry::event_logger;
-use std::collections::HashMap;
-use std::net::SocketAddr;
 use std::os::windows::io::AsRawSocket;
 use std::sync::{Arc, Mutex};
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
-use url::Url;
 
 pub fn start_async(port: u16, shared_state: Arc<Mutex<SharedState>>) {
     _ = std::thread::Builder::new()
@@ -37,6 +35,9 @@ pub fn stop(port: u16, shared_state: Arc<Mutex<SharedState>>) {
     proxy_listener_wrapper::set_shutdown(shared_state.clone(), true);
     let _ = std::net::TcpStream::connect(format!("127.0.0.1:{}", port));
     logger::write_warning("Sending stop signal.".to_string());
+
+    // TODO: set cancellationtoken to the listener
+    // TODO: wait for the listener async tasks to stop
 }
 
 async fn start(
@@ -45,8 +46,10 @@ async fn start(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     Connection::init_logger(config::get_logs_dir());
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
-    let listener = match TcpListener::bind(addr).await {
+    let addr = format!("{}:{}", std::net::Ipv4Addr::LOCALHOST, port);
+    logger::write(format!("Start proxy listener at '{}'.", &addr));
+
+    let listener = match TcpListener::bind(&addr).await {
         Ok(listener) => listener,
         Err(e) => {
             let message = format!("Failed to bind TcpListener '{}' with error {}.", addr, e);
@@ -64,6 +67,8 @@ async fn start(
     );
     proxy_listener_wrapper::set_status_message(shared_state.clone(), message.to_string());
     provision::listener_started(shared_state.clone());
+
+    // TODO: Create cancellation token
 
     // We start a loop to continuously accept incoming connections
     loop {
@@ -84,8 +89,11 @@ async fn start(
 
         let shared_state = shared_state.clone();
         tokio::spawn(async move {
+            // Increase the connection count
             let connection_id =
                 proxy_listener_wrapper::increase_connection_count(shared_state.clone());
+
+            // Convert the stream to a std stream
             let std_stream = match stream.into_std() {
                 Ok(std_stream) => std_stream,
                 Err(e) => {
@@ -96,8 +104,11 @@ async fn start(
                     return;
                 }
             };
+            // Set the read timeout
+            _ = std_stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));
 
-            let cloned_stream = match std_stream.try_clone() {
+            // Clone the stream for the service_fn
+            let cloned_std_stream = match std_stream.try_clone() {
                 Ok(cloned_stream) => cloned_stream,
                 Err(e) => {
                     Connection::write_warning(
@@ -108,6 +119,7 @@ async fn start(
                 }
             };
 
+            // Convert the std stream back to a tokio stream
             let stream = match TcpStream::from_std(std_stream) {
                 Ok(stream) => stream,
                 Err(e) => {
@@ -119,29 +131,35 @@ async fn start(
                 }
             };
 
-            let cloned_stream = Arc::new(Mutex::new(cloned_stream));
-            // add client addr and shared_state to the service_fn
+            let cloned_std_stream = Arc::new(Mutex::new(cloned_std_stream));
+            // move client addr, cloned std stream and shared_state to the service_fn
             let service = service_fn(move |req| {
                 let shared_state = shared_state.clone();
                 let connection = ConnectionContext {
-                    stream: cloned_stream.clone(),
+                    stream: cloned_std_stream.clone(),
                     client_addr,
                     id: connection_id,
                     now: std::time::Instant::now(),
+                    method: String::new(),
+                    url: String::new(),
                     ip: String::new(),
                     port: 0,
                     claims: None,
                 };
+
+                // TODO: pass cancellation token
                 handle_request(req, connection, shared_state)
             });
+
             // Use an adapter to access something implementing `tokio::io` traits as if they implement
             let io = TokioIo::new(stream);
-
             // We use the `hyper::server::conn::Http` to serve the connection
             let http = hyper::server::conn::http1::Builder::new();
-
             if let Err(e) = http.serve_connection(io, service).await {
-                logger::write_warning(format!("ProxyListener connection error {}", e));
+                Connection::write_warning(
+                    connection_id,
+                    format!("ProxyListener serve_connection error: {}", e),
+                );
             }
         });
     }
@@ -153,12 +171,13 @@ async fn handle_request(
     shared_state: Arc<Mutex<SharedState>>,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
     let connection_id = connection.id;
+    connection.method = request.method().to_string();
+    connection.url = request.uri().to_string();
     Connection::write_warning(
         connection_id,
         format!(
-            "Got request from {} for {}",
-            connection.client_addr,
-            request.uri()
+            "Got request from {} for {} {}",
+            connection.client_addr, &connection.method, &connection.url
         ),
     );
 
@@ -173,7 +192,7 @@ async fn handle_request(
             event_logger::write_event(
                 event_logger::WARN_LEVEL,
                 err,
-                "handle_connection",
+                "handle_request",
                 "proxy_listener",
                 Connection::CONNECTION_LOGGER_KEY,
             );
@@ -191,12 +210,12 @@ async fn handle_request(
                         event_logger::write_event(
                             event_logger::WARN_LEVEL,
                             err,
-                            "handle_connection",
+                            "handle_request",
                             "proxy_listener",
                             Connection::CONNECTION_LOGGER_KEY,
                         );
                     }
-                    //log_connection_summary(connection, &request, Response::MISDIRECTED.to_string());
+                    log_connection_summary(&connection, StatusCode::MISDIRECTED_REQUEST);
                     return Ok(empty_response(StatusCode::MISDIRECTED_REQUEST));
                 }
             }
@@ -211,7 +230,7 @@ async fn handle_request(
                 connection_id,
                 format!("Failed to get claim json string: {}", e),
             );
-            // log_connection_summary(connection, &request, Response::MISDIRECTED.to_string());
+            log_connection_summary(&connection, StatusCode::MISDIRECTED_REQUEST);
             return Ok(empty_response(StatusCode::MISDIRECTED_REQUEST));
         }
     };
@@ -236,14 +255,22 @@ async fn handle_request(
             connection_id,
             format!("Denied unauthorize request: {}", claim_details),
         );
-        //log_connection_summary(connection, &request, Response::FORBIDDEN.to_string());
+        log_connection_summary(&connection, StatusCode::FORBIDDEN);
         return Ok(empty_response(StatusCode::FORBIDDEN));
     }
 
-    let server_addr = format!("{}:{}", ip, port); // imds server
+    // start new request to the Host endpoint
+    let server_addr = format!("{}:{}", ip, port);
     let proxy_stream = TcpStream::connect(server_addr).await.unwrap();
     let io = TokioIo::new(proxy_stream);
-    let (mut sender, conn) = hyper::client::conn::http1::handshake(io).await.unwrap();
+    let (mut sender, conn) = match hyper::client::conn::http1::handshake(io).await {
+        Ok((sender, conn)) => (sender, conn),
+        Err(e) => {
+            Connection::write_warning(connection_id, format!("Failed to connect to host: {}", e));
+            log_connection_summary(&connection, StatusCode::MISDIRECTED_REQUEST);
+            return Ok(empty_response(StatusCode::MISDIRECTED_REQUEST));
+        }
+    };
     tokio::task::spawn(async move {
         if let Err(err) = conn.await {
             Connection::write(
@@ -271,53 +298,77 @@ async fn handle_request(
         HeaderValue::from_str(&misc_helpers::get_date_time_rfc1123_string()).unwrap(),
     );
 
-    // sign the request
-    // Add header x-ms-azure-host-authorization
-    if let Some(key) = key_keeper_wrapper::get_current_key_value(shared_state.clone()) {
-        if let Some(key_guid) = key_keeper_wrapper::get_current_key_guid(shared_state.clone()) {
-            let input_to_sign = as_sig_input(&proxy_request).await;
-            match helpers::compute_signature(key.to_string(), input_to_sign.as_slice()) {
-                Ok(sig) => {
-                    match String::from_utf8(input_to_sign) {
-                        Ok(data) => Connection::write(
+    if connection.need_skip_sig() {
+        Connection::write(
+            connection_id,
+            format!(
+                "Skip compute signature for the request for {} {}",
+                &connection.method, &connection.url
+            ),
+        );
+    } else {
+        // sign the request
+        // Add header x-ms-azure-host-authorization
+        if let Some(key) = key_keeper_wrapper::get_current_key_value(shared_state.clone()) {
+            if let Some(key_guid) = key_keeper_wrapper::get_current_key_guid(shared_state.clone()) {
+                let input_to_sign = match proxy_extensions::as_sig_input(&proxy_request).await {
+                    Ok(data) => data,
+                    Err(e) => {
+                        Connection::write_error(
                             connection.id,
-                            format!("Computed the signature with input: {}", data),
-                        ),
-                        Err(e) => {
-                            Connection::write_warning(
-                                connection.id,
-                                format!("Failed convert the input_to_sign to string, error {}", e),
-                            );
-                        }
+                            format!("Failed to get input to sign: {}", e),
+                        );
+                        log_connection_summary(&connection, StatusCode::MISDIRECTED_REQUEST);
+                        return Ok(empty_response(StatusCode::MISDIRECTED_REQUEST));
                     }
+                };
+                match helpers::compute_signature(key.to_string(), input_to_sign.as_slice()) {
+                    Ok(sig) => {
+                        match String::from_utf8(input_to_sign) {
+                            Ok(data) => Connection::write(
+                                connection.id,
+                                format!("Computed the signature with input: {}", data),
+                            ),
+                            Err(e) => {
+                                Connection::write_warning(
+                                    connection.id,
+                                    format!(
+                                        "Failed convert the input_to_sign to string, error {}",
+                                        e
+                                    ),
+                                );
+                            }
+                        }
 
-                    let authorization_value =
-                        format!("{} {} {}", constants::AUTHORIZATION_SCHEME, key_guid, sig);
-                    proxy_request.headers_mut().insert(
-                        HeaderName::from_static(constants::AUTHORIZATION_SCHEME),
-                        HeaderValue::from_str(&authorization_value).unwrap(),
-                    );
+                        let authorization_value =
+                            format!("{} {} {}", constants::AUTHORIZATION_SCHEME, key_guid, sig);
+                        proxy_request.headers_mut().insert(
+                            HeaderName::from_static(constants::AUTHORIZATION_SCHEME),
+                            HeaderValue::from_str(&authorization_value).unwrap(),
+                        );
 
-                    Connection::write(
-                        connection.id,
-                        format!("Added authorization header {}", authorization_value),
-                    )
-                }
-                Err(e) => {
-                    Connection::write_error(
-                        connection.id,
-                        format!("compute_signature failed with error: {}", e),
-                    );
+                        Connection::write(
+                            connection.id,
+                            format!("Added authorization header {}", authorization_value),
+                        )
+                    }
+                    Err(e) => {
+                        Connection::write_error(
+                            connection.id,
+                            format!("compute_signature failed with error: {}", e),
+                        );
+                    }
                 }
             }
+        } else {
+            Connection::write(
+                connection.id,
+                "current key is empty, skip compute signature for testing.".to_string(),
+            );
         }
-    } else {
-        Connection::write(
-            connection.id,
-            "current key is empty, skip compute signature for testing.".to_string(),
-        );
     }
 
+    //  send to remote server
     let proxy_response = sender.send_request(proxy_request).await.unwrap();
     let frame_stream = proxy_response.into_body().map_frame(|frame| {
         let frame = if let Ok(data) = frame.into_data() {
@@ -331,12 +382,48 @@ async fn handle_request(
     });
 
     let mut response = Response::new(frame_stream.boxed());
+    // insert default x-ms-azure-host-authorization header to let the client know it is through proxy agent
     response.headers_mut().insert(
         HeaderName::from_static(constants::AUTHORIZATION_HEADER),
         HeaderValue::from_static("value"),
     );
 
+    log_connection_summary(&connection, response.status());
     Ok(response)
+}
+
+fn log_connection_summary(connection: &ConnectionContext, response_status: StatusCode) {
+    let elapsed_time = connection.now.elapsed();
+    let claims = match &connection.claims {
+        Some(c) => c.clone(),
+        None => Claims::empty(),
+    };
+
+    let summary = ProxySummary {
+        userId: claims.userId,
+        userName: claims.userName.to_string(),
+        userGroups: claims.userGroups.clone(),
+        clientIp: claims.clientIp.to_string(),
+        processFullPath: claims.processFullPath.to_string(),
+        processCmdLine: claims.processCmdLine.to_string(),
+        runAsElevated: claims.runAsElevated,
+        method: connection.method.to_string(),
+        url: connection.url.to_string(),
+        ip: connection.ip.to_string(),
+        port: connection.port,
+        responseStatus: response_status.to_string(),
+        elapsedTime: elapsed_time.as_millis(),
+    };
+    if let Ok(json) = serde_json::to_string(&summary) {
+        event_logger::write_event(
+            event_logger::INFO_LEVEL,
+            json,
+            "log_connection_summary",
+            "proxy_listener",
+            Connection::CONNECTION_LOGGER_KEY,
+        );
+    };
+    proxy_agent_status::add_connection_summary(summary, false);
 }
 
 // We create some utility functions to make Empty and Full bodies
@@ -350,86 +437,4 @@ fn empty_response(status_code: StatusCode) -> Response<BoxBody<Bytes, hyper::Err
     *response.status_mut() = status_code;
 
     response
-}
-
-/*
-    StringToSign = Method + "\n" +
-           HexEncoded(Body) + "\n" +
-           CanonicalizedHeaders + "\n"
-           UrlEncodedPath + "\n"
-           CanonicalizedParameters;
-*/
-async fn as_sig_input(request: &Request<hyper::body::Incoming>) -> Vec<u8> {
-    let mut data: Vec<u8> = request.method().to_string().as_bytes().to_vec();
-    data.extend(constants::LF.as_bytes());
-    //data.extend(request.clone().collect().await.unwrap().to_bytes());
-    data.extend(constants::LF.as_bytes());
-    data.extend(headers_to_canonicalized_string(request.headers()).as_bytes());
-
-    let path_para = get_path_and_canonicalized_parameters(request.uri());
-    data.extend(path_para.0.as_bytes());
-    data.extend(constants::LF.as_bytes());
-    data.extend(path_para.1.as_bytes());
-
-    data
-}
-
-fn headers_to_canonicalized_string(headers: &hyper::HeaderMap) -> String {
-    let mut canonicalized_headers = String::new();
-    let separator = String::from(constants::LF);
-    let mut map: HashMap<String, (String, String)> = HashMap::new();
-
-    for (key, value) in headers.iter() {
-        let key = key.to_string();
-        let value = value.to_str().unwrap().to_string();
-        let key_lower_case = key.to_lowercase();
-        map.insert(key_lower_case, (key, value));
-    }
-
-    for key in map.keys().sorted() {
-        // skip the expect header
-        if key.eq_ignore_ascii_case(constants::AUTHORIZATION_HEADER) {
-            continue;
-        }
-        let h = format!("{}:{}{}", key, map[key].1.trim(), separator);
-        canonicalized_headers.push_str(&h);
-    }
-
-    canonicalized_headers
-}
-
-fn get_path_and_canonicalized_parameters(uri: &hyper::Uri) -> (String, String) {
-    let path = uri.path().to_string();
-
-    let path_query = uri.path_and_query().unwrap().as_str();
-    // Url crate does not support parsing relative paths, so we need to add a dummy base url
-    let mut url = Url::parse("http://127.0.0.1").unwrap();
-    match url.join(path_query) {
-        Ok(u) => url = u,
-        Err(_) => return (path, "".to_string()),
-    }
-
-    let parameters = url.query_pairs();
-    let mut pairs: HashMap<String, String> = HashMap::new();
-    let mut canonicalized_parameters = String::new();
-    if parameters.count() > 0 {
-        for p in parameters {
-            // Convert the parameter name to lowercase
-            pairs.insert(p.0.to_lowercase(), p.1.to_string());
-        }
-
-        // Sort the parameters lexicographically by parameter name, in ascending order.
-        let mut first = true;
-        for key in pairs.keys().sorted() {
-            if !first {
-                canonicalized_parameters.push('&');
-            }
-            first = false;
-            // Join each parameter key value pair with '='
-            let p = format!("{}={}", key, pairs[key]);
-            canonicalized_parameters.push_str(&p);
-        }
-    }
-
-    (path, canonicalized_parameters)
 }
