@@ -5,6 +5,7 @@ pub mod proxy_authentication;
 pub mod proxy_connection;
 pub mod proxy_listener;
 mod proxy_pool;
+pub mod proxy_server;
 pub mod proxy_summary;
 
 #[cfg(windows)]

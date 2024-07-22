@@ -257,6 +257,18 @@ impl Authenticate for Default {
     }
 }
 
+pub fn authenticate(
+    ip: String,
+    port: u16,
+    connection_id: u128,
+    request_url: String,
+    claims: Claims,
+) -> bool {
+    let auth = get_authenticate(ip, port, claims);
+    Connection::write(connection_id, format!("Got auth: {}", auth.to_string()));
+    auth.authenticate(connection_id, request_url)
+}
+
 pub fn get_authenticate(ip: String, port: u16, claims: Claims) -> Box<dyn Authenticate> {
     if ip == constants::WIRE_SERVER_IP && port == constants::WIRE_SERVER_PORT {
         Box::new(WireServer { claims })

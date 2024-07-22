@@ -36,3 +36,5 @@ pub const DEFAULT_FALLBACK_WITH_IPTABLE_REDIRECT: bool = false;
 
 pub const CGROUP_ROOT: &str = "/sys/fs/cgroup";
 pub const EGID: u32 = 3080;
+
+pub const LF: &str = "\n";

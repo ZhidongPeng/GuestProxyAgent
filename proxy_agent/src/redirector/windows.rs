@@ -13,8 +13,6 @@ use crate::shared_state::{key_keeper_wrapper, SharedState};
 use core::ffi::c_void;
 use once_cell::unsync::Lazy;
 use std::mem;
-use std::net::TcpStream;
-use std::os::windows::io::AsRawSocket;
 use std::ptr;
 use std::sync::{Arc, Mutex};
 use windows_sys::Win32::Networking::WinSock;
@@ -160,14 +158,14 @@ pub fn lookup_audit(source_port: u16) -> std::io::Result<AuditEntry> {
     bpf_prog::lookup_bpf_audit_map(source_port)
 }
 
-pub fn get_audit_from_redirect_context(tcp_stream: &TcpStream) -> std::io::Result<AuditEntry> {
+pub fn get_audit_from_redirect_context(raw_socket: usize) -> std::io::Result<AuditEntry> {
     unsafe {
         // WSAIoctl - SIO_QUERY_WFP_CONNECTION_REDIRECT_CONTEXT
         let value = AuditEntry::empty();
         let redirect_context_size = mem::size_of::<AuditEntry>() as u32;
         let mut redirect_context_returned: u32 = 0;
         WinSock::WSAIoctl(
-            tcp_stream.as_raw_socket() as usize,
+            raw_socket,
             WinSock::SIO_QUERY_WFP_CONNECTION_REDIRECT_CONTEXT,
             ptr::null(),
             0,

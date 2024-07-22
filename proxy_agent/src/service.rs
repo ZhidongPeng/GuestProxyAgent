@@ -4,7 +4,7 @@
 pub mod windows;
 
 use crate::common::{config, constants, helpers, logger};
-use crate::proxy::proxy_listener;
+use crate::proxy::proxy_server;
 use crate::shared_state::SharedState;
 use crate::telemetry::event_reader;
 use proxy_agent_shared::logger_manager;
@@ -42,7 +42,7 @@ pub fn start_service(shared_state: Arc<Mutex<SharedState>>) {
         shared_state.clone(),
     );
 
-    proxy_listener::start_async(constants::PROXY_AGENT_PORT, 20, shared_state.clone());
+    proxy_server::start_async(constants::PROXY_AGENT_PORT, shared_state.clone());
 
     // TODO:: need start the monitor thread and write proxy agent status to the file
     // monitor::start_async(config::get_monitor_duration());
@@ -63,7 +63,7 @@ pub fn stop_service(shared_state: Arc<Mutex<SharedState>>) {
     crate::monitor::stop();
     crate::redirector::close(constants::PROXY_AGENT_PORT);
     crate::key_keeper::stop(shared_state.clone());
-    proxy_listener::stop(constants::PROXY_AGENT_PORT, shared_state.clone());
+    proxy_server::stop(constants::PROXY_AGENT_PORT, shared_state.clone());
     event_logger::stop();
     event_reader::stop();
 }

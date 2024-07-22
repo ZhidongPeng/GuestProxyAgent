@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 use crate::proxy::Claims;
 use proxy_agent_shared::{logger_manager, rolling_logger::RollingLogger};
+use std::net::SocketAddr;
 use std::net::TcpStream;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -12,7 +13,17 @@ pub struct Connection {
     pub id: u128,
 
     pub now: Instant,
-    pub cliams: Option<Claims>,
+    pub claims: Option<Claims>,
+    pub ip: String,
+    pub port: u16,
+}
+
+pub struct ConnectionContext {
+    pub id: u128,
+    pub stream: Arc<Mutex<TcpStream>>,
+    pub client_addr: SocketAddr,
+    pub now: Instant,
+    pub claims: Option<Claims>,
     pub ip: String,
     pub port: u16,
 }

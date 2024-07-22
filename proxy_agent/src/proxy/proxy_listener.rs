@@ -81,7 +81,7 @@ fn start(port: u16, pool_size: u16, shared_state: Arc<Mutex<SharedState>>) {
                         stream,
                         id: connection_count,
                         now: Instant::now(),
-                        cliams: None,
+                        claims: None,
                         ip: String::new(),
                         port: 0,
                     };
@@ -205,7 +205,7 @@ fn handle_connection(connection: &mut Connection, shared_state: Arc<Mutex<Shared
         }
     };
     Connection::write(connection.id, claim_details.to_string());
-    connection.cliams = Some(claims.clone());
+    connection.claims = Some(claims.clone());
 
     // Get the dst ip and port to remote server
     let (ip, port);
@@ -541,7 +541,7 @@ fn handle_connection_without_signature(
 
 fn log_connection_summary(connection: &Connection, request: &Request, response_status: String) {
     let elapsed_time = connection.now.elapsed();
-    let claims = match &connection.cliams {
+    let claims = match &connection.claims {
         Some(c) => c.clone(),
         None => Claims::empty(),
     };
@@ -723,7 +723,7 @@ mod tests {
                         stream,
                         id: id.try_into().unwrap(),
                         now: Instant::now(),
-                        cliams: None,
+                        claims: None,
                         ip: String::new(),
                         port: 0,
                     };
@@ -815,7 +815,7 @@ mod tests {
             constants::CLAIMS_HEADER.to_string(),
             serde_json::to_string(&claims).unwrap(),
         );
-        connection.cliams = Some(claims);
+        connection.claims = Some(claims);
         connection.ip = "127.0.0.1".to_string();
         connection.port = 8084;
         let mut server_stream = TcpStream::connect(SERVER_ENDPOINT_ADDRESS).unwrap();
