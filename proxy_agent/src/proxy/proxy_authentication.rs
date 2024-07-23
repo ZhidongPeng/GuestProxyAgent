@@ -118,6 +118,7 @@ impl Authenticate for WireServer {
                     );
                     if !allowed {
                         let summary = ProxySummary {
+                            id: connection_id,
                             userId: self.claims.userId,
                             userName: self.claims.userName.to_string(),
                             userGroups: self.claims.userGroups.clone(),
@@ -174,6 +175,7 @@ impl Authenticate for Imds {
 
                     if !allowed {
                         let summary = ProxySummary {
+                            id: connection_id,
                             userId: self.claims.userId,
                             userName: self.claims.userName.to_string(),
                             userGroups: self.claims.userGroups.clone(),

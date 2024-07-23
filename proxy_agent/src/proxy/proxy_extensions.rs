@@ -14,7 +14,7 @@ use url::Url;
            UrlEncodedPath + "\n"
            CanonicalizedParameters;
 */
-pub fn as_sig_input(head: &Parts, body: Bytes) -> Vec<u8> {
+pub fn as_sig_input(head: Parts, body: Bytes) -> Vec<u8> {
     let mut data: Vec<u8> = head.method.to_string().as_bytes().to_vec();
     data.extend(constants::LF.as_bytes());
     data.extend(body);

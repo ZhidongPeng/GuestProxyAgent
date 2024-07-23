@@ -547,6 +547,7 @@ fn log_connection_summary(connection: &Connection, request: &Request, response_s
     };
 
     let summary = ProxySummary {
+        id: connection.id,
         userId: claims.userId,
         userName: claims.userName.to_string(),
         userGroups: claims.userGroups.clone(),

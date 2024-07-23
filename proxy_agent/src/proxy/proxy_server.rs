@@ -88,12 +88,11 @@ async fn start(
             return Ok(());
         }
 
+        // Increase the connection count
+        let connection_id = proxy_listener_wrapper::increase_connection_count(shared_state.clone());
+        Connection::write(connection_id, "Accepted new connection.".to_string());
         let shared_state = shared_state.clone();
         tokio::spawn(async move {
-            // Increase the connection count
-            let connection_id =
-                proxy_listener_wrapper::increase_connection_count(shared_state.clone());
-
             // Convert the stream to a std stream
             let std_stream = match stream.into_std() {
                 Ok(std_stream) => std_stream,
@@ -243,6 +242,8 @@ async fn handle_request(
     ip = redirector::ip_to_string(entry.destination_ipv4);
     port = http::ntohs(entry.destination_port);
     Connection::write(connection_id, format!("Use lookup value:{ip}:{port}."));
+    connection.ip = ip.to_string();
+    connection.port = port;
 
     // authenticate the connection
     if !proxy_authentication::authenticate(
@@ -343,6 +344,7 @@ fn log_connection_summary(connection: &ConnectionContext, response_status: Statu
     };
 
     let summary = ProxySummary {
+        id: connection.id,
         userId: claims.userId,
         userName: claims.userName.to_string(),
         userGroups: claims.userGroups.clone(),
@@ -410,9 +412,29 @@ async fn handle_request_with_signature(
     });
 
     let (head, body) = request.into_parts();
-    let whole_body = body.collect().await?.to_bytes();
+    let whole_body = match body.collect().await {
+        Ok(data) => data.to_bytes(),
+        Err(e) => {
+            Connection::write_error(
+                connection_id,
+                format!("Failed to receive the request body: {}", e),
+            );
+            return Ok(empty_response(StatusCode::BAD_REQUEST));
+        }
+    };
+
+    Connection::write(
+        connection_id,
+        format!(
+            "Received the client request body (len={}) for {} {}",
+            whole_body.len(),
+            &connection.method,
+            &connection.url,
+        ),
+    );
+
     // create a new request to the Host endpoint
-    let mut proxy_request: Request<Full<Bytes>>;
+    let mut proxy_request = Request::from_parts(head.clone(), Full::new(whole_body.clone()));
 
     // sign the request
     // Add header x-ms-azure-host-authorization
@@ -420,8 +442,7 @@ async fn handle_request_with_signature(
         key_keeper_wrapper::get_current_key_value(shared_state.clone()),
         key_keeper_wrapper::get_current_key_guid(shared_state.clone()),
     ) {
-        let input_to_sign = proxy_extensions::as_sig_input(&head, whole_body.clone());
-        proxy_request = Request::from_parts(head, Full::new(whole_body));
+        let input_to_sign = proxy_extensions::as_sig_input(head, whole_body);
         match helpers::compute_signature(key.to_string(), input_to_sign.as_slice()) {
             Ok(sig) => {
                 match String::from_utf8(input_to_sign) {
@@ -440,7 +461,7 @@ async fn handle_request_with_signature(
                 let authorization_value =
                     format!("{} {} {}", constants::AUTHORIZATION_SCHEME, key_guid, sig);
                 proxy_request.headers_mut().insert(
-                    HeaderName::from_static(constants::AUTHORIZATION_SCHEME),
+                    HeaderName::from_static(constants::AUTHORIZATION_HEADER),
                     HeaderValue::from_str(&authorization_value).unwrap(),
                 );
 
@@ -457,7 +478,6 @@ async fn handle_request_with_signature(
             }
         }
     } else {
-        proxy_request = Request::from_parts(head, Full::new(whole_body));
         Connection::write(
             connection.id,
             "current key is empty, skip compute signature for testing.".to_string(),
