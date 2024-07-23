@@ -1,7 +1,8 @@
 // Copyright (c) Microsoft Corporation
 // SPDX-License-Identifier: MIT
 use crate::common::constants;
-use hyper::{Error, Request};
+use http::request::Parts;
+use hyper::body::Bytes;
 use itertools::Itertools;
 use std::collections::HashMap;
 use url::Url;
@@ -13,19 +14,19 @@ use url::Url;
            UrlEncodedPath + "\n"
            CanonicalizedParameters;
 */
-pub async fn as_sig_input(request: &Request<hyper::body::Incoming>) -> Result<Vec<u8>, Error> {
-    let mut data: Vec<u8> = request.method().to_string().as_bytes().to_vec();
+pub fn as_sig_input(head: &Parts, body: Bytes) -> Vec<u8> {
+    let mut data: Vec<u8> = head.method.to_string().as_bytes().to_vec();
     data.extend(constants::LF.as_bytes());
-    //data.extend(request.clone().collect().await.unwrap().to_bytes());
+    data.extend(body);
     data.extend(constants::LF.as_bytes());
-    data.extend(headers_to_canonicalized_string(request.headers()).as_bytes());
 
-    let path_para = get_path_and_canonicalized_parameters(request.uri());
+    data.extend(headers_to_canonicalized_string(&head.headers).as_bytes());
+    let path_para = get_path_and_canonicalized_parameters(&head.uri);
     data.extend(path_para.0.as_bytes());
     data.extend(constants::LF.as_bytes());
     data.extend(path_para.1.as_bytes());
 
-    Ok(data)
+    data
 }
 
 fn headers_to_canonicalized_string(headers: &hyper::HeaderMap) -> String {

@@ -5,6 +5,7 @@ use crate::proxy::proxy_connection::{Connection, ConnectionContext};
 use crate::proxy::{proxy_authentication, proxy_extensions, proxy_summary::ProxySummary, Claims};
 use crate::shared_state::{key_keeper_wrapper, proxy_listener_wrapper, SharedState};
 use crate::{provision, proxy_agent_status, redirector};
+use http_body_util::Full;
 use http_body_util::{combinators::BoxBody, BodyExt, Empty};
 use hyper::body::{Bytes, Frame};
 use hyper::header::{HeaderName, HeaderValue};
@@ -259,27 +260,6 @@ async fn handle_request(
         return Ok(empty_response(StatusCode::FORBIDDEN));
     }
 
-    // start new request to the Host endpoint
-    let server_addr = format!("{}:{}", ip, port);
-    let proxy_stream = TcpStream::connect(server_addr).await.unwrap();
-    let io = TokioIo::new(proxy_stream);
-    let (mut sender, conn) = match hyper::client::conn::http1::handshake(io).await {
-        Ok((sender, conn)) => (sender, conn),
-        Err(e) => {
-            Connection::write_warning(connection_id, format!("Failed to connect to host: {}", e));
-            log_connection_summary(&connection, StatusCode::MISDIRECTED_REQUEST);
-            return Ok(empty_response(StatusCode::MISDIRECTED_REQUEST));
-        }
-    };
-    tokio::task::spawn(async move {
-        if let Err(err) = conn.await {
-            Connection::write(
-                connection_id,
-                format!("Connection to host failed: {:?}", err),
-            );
-        }
-    });
-
     // forward the request to the target server
     let mut proxy_request = request;
 
@@ -307,66 +287,29 @@ async fn handle_request(
             ),
         );
     } else {
-        // sign the request
-        // Add header x-ms-azure-host-authorization
-        if let Some(key) = key_keeper_wrapper::get_current_key_value(shared_state.clone()) {
-            if let Some(key_guid) = key_keeper_wrapper::get_current_key_guid(shared_state.clone()) {
-                let input_to_sign = match proxy_extensions::as_sig_input(&proxy_request).await {
-                    Ok(data) => data,
-                    Err(e) => {
-                        Connection::write_error(
-                            connection.id,
-                            format!("Failed to get input to sign: {}", e),
-                        );
-                        log_connection_summary(&connection, StatusCode::MISDIRECTED_REQUEST);
-                        return Ok(empty_response(StatusCode::MISDIRECTED_REQUEST));
-                    }
-                };
-                match helpers::compute_signature(key.to_string(), input_to_sign.as_slice()) {
-                    Ok(sig) => {
-                        match String::from_utf8(input_to_sign) {
-                            Ok(data) => Connection::write(
-                                connection.id,
-                                format!("Computed the signature with input: {}", data),
-                            ),
-                            Err(e) => {
-                                Connection::write_warning(
-                                    connection.id,
-                                    format!(
-                                        "Failed convert the input_to_sign to string, error {}",
-                                        e
-                                    ),
-                                );
-                            }
-                        }
+        return handle_request_with_signature(connection, proxy_request, shared_state).await;
+    }
 
-                        let authorization_value =
-                            format!("{} {} {}", constants::AUTHORIZATION_SCHEME, key_guid, sig);
-                        proxy_request.headers_mut().insert(
-                            HeaderName::from_static(constants::AUTHORIZATION_SCHEME),
-                            HeaderValue::from_str(&authorization_value).unwrap(),
-                        );
-
-                        Connection::write(
-                            connection.id,
-                            format!("Added authorization header {}", authorization_value),
-                        )
-                    }
-                    Err(e) => {
-                        Connection::write_error(
-                            connection.id,
-                            format!("compute_signature failed with error: {}", e),
-                        );
-                    }
-                }
-            }
-        } else {
+    // start new request to the Host endpoint
+    let server_addr = format!("{}:{}", ip, port);
+    let proxy_stream = TcpStream::connect(server_addr).await.unwrap();
+    let io = TokioIo::new(proxy_stream);
+    let (mut sender, conn) = match hyper::client::conn::http1::handshake(io).await {
+        Ok((sender, conn)) => (sender, conn),
+        Err(e) => {
+            Connection::write_warning(connection_id, format!("Failed to connect to host: {}", e));
+            log_connection_summary(&connection, StatusCode::MISDIRECTED_REQUEST);
+            return Ok(empty_response(StatusCode::MISDIRECTED_REQUEST));
+        }
+    };
+    tokio::task::spawn(async move {
+        if let Err(err) = conn.await {
             Connection::write(
-                connection.id,
-                "current key is empty, skip compute signature for testing.".to_string(),
+                connection_id,
+                format!("Connection to host failed: {:?}", err),
             );
         }
-    }
+    });
 
     //  send to remote server
     let proxy_response = sender.send_request(proxy_request).await.unwrap();
@@ -437,4 +380,110 @@ fn empty_response(status_code: StatusCode) -> Response<BoxBody<Bytes, hyper::Err
     *response.status_mut() = status_code;
 
     response
+}
+
+async fn handle_request_with_signature(
+    connection: ConnectionContext,
+    request: Request<hyper::body::Incoming>,
+    shared_state: Arc<Mutex<SharedState>>,
+) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
+    // start new request to the Host endpoint
+    let server_addr = format!("{}:{}", connection.ip, connection.port);
+    let proxy_stream = TcpStream::connect(server_addr).await.unwrap();
+    let io = TokioIo::new(proxy_stream);
+    let (mut sender, conn) = match hyper::client::conn::http1::handshake(io).await {
+        Ok((sender, conn)) => (sender, conn),
+        Err(e) => {
+            Connection::write_warning(connection.id, format!("Failed to connect to host: {}", e));
+            log_connection_summary(&connection, StatusCode::MISDIRECTED_REQUEST);
+            return Ok(empty_response(StatusCode::MISDIRECTED_REQUEST));
+        }
+    };
+    let connection_id = connection.id;
+    tokio::task::spawn(async move {
+        if let Err(err) = conn.await {
+            Connection::write(
+                connection_id,
+                format!("Connection to host failed: {:?}", err),
+            );
+        }
+    });
+
+    let (head, body) = request.into_parts();
+    let whole_body = body.collect().await?.to_bytes();
+    // create a new request to the Host endpoint
+    let mut proxy_request: Request<Full<Bytes>>;
+
+    // sign the request
+    // Add header x-ms-azure-host-authorization
+    if let (Some(key), Some(key_guid)) = (
+        key_keeper_wrapper::get_current_key_value(shared_state.clone()),
+        key_keeper_wrapper::get_current_key_guid(shared_state.clone()),
+    ) {
+        let input_to_sign = proxy_extensions::as_sig_input(&head, whole_body.clone());
+        proxy_request = Request::from_parts(head, Full::new(whole_body));
+        match helpers::compute_signature(key.to_string(), input_to_sign.as_slice()) {
+            Ok(sig) => {
+                match String::from_utf8(input_to_sign) {
+                    Ok(data) => Connection::write(
+                        connection.id,
+                        format!("Computed the signature with input: {}", data),
+                    ),
+                    Err(e) => {
+                        Connection::write_warning(
+                            connection.id,
+                            format!("Failed convert the input_to_sign to string, error {}", e),
+                        );
+                    }
+                }
+
+                let authorization_value =
+                    format!("{} {} {}", constants::AUTHORIZATION_SCHEME, key_guid, sig);
+                proxy_request.headers_mut().insert(
+                    HeaderName::from_static(constants::AUTHORIZATION_SCHEME),
+                    HeaderValue::from_str(&authorization_value).unwrap(),
+                );
+
+                Connection::write(
+                    connection.id,
+                    format!("Added authorization header {}", authorization_value),
+                )
+            }
+            Err(e) => {
+                Connection::write_error(
+                    connection.id,
+                    format!("compute_signature failed with error: {}", e),
+                );
+            }
+        }
+    } else {
+        proxy_request = Request::from_parts(head, Full::new(whole_body));
+        Connection::write(
+            connection.id,
+            "current key is empty, skip compute signature for testing.".to_string(),
+        );
+    }
+
+    //  send to remote server
+    let proxy_response = sender.send_request(proxy_request).await.unwrap();
+    let frame_stream = proxy_response.into_body().map_frame(|frame| {
+        let frame = if let Ok(data) = frame.into_data() {
+            // streaming the data
+            data.iter().map(|byte| byte.to_be()).collect::<Bytes>()
+        } else {
+            Bytes::new()
+        };
+
+        Frame::data(frame)
+    });
+
+    let mut response = Response::new(frame_stream.boxed());
+    // insert default x-ms-azure-host-authorization header to let the client know it is through proxy agent
+    response.headers_mut().insert(
+        HeaderName::from_static(constants::AUTHORIZATION_HEADER),
+        HeaderValue::from_static("value"),
+    );
+
+    log_connection_summary(&connection, response.status());
+    Ok(response)
 }
