@@ -298,6 +298,19 @@ pub fn get_authenticate(ip: String, port: u16, claims: Claims) -> Box<dyn Authen
     }
 }
 
+pub fn authenticate(
+    ip: String,
+    port: u16,
+    connection_id: u128,
+    request_url: String,
+    claims: Claims,
+    shared_state: Arc<Mutex<SharedState>>,
+) -> bool {
+    let auth = get_authenticate(ip, port, claims);
+    Connection::write(connection_id, format!("Got auth: {}", auth.to_string()));
+    auth.authenticate(connection_id, request_url, shared_state)
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{key_keeper::key::AuthorizationItem, shared_state};

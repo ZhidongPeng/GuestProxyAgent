@@ -3,8 +3,10 @@
 use crate::common::{config, constants, helpers, http, logger};
 use crate::proxy::proxy_connection::{Connection, ConnectionContext};
 use crate::proxy::{proxy_authentication, proxy_extensions, proxy_summary::ProxySummary, Claims};
-use crate::shared_state::{key_keeper_wrapper, proxy_listener_wrapper, SharedState};
-use crate::{provision, proxy_agent_status, redirector};
+use crate::shared_state::{
+    agent_status_wrapper, key_keeper_wrapper, proxy_listener_wrapper, SharedState,
+};
+use crate::{provision, redirector};
 use http_body_util::Full;
 use http_body_util::{combinators::BoxBody, BodyExt, Empty};
 use hyper::body::{Bytes, Frame};
@@ -185,7 +187,7 @@ async fn handle_request(
     let client_source_port = connection.client_addr.port();
 
     let entry;
-    match redirector::lookup_audit(client_source_port) {
+    match redirector::lookup_audit(client_source_port, shared_state.clone()) {
         Ok(data) => entry = data,
         Err(e) => {
             let err = format!("Failed to get lookup_audit: {}", e);
@@ -215,13 +217,17 @@ async fn handle_request(
                             Connection::CONNECTION_LOGGER_KEY,
                         );
                     }
-                    log_connection_summary(&connection, StatusCode::MISDIRECTED_REQUEST);
+                    log_connection_summary(
+                        &connection,
+                        StatusCode::MISDIRECTED_REQUEST,
+                        shared_state.clone(),
+                    );
                     return Ok(empty_response(StatusCode::MISDIRECTED_REQUEST));
                 }
             }
         }
     }
-    let claims = Claims::from_audit_entry(&entry, client_source_ip);
+    let claims = Claims::from_audit_entry(&entry, client_source_ip, shared_state.clone());
 
     let claim_details: String = match serde_json::to_string(&claims) {
         Ok(json) => json,
@@ -230,7 +236,11 @@ async fn handle_request(
                 connection_id,
                 format!("Failed to get claim json string: {}", e),
             );
-            log_connection_summary(&connection, StatusCode::MISDIRECTED_REQUEST);
+            log_connection_summary(
+                &connection,
+                StatusCode::MISDIRECTED_REQUEST,
+                shared_state.clone(),
+            );
             return Ok(empty_response(StatusCode::MISDIRECTED_REQUEST));
         }
     };
@@ -252,12 +262,13 @@ async fn handle_request(
         connection_id,
         request.uri().to_string(),
         claims.clone(),
+        shared_state.clone(),
     ) {
         Connection::write_warning(
             connection_id,
             format!("Denied unauthorize request: {}", claim_details),
         );
-        log_connection_summary(&connection, StatusCode::FORBIDDEN);
+        log_connection_summary(&connection, StatusCode::FORBIDDEN, shared_state.clone());
         return Ok(empty_response(StatusCode::FORBIDDEN));
     }
 
@@ -299,7 +310,11 @@ async fn handle_request(
         Ok((sender, conn)) => (sender, conn),
         Err(e) => {
             Connection::write_warning(connection_id, format!("Failed to connect to host: {}", e));
-            log_connection_summary(&connection, StatusCode::MISDIRECTED_REQUEST);
+            log_connection_summary(
+                &connection,
+                StatusCode::MISDIRECTED_REQUEST,
+                shared_state.clone(),
+            );
             return Ok(empty_response(StatusCode::MISDIRECTED_REQUEST));
         }
     };
@@ -332,11 +347,15 @@ async fn handle_request(
         HeaderValue::from_static("value"),
     );
 
-    log_connection_summary(&connection, response.status());
+    log_connection_summary(&connection, response.status(), shared_state.clone());
     Ok(response)
 }
 
-fn log_connection_summary(connection: &ConnectionContext, response_status: StatusCode) {
+fn log_connection_summary(
+    connection: &ConnectionContext,
+    response_status: StatusCode,
+    shared_state: Arc<Mutex<SharedState>>,
+) {
     let elapsed_time = connection.now.elapsed();
     let claims = match &connection.claims {
         Some(c) => c.clone(),
@@ -368,7 +387,7 @@ fn log_connection_summary(connection: &ConnectionContext, response_status: Statu
             Connection::CONNECTION_LOGGER_KEY,
         );
     };
-    proxy_agent_status::add_connection_summary(summary, false);
+    agent_status_wrapper::add_one_connection_summary(shared_state, summary, false);
 }
 
 // We create some utility functions to make Empty and Full bodies
@@ -397,7 +416,11 @@ async fn handle_request_with_signature(
         Ok((sender, conn)) => (sender, conn),
         Err(e) => {
             Connection::write_warning(connection.id, format!("Failed to connect to host: {}", e));
-            log_connection_summary(&connection, StatusCode::MISDIRECTED_REQUEST);
+            log_connection_summary(
+                &connection,
+                StatusCode::MISDIRECTED_REQUEST,
+                shared_state.clone(),
+            );
             return Ok(empty_response(StatusCode::MISDIRECTED_REQUEST));
         }
     };
@@ -504,6 +527,6 @@ async fn handle_request_with_signature(
         HeaderValue::from_static("value"),
     );
 
-    log_connection_summary(&connection, response.status());
+    log_connection_summary(&connection, response.status(), shared_state.clone());
     Ok(response)
 }
