@@ -22,6 +22,8 @@ use std::sync::{Arc, Mutex};
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
 
+const INITIAL_CONNECTION_ID: u128 = 0;
+
 pub fn start_async(port: u16, shared_state: Arc<Mutex<SharedState>>) {
     _ = std::thread::Builder::new()
         .name("proxy_listener".to_string())
@@ -91,8 +93,10 @@ async fn start(
         }
 
         // Increase the connection count
-        let connection_id = proxy_listener_wrapper::increase_connection_count(shared_state.clone());
-        Connection::write(connection_id, "Accepted new connection.".to_string());
+        Connection::write(
+            INITIAL_CONNECTION_ID,
+            "Accepted new connection.".to_string(),
+        );
         let shared_state = shared_state.clone();
         tokio::spawn(async move {
             // Convert the stream to a std stream
@@ -100,7 +104,7 @@ async fn start(
                 Ok(std_stream) => std_stream,
                 Err(e) => {
                     Connection::write_warning(
-                        connection_id,
+                        INITIAL_CONNECTION_ID,
                         format!("ProxyListener stream error {}", e),
                     );
                     return;
@@ -114,7 +118,7 @@ async fn start(
                 Ok(cloned_stream) => cloned_stream,
                 Err(e) => {
                     Connection::write_warning(
-                        connection_id,
+                        INITIAL_CONNECTION_ID,
                         format!("ProxyListener stream clone error {}", e),
                     );
                     return;
@@ -126,7 +130,7 @@ async fn start(
                 Ok(stream) => stream,
                 Err(e) => {
                     Connection::write_warning(
-                        connection_id,
+                        INITIAL_CONNECTION_ID,
                         format!("ProxyListener: TcpStream::from_std error {}", e),
                     );
                     return;
@@ -140,7 +144,7 @@ async fn start(
                 let connection = ConnectionContext {
                     stream: cloned_std_stream.clone(),
                     client_addr,
-                    id: connection_id,
+                    id: INITIAL_CONNECTION_ID,
                     now: std::time::Instant::now(),
                     method: String::new(),
                     url: String::new(),
@@ -159,7 +163,7 @@ async fn start(
             let http = hyper::server::conn::http1::Builder::new();
             if let Err(e) = http.serve_connection(io, service).await {
                 Connection::write_warning(
-                    connection_id,
+                    INITIAL_CONNECTION_ID,
                     format!("ProxyListener serve_connection error: {}", e),
                 );
             }
@@ -172,7 +176,8 @@ async fn handle_request(
     mut connection: ConnectionContext,
     shared_state: Arc<Mutex<SharedState>>,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
-    let connection_id = connection.id;
+    let connection_id = proxy_listener_wrapper::increase_connection_count(shared_state.clone());
+    connection.id = connection_id;
     connection.method = request.method().to_string();
     connection.url = request.uri().to_string();
     Connection::write_warning(
