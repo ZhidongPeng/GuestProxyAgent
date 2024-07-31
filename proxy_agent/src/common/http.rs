@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT
 
 use super::{constants, helpers};
-use crate::common::constants;
 use http::request::Parts;
 use http::{HeaderName, HeaderValue};
 use hyper::body::Bytes;
@@ -11,7 +10,6 @@ use proxy_agent_shared::misc_helpers;
 use reqwest::Request;
 use serde::de::DeserializeOwned;
 use std::collections::HashMap;
-use std::{clone, collections::HashMap};
 use url::Url;
 
 pub fn htons(u: u16) -> u16 {
@@ -204,7 +202,7 @@ pub fn as_sig_input(head: Parts, body: Bytes) -> Vec<u8> {
     data.extend(constants::LF.as_bytes());
 
     data.extend(headers_to_canonicalized_string(&head.headers).as_bytes());
-    let path_para = get_path_and_canonicalized_parameters(&head.uri);
+    let path_para = get_path_and_canonicalized_parameters(into_url(&head.uri));
     data.extend(path_para.0.as_bytes());
     data.extend(constants::LF.as_bytes());
     data.extend(path_para.1.as_bytes());
@@ -215,22 +213,19 @@ pub fn as_sig_input(head: Parts, body: Bytes) -> Vec<u8> {
 pub fn request_to_sign_input(request: Request) -> Vec<u8> {
     let mut data: Vec<u8> = request.method().as_str().as_bytes().to_vec();
     data.extend(constants::LF.as_bytes());
-    match request.body() {
-        Some(body) => {
-            let body = match body.as_bytes() {
-                Some(b) => b,
-                None => {
-                    return Vec::new();
-                }
-            };
-            data.extend(body);
-        }
-        None => {}
+    if let Some(body) = request.body() {
+        let body = match body.as_bytes() {
+            Some(b) => b,
+            None => {
+                return Vec::new();
+            }
+        };
+        data.extend(body);
     }
     data.extend(constants::LF.as_bytes());
 
     data.extend(headers_to_canonicalized_string(request.headers()).as_bytes());
-    let path_para = get_path_and_canonicalized_parameters(request.uri());
+    let path_para = get_path_and_canonicalized_parameters(request.url().clone());
     data.extend(path_para.0.as_bytes());
     data.extend(constants::LF.as_bytes());
     data.extend(path_para.1.as_bytes());
@@ -262,17 +257,18 @@ fn headers_to_canonicalized_string(headers: &hyper::HeaderMap) -> String {
     canonicalized_headers
 }
 
-fn get_path_and_canonicalized_parameters(uri: &hyper::Uri) -> (String, String) {
-    let path = uri.path().to_string();
-
+fn into_url(uri: &hyper::Uri) -> Url {
     let path_query = uri.path_and_query().unwrap().as_str();
     // Url crate does not support parsing relative paths, so we need to add a dummy base url
     let mut url = Url::parse("http://127.0.0.1").unwrap();
-    match url.join(path_query) {
-        Ok(u) => url = u,
-        Err(_) => return (path, "".to_string()),
+    if let Ok(u) = url.join(path_query) {
+        url = u
     }
+    url
+}
 
+fn get_path_and_canonicalized_parameters(url: Url) -> (String, String) {
+    let path = url.path().to_string();
     let parameters = url.query_pairs();
     let mut pairs: HashMap<String, String> = HashMap::new();
     let mut canonicalized_parameters = String::new();

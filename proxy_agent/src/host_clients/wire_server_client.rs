@@ -42,7 +42,7 @@ impl WireServerClient {
             &url,
             &headers,
             Some(xml_data.as_bytes().to_vec()),
-            None,  // post telemetry data does not require signing
+            None, // post telemetry data does not require signing
             None,
         )?;
         let response = match request.send().await {

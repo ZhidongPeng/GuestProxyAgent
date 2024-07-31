@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 use crate::common::{config, constants, helpers, http, logger};
 use crate::proxy::proxy_connection::{Connection, ConnectionContext};
-use crate::proxy::{proxy_authentication, proxy_extensions, proxy_summary::ProxySummary, Claims};
+use crate::proxy::{proxy_authentication, proxy_summary::ProxySummary, Claims};
 use crate::shared_state::{
     agent_status_wrapper, key_keeper_wrapper, proxy_listener_wrapper, SharedState,
 };
