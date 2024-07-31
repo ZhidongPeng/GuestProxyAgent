@@ -16,33 +16,37 @@ use hyper::StatusCode;
 use hyper::{Request, Response};
 use hyper_util::rt::TokioIo;
 use proxy_agent_shared::misc_helpers;
+use proxy_agent_shared::proxy_agent_aggregate_status::ModuleState;
+use proxy_agent_shared::proxy_agent_aggregate_status::ProxyAgentDetailStatus;
 use proxy_agent_shared::telemetry::event_logger;
-use std::os::windows::io::AsRawSocket;
 use std::sync::{Arc, Mutex};
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
 
 const INITIAL_CONNECTION_ID: u128 = 0;
 
-pub fn start_async(port: u16, shared_state: Arc<Mutex<SharedState>>) {
-    _ = std::thread::Builder::new()
-        .name("proxy_listener".to_string())
-        .spawn(move || {
-            let _ = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap()
-                .block_on(async move { tokio::spawn(start(port, shared_state)).await });
-        });
-}
-
 pub fn stop(port: u16, shared_state: Arc<Mutex<SharedState>>) {
     proxy_listener_wrapper::set_shutdown(shared_state.clone(), true);
     let _ = std::net::TcpStream::connect(format!("127.0.0.1:{}", port));
     logger::write_warning("Sending stop signal.".to_string());
+}
 
-    // TODO: set cancellationtoken to the listener
-    // TODO: wait for the listener async tasks to stop
+pub fn get_status(shared_state: Arc<Mutex<SharedState>>) -> ProxyAgentDetailStatus {
+    let status = if proxy_listener_wrapper::get_shutdown(shared_state.clone()) {
+        ModuleState::STOPPED.to_string()
+    } else {
+        ModuleState::RUNNING.to_string()
+    };
+
+    ProxyAgentDetailStatus {
+        status,
+        message: proxy_listener_wrapper::get_status_message(shared_state.clone()),
+        states: None,
+    }
+}
+
+pub async fn start_async(port: u16, shared_state: Arc<Mutex<SharedState>>) {
+    tokio::spawn(async move { start(port, shared_state).await });
 }
 
 async fn start(
@@ -73,8 +77,6 @@ async fn start(
     proxy_listener_wrapper::set_status_message(shared_state.clone(), message.to_string());
     provision::listener_started(shared_state.clone());
 
-    // TODO: Create cancellation token
-
     // We start a loop to continuously accept incoming connections
     loop {
         let (stream, client_addr) = match listener.accept().await {
@@ -85,14 +87,13 @@ async fn start(
             }
         };
 
-        if proxy_listener_wrapper::get_shutdown(shared_state.clone()) {
+        if SharedState::get_cancellation_token(shared_state.clone()).is_cancelled() {
             let message = "Stop signal received, stop the listener.";
             proxy_listener_wrapper::set_status_message(shared_state.clone(), message.to_string());
             logger::write_warning(message.to_string());
             return Ok(());
         }
 
-        // Increase the connection count
         Connection::write(
             INITIAL_CONNECTION_ID,
             "Accepted new connection.".to_string(),
@@ -153,7 +154,6 @@ async fn start(
                     claims: None,
                 };
 
-                // TODO: pass cancellation token
                 handle_request(req, connection, shared_state)
             });
 
@@ -188,12 +188,17 @@ async fn handle_request(
         ),
     );
 
+    if let Err(e) = SharedState::check_cancellation_token(shared_state.clone(), "handle_request") {
+        Connection::write_information(connection_id, format!("{}", e));
+        return Ok(empty_response(StatusCode::SERVICE_UNAVAILABLE));
+    }
+
     let client_source_ip = connection.client_addr.ip();
     let client_source_port = connection.client_addr.port();
 
-    let entry;
+    let mut entry = None;
     match redirector::lookup_audit(client_source_port, shared_state.clone()) {
-        Ok(data) => entry = data,
+        Ok(data) => entry = Some(data),
         Err(e) => {
             let err = format!("Failed to get lookup_audit: {}", e);
             event_logger::write_event(
@@ -203,36 +208,67 @@ async fn handle_request(
                 "proxy_listener",
                 Connection::CONNECTION_LOGGER_KEY,
             );
-            Connection::write_information(
-                connection_id,
-                "Try to get audit entry from socket stream".to_string(),
-            );
-            match redirector::get_audit_from_stream_socket(
-                connection.stream.lock().unwrap().as_raw_socket() as usize,
-            ) {
-                Ok(data) => entry = data,
-                Err(e) => {
-                    if e.kind() != std::io::ErrorKind::Unsupported {
-                        let err = format!("Failed to get lookup_audit_from_stream: {}", e);
-                        event_logger::write_event(
-                            event_logger::WARN_LEVEL,
-                            err,
-                            "handle_request",
-                            "proxy_listener",
-                            Connection::CONNECTION_LOGGER_KEY,
-                        );
+            #[cfg(windows)]
+            {
+                Connection::write_information(
+                    connection_id,
+                    "Try to get audit entry from socket stream".to_string(),
+                );
+                use std::os::windows::io::AsRawSocket;
+                match redirector::get_audit_from_stream_socket(
+                    connection.stream.lock().unwrap().as_raw_socket() as usize,
+                ) {
+                    Ok(data) => entry = Some(data),
+                    Err(e) => {
+                        if e.kind() != std::io::ErrorKind::Unsupported {
+                            let err = format!("Failed to get lookup_audit_from_stream: {}", e);
+                            event_logger::write_event(
+                                event_logger::WARN_LEVEL,
+                                err,
+                                "handle_request",
+                                "proxy_listener",
+                                Connection::CONNECTION_LOGGER_KEY,
+                            );
+                        }
                     }
-                    log_connection_summary(
-                        &connection,
-                        StatusCode::MISDIRECTED_REQUEST,
-                        shared_state.clone(),
-                    );
-                    return Ok(empty_response(StatusCode::MISDIRECTED_REQUEST));
                 }
             }
         }
     }
-    let claims = Claims::from_audit_entry(&entry, client_source_ip, shared_state.clone());
+    let entry = match entry {
+        Some(e) => e,
+        None => {
+            log_connection_summary(
+                &connection,
+                StatusCode::MISDIRECTED_REQUEST,
+                shared_state.clone(),
+            );
+            return Ok(empty_response(StatusCode::MISDIRECTED_REQUEST));
+        }
+    };
+
+    let claims = match Claims::from_audit_entry(&entry, client_source_ip, shared_state.clone()) {
+        Ok(claims) => claims,
+        Err(e) => {
+            if let Err(e) =
+                SharedState::check_cancellation_token(shared_state.clone(), "handle_request")
+            {
+                Connection::write_information(connection_id, format!("{}", e));
+                return Ok(empty_response(StatusCode::SERVICE_UNAVAILABLE));
+            }
+
+            Connection::write_warning(
+                connection_id,
+                format!("Failed to get claims from audit entry: {}", e),
+            );
+            log_connection_summary(
+                &connection,
+                StatusCode::MISDIRECTED_REQUEST,
+                shared_state.clone(),
+            );
+            return Ok(empty_response(StatusCode::MISDIRECTED_REQUEST));
+        }
+    };
 
     let claim_details: String = match serde_json::to_string(&claims) {
         Ok(json) => json,
@@ -534,4 +570,67 @@ async fn handle_request_with_signature(
 
     log_connection_summary(&connection, response.status(), shared_state.clone());
     Ok(response)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::common::logger;
+    use crate::proxy::proxy_connection::Connection;
+    use crate::proxy::proxy_server;
+    use crate::shared_state::key_keeper_wrapper;
+    use crate::shared_state::SharedState;
+    use proxy_agent_shared::logger_manager;
+    use std::collections::HashMap;
+    use std::env;
+    use std::fs;
+    use std::thread;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn direct_request_test() {
+        let logger_key = "direct_request_test";
+        let mut temp_test_path = env::temp_dir();
+        temp_test_path.push(logger_key);
+        logger_manager::init_logger(
+            logger::AGENT_LOGGER_KEY.to_string(), // production code uses 'Agent_Log' to write.
+            temp_test_path.clone(),
+            logger_key.to_string(),
+            10 * 1024 * 1024,
+            20,
+        );
+        Connection::init_logger(temp_test_path.to_path_buf());
+
+        // start listener, the port must different from the one used in production code
+        let shared_state = SharedState::new();
+        let s = shared_state.clone();
+        let port: u16 = 8091;
+        proxy_server::start_async(port, s.clone()).await;
+
+        // give some time to let the listener started
+        let sleep_duration = Duration::from_millis(100);
+        thread::sleep(sleep_duration);
+
+        let url = format!("http://127.0.0.1:{}/", port);
+        let request = crate::common::http::get_request(
+            "GET",
+            &url,
+            &HashMap::new(),
+            key_keeper_wrapper::get_current_key_guid(shared_state.clone()),
+            key_keeper_wrapper::get_current_key_value(shared_state.clone()),
+        )
+        .unwrap();
+        let response = request.send().await.unwrap();
+
+        // stop listener
+        proxy_server::stop(port, shared_state);
+
+        assert_eq!(
+            http::StatusCode::MISDIRECTED_REQUEST,
+            response.status(),
+            "response.status mismatched."
+        );
+
+        // clean up and ignore the clean up errors
+        _ = fs::remove_dir_all(temp_test_path);
+    }
 }

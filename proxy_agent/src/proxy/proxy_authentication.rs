@@ -3,11 +3,11 @@
 use super::authorization_rules::AuthorizationRules;
 use super::proxy_connection::Connection;
 use super::proxy_summary::ProxySummary;
-use crate::common::http::response::Response;
 use crate::key_keeper::key::AuthorizationItem;
 use crate::shared_state::SharedState;
 use crate::shared_state::{agent_status_wrapper, proxy_authenticator_wrapper};
 use crate::{common::config, common::constants, proxy::Claims};
+use http::StatusCode;
 use std::sync::{Arc, Mutex};
 
 pub fn set_wireserver_rules(
@@ -135,7 +135,7 @@ impl Authenticate for WireServer {
                         url: request_url.to_string(),
                         ip: constants::WIRE_SERVER_IP.to_string(),
                         port: constants::WIRE_SERVER_PORT,
-                        responseStatus: Response::FORBIDDEN.to_string(),
+                        responseStatus: StatusCode::FORBIDDEN.to_string(),
                         elapsedTime: 0,
                     };
                     agent_status_wrapper::add_one_connection_summary(
@@ -195,7 +195,7 @@ impl Authenticate for Imds {
                         url: request_url.to_string(),
                         ip: constants::IMDS_IP.to_string(),
                         port: constants::IMDS_PORT,
-                        responseStatus: Response::FORBIDDEN.to_string(),
+                        responseStatus: StatusCode::FORBIDDEN.to_string(),
                         elapsedTime: 0,
                     };
                     agent_status_wrapper::add_one_connection_summary(
