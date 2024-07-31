@@ -28,7 +28,7 @@ impl WireServerClient {
 
         let url = format!(
             "http://{}:{}/{}",
-            self.ip, self.port, "/machine/?comp=telemetrydata"
+            self.ip, self.port, "machine/?comp=telemetrydata"
         );
         let mut headers = HashMap::new();
         headers.insert("x-ms-version".to_string(), "2012-11-30".to_string());
@@ -69,7 +69,7 @@ impl WireServerClient {
     }
 
     pub async fn get_goalstate(&self) -> std::io::Result<GoalState> {
-        const GOALSTATE_URI: &str = "/machine?comp=goalstate";
+        const GOALSTATE_URI: &str = "machine?comp=goalstate";
         let url = format!("http://{}:{}/{}", self.ip, self.port, GOALSTATE_URI);
         let mut headers = HashMap::new();
         headers.insert("x-ms-version".to_string(), "2012-11-30".to_string());

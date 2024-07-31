@@ -46,7 +46,7 @@ pub async fn poll_status_async(
 }
 
 // poll secure channel status at interval
-pub async fn poll_secure_channel_status(
+async fn poll_secure_channel_status(
     base_url: Url,
     key_dir: PathBuf,
     interval: Duration,

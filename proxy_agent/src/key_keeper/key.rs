@@ -626,8 +626,8 @@ impl Clone for Key {
     }
 }
 
-const STATUS_URL: &str = "/secure-channel/status";
-const KEY_URL: &str = "/secure-channel/key";
+const STATUS_URL: &str = "secure-channel/status";
+const KEY_URL: &str = "secure-channel/key";
 
 // base_url must end with '/'
 pub async fn get_status(base_url: Url) -> std::io::Result<KeyStatus> {

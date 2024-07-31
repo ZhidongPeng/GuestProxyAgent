@@ -22,7 +22,7 @@ impl ImdsClient {
     }
 
     pub async fn get_imds_instance_info(&self) -> std::io::Result<InstanceInfo> {
-        const IMDS_URI: &str = "/metadata/instance?api-version=2018-02-01";
+        const IMDS_URI: &str = "metadata/instance?api-version=2018-02-01";
         let url = format!("http://{}:{}/{}", self.ip, self.port, IMDS_URI);
         let mut headers = HashMap::new();
         headers.insert("Metadata".to_string(), "true".to_string());
