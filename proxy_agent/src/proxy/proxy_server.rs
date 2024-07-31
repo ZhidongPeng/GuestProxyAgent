@@ -506,7 +506,7 @@ async fn handle_request_with_signature(
         key_keeper_wrapper::get_current_key_value(shared_state.clone()),
         key_keeper_wrapper::get_current_key_guid(shared_state.clone()),
     ) {
-        let input_to_sign = proxy_extensions::as_sig_input(head, whole_body);
+        let input_to_sign = http::as_sig_input(head, whole_body);
         match helpers::compute_signature(key.to_string(), input_to_sign.as_slice()) {
             Ok(sig) => {
                 match String::from_utf8(input_to_sign) {
@@ -615,6 +615,7 @@ mod tests {
             "GET",
             &url,
             &HashMap::new(),
+            None,
             key_keeper_wrapper::get_current_key_guid(shared_state.clone()),
             key_keeper_wrapper::get_current_key_value(shared_state.clone()),
         )

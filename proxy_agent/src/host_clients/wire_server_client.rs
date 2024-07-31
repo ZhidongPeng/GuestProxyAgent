@@ -41,10 +41,11 @@ impl WireServerClient {
             "POST",
             &url,
             &headers,
-            key_keeper_wrapper::get_current_key_guid(self.shared_state.clone()),
-            key_keeper_wrapper::get_current_key_value(self.shared_state.clone()),
+            Some(xml_data.as_bytes().to_vec()),
+            None,  // post telemetry data does not require signing
+            None,
         )?;
-        let response = match request.body(xml_data.as_bytes().to_vec()).send().await {
+        let response = match request.send().await {
             Ok(r) => r,
             Err(e) => {
                 return Err(std::io::Error::new(
