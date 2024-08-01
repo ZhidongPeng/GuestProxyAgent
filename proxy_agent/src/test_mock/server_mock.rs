@@ -70,7 +70,7 @@ async fn handle_request(
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
     logger::write_information("WireServer processing request.".to_string());
 
-    let path: String = request.uri().to_string();
+    let path: String = request.uri().path_and_query().unwrap().to_string();
     let path = path.trim_start_matches('/');
     let segments: Vec<&str> = path.split('/').collect();
     println!("handle_request: {}, {:?}", request.method(), path);

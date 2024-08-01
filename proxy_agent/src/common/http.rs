@@ -102,9 +102,21 @@ pub fn get_request(
     key: Option<String>,
 ) -> std::io::Result<Request<BoxBody<Bytes, hyper::Error>>> {
     let (host, _) = host_port_from_uri(uri_str)?;
+    let uri = match uri_str.parse::<hyper::Uri>() {
+        Ok(u) => u,
+        Err(e) => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("Failed to parse uri {}: {}", uri_str, e),
+            ))
+        }
+    };
     let mut request_builder = Request::builder()
         .method(method)
-        .uri(uri_str)
+        .uri(match uri.path_and_query() {
+            Some(pq) => pq.as_str(),
+            None => uri.path(),
+        })
         .header(
             constants::DATE_HEADER,
             misc_helpers::get_date_time_rfc1123_string(),
@@ -165,15 +177,20 @@ pub fn host_port_from_uri(uri_str: &str) -> std::io::Result<(String, u16)> {
             ))
         }
     };
-    let port = uri.port().unwrap_or(80);
+    let port = match uri.port() {
+        Some(p) => p.as_u16(),
+        None => 80,
+    };
+
     Ok((host, port))
 }
-fn parse_uri(uri_str: &str) -> std::io::Result<Url> {
-    match url::Url::parse(uri_str) {
+
+fn parse_uri(uri_str: &str) -> std::io::Result<hyper::Uri> {
+    match uri_str.parse::<hyper::Uri>() {
         Ok(u) => Ok(u),
         Err(e) => Err(std::io::Error::new(
             std::io::ErrorKind::Other,
-            format!("Failed to parse uri {} with error: {}", uri_str, e),
+            format!("Failed to parse uri {}: {}", uri_str, e),
         )),
     }
 }
@@ -307,7 +324,10 @@ fn headers_to_canonicalized_string(headers: &hyper::HeaderMap) -> String {
 }
 
 fn into_url(uri: &hyper::Uri) -> Url {
-    let path_query = uri.path_and_query().unwrap().as_str();
+    let path_query = match uri.path_and_query() {
+        Some(pq) => pq.as_str(),
+        None => uri.path(),
+    };
     // Url crate does not support parsing relative paths, so we need to add a dummy base url
     let mut url = Url::parse("http://127.0.0.1").unwrap();
     if let Ok(u) = url.join(path_query) {
