@@ -72,55 +72,6 @@ impl SharedState {
     pub fn new() -> Arc<Mutex<Self>> {
         Arc::new(Mutex::new(SharedState::default()))
     }
-
-    pub fn get_runtime(
-        shared_state: Arc<Mutex<SharedState>>,
-    ) -> Option<Arc<Mutex<tokio::runtime::Runtime>>> {
-        shared_state.lock().unwrap().runtime.clone()
-    }
-
-    pub fn shutdown_runtime(shared_state: Arc<Mutex<SharedState>>) {
-        let mut shared_state = shared_state.lock().unwrap();
-        let runtime = shared_state.runtime.clone();
-        shared_state.runtime = None;
-        drop(shared_state); // Release the lock on shared_state
-
-        if let Some(runtime) = runtime {
-            let runtime = runtime.lock().unwrap();
-            drop(runtime); // Release the lock on runtime
-        }
-    }
-
-    pub fn cancel_cancellation_token(shared_state: Arc<Mutex<SharedState>>) {
-        shared_state.lock().unwrap().cancellation_token.cancel();
-    }
-
-    pub fn get_cancellation_token(shared_state: Arc<Mutex<SharedState>>) -> CancellationToken {
-        shared_state.lock().unwrap().cancellation_token.clone()
-    }
-
-    pub fn check_cancellation_token(
-        shared_state: Arc<Mutex<SharedState>>,
-        fn_name: &str,
-    ) -> std::io::Result<()> {
-        if shared_state
-            .lock()
-            .unwrap()
-            .cancellation_token
-            .is_cancelled()
-        {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Interrupted,
-                format!(
-                    "Stop signal received, {} is interrupted by cancellation token",
-                    fn_name
-                ),
-            ));
-        }
-
-        // not cancelled
-        Ok(())
-    }
 }
 
 impl Default for SharedState {
@@ -172,6 +123,64 @@ impl Default for SharedState {
             #[cfg(windows)]
             service_status_handle: None,
         }
+    }
+}
+
+pub mod shared_state_wrapper {
+    use super::SharedState;
+    use std::sync::{Arc, Mutex};
+    use tokio_util::sync::CancellationToken;
+
+    pub fn get_runtime(
+        shared_state: Arc<Mutex<SharedState>>,
+    ) -> Option<Arc<Mutex<tokio::runtime::Runtime>>> {
+        shared_state.lock().unwrap().runtime.clone()
+    }
+
+    /// Shutdown the runtime and release the lock on runtime and shared_state
+    /// call it when need to stop the async tasks gracefully
+    pub fn shutdown_runtime(shared_state: Arc<Mutex<SharedState>>) {
+        let mut shared_state = shared_state.lock().unwrap();
+        let runtime = shared_state.runtime.clone();
+        shared_state.runtime = None;
+        drop(shared_state); // Release the lock on shared_state
+
+        if let Some(runtime) = runtime {
+            let runtime = runtime.lock().unwrap();
+            drop(runtime); // Release the lock on runtime
+        }
+    }
+
+    pub fn cancel_cancellation_token(shared_state: Arc<Mutex<SharedState>>) {
+        shared_state.lock().unwrap().cancellation_token.cancel();
+    }
+
+    pub fn get_cancellation_token(shared_state: Arc<Mutex<SharedState>>) -> CancellationToken {
+        shared_state.lock().unwrap().cancellation_token.clone()
+    }
+
+    /// Check the cancellation token and return error if it is cancelled
+    pub fn check_cancellation_token(
+        shared_state: Arc<Mutex<SharedState>>,
+        fn_name: &str,
+    ) -> std::io::Result<()> {
+        if shared_state
+            .lock()
+            .unwrap()
+            .cancellation_token
+            .is_cancelled()
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                format!(
+                    "Stop signal received, {} is interrupted by cancellation token",
+                    fn_name
+                ),
+            ));
+        }
+
+        // not cancelled
+        Ok(())
     }
 }
 

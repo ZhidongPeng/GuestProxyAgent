@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 use crate::common::logger;
-use crate::shared_state::SharedState;
+use crate::shared_state::{shared_state_wrapper, SharedState};
 use libloading::{Library, Symbol};
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
@@ -117,12 +117,8 @@ pub fn get_user(
     shared_state: Arc<Mutex<SharedState>>,
     logon_id: u64,
 ) -> std::io::Result<(String, Vec<String>)> {
-    if SharedState::get_cancellation_token(shared_state.clone()).is_cancelled() {
-        return Err(Error::new(
-            ErrorKind::Interrupted,
-            "get_user is interrupted by cancellation token",
-        ));
-    }
+    shared_state_wrapper::check_cancellation_token(shared_state.clone(), "windows::get_user")?;
+
     unsafe {
         let mut user_name;
         let luid = LUID {

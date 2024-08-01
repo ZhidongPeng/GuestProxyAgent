@@ -4,7 +4,8 @@ use crate::common::{config, constants, helpers, http, logger};
 use crate::proxy::proxy_connection::{Connection, ConnectionContext};
 use crate::proxy::{proxy_authentication, proxy_summary::ProxySummary, Claims};
 use crate::shared_state::{
-    agent_status_wrapper, key_keeper_wrapper, proxy_listener_wrapper, SharedState,
+    agent_status_wrapper, key_keeper_wrapper, proxy_listener_wrapper, shared_state_wrapper,
+    SharedState,
 };
 use crate::{provision, redirector};
 use http_body_util::Full;
@@ -87,7 +88,7 @@ async fn start(
             }
         };
 
-        if SharedState::get_cancellation_token(shared_state.clone()).is_cancelled() {
+        if shared_state_wrapper::get_cancellation_token(shared_state.clone()).is_cancelled() {
             let message = "Stop signal received, stop the listener.";
             proxy_listener_wrapper::set_status_message(shared_state.clone(), message.to_string());
             logger::write_warning(message.to_string());
@@ -188,7 +189,9 @@ async fn handle_request(
         ),
     );
 
-    if let Err(e) = SharedState::check_cancellation_token(shared_state.clone(), "handle_request") {
+    if let Err(e) =
+        shared_state_wrapper::check_cancellation_token(shared_state.clone(), "handle_request")
+    {
         Connection::write_information(connection_id, format!("{}", e));
         return Ok(empty_response(StatusCode::SERVICE_UNAVAILABLE));
     }
@@ -250,9 +253,10 @@ async fn handle_request(
     let claims = match Claims::from_audit_entry(&entry, client_source_ip, shared_state.clone()) {
         Ok(claims) => claims,
         Err(e) => {
-            if let Err(e) =
-                SharedState::check_cancellation_token(shared_state.clone(), "handle_request")
-            {
+            if let Err(e) = shared_state_wrapper::check_cancellation_token(
+                shared_state.clone(),
+                "handle_request",
+            ) {
                 Connection::write_information(connection_id, format!("{}", e));
                 return Ok(empty_response(StatusCode::SERVICE_UNAVAILABLE));
             }

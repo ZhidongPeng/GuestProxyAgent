@@ -3,7 +3,7 @@
 use crate::common::{http, logger};
 use crate::key_keeper;
 use crate::key_keeper::key::{Key, KeyStatus};
-use crate::shared_state::{proxy_listener_wrapper, SharedState};
+use crate::shared_state::{proxy_listener_wrapper, shared_state_wrapper, SharedState};
 use http_body_util::combinators::BoxBody;
 use hyper::body::Bytes;
 use hyper::server::conn::http1;
@@ -41,7 +41,7 @@ pub async fn start(
             }
         };
 
-        if SharedState::get_cancellation_token(shared_state.clone()).is_cancelled() {
+        if shared_state_wrapper::get_cancellation_token(shared_state.clone()).is_cancelled() {
             let message = "Stop signal received, stop the listener.";
             logger::write_warning(message.to_string());
             return Ok(());

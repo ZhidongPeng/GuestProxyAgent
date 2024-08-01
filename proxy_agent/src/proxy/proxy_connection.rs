@@ -8,15 +8,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-pub struct Connection {
-    pub stream: TcpStream,
-    pub id: u128,
-
-    pub now: Instant,
-    pub claims: Option<Claims>,
-    pub ip: String,
-    pub port: u16,
-}
+pub struct Connection {}
 
 pub struct ConnectionContext {
     pub id: u128,

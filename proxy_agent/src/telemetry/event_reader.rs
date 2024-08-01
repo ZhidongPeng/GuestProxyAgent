@@ -6,6 +6,7 @@ use crate::common::constants;
 use crate::common::logger;
 use crate::host_clients::imds_client::ImdsClient;
 use crate::host_clients::wire_server_client::WireServerClient;
+use crate::shared_state::shared_state_wrapper;
 use crate::shared_state::telemetry_wrapper;
 use crate::shared_state::SharedState;
 use proxy_agent_shared::misc_helpers;
@@ -55,7 +56,7 @@ pub fn start_async(
     _ = thread::Builder::new()
         .name("event_reader".to_string())
         .spawn(move || {
-            let runtime = SharedState::get_runtime(shared_state.clone());
+            let runtime = shared_state_wrapper::get_runtime(shared_state.clone());
             match runtime {
                 Some(rt) => {
                     let _ = rt.lock().unwrap().block_on(async move {

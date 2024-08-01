@@ -5,7 +5,7 @@ pub mod windows;
 
 use crate::common::{config, constants, helpers, logger};
 use crate::proxy::proxy_server;
-use crate::shared_state::{telemetry_wrapper, SharedState};
+use crate::shared_state::{shared_state_wrapper, telemetry_wrapper, SharedState};
 use crate::telemetry::event_reader;
 use proxy_agent_shared::logger_manager;
 use proxy_agent_shared::telemetry::event_logger;
@@ -40,7 +40,7 @@ pub fn start_service(shared_state: Arc<Mutex<SharedState>>) {
 
 fn start_service_async(shared_state: Arc<Mutex<SharedState>>) {
     _ = std::thread::Builder::new().spawn(move || {
-        let runtime = SharedState::get_runtime(shared_state.clone());
+        let runtime = shared_state_wrapper::get_runtime(shared_state.clone());
         match runtime {
             Some(rt) => {
                 rt.lock().unwrap().block_on(async move {
@@ -82,7 +82,7 @@ pub fn stop_service(shared_state: Arc<Mutex<SharedState>>) {
         "============== GuestProxyAgent is stopping, elapsed: {}",
         helpers::get_elapsed_time_in_millisec()
     ));
-    SharedState::cancel_cancellation_token(shared_state.clone());
+    shared_state_wrapper::cancel_cancellation_token(shared_state.clone());
 
     crate::monitor::stop(shared_state.clone());
     crate::redirector::close(shared_state.clone());
@@ -92,6 +92,6 @@ pub fn stop_service(shared_state: Arc<Mutex<SharedState>>) {
     telemetry_wrapper::set_logger_shutdown(shared_state.clone(), true);
     event_reader::stop(shared_state.clone());
 
-    SharedState::shutdown_runtime(shared_state.clone());
+    shared_state_wrapper::shutdown_runtime(shared_state.clone());
     logger::write_information("Async runtime dropped.".to_string());
 }

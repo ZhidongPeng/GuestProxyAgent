@@ -9,7 +9,7 @@ pub mod proxy_summary;
 #[cfg(windows)]
 mod windows;
 
-use crate::shared_state::SharedState;
+use crate::shared_state::{shared_state_wrapper, SharedState};
 use crate::{redirector::AuditEntry, shared_state::proxy_wrapper};
 use serde_derive::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
@@ -100,7 +100,7 @@ impl Claims {
         client_ip: IpAddr,
         shared_state: Arc<Mutex<SharedState>>,
     ) -> std::io::Result<Self> {
-        SharedState::check_cancellation_token(shared_state.clone(), "from_audit_entry")?;
+        shared_state_wrapper::check_cancellation_token(shared_state.clone(), "from_audit_entry")?;
         let p = Process::from_pid(entry.process_id)?;
         let u = get_user(entry.logon_id, shared_state)?;
         Ok(Claims {
@@ -170,7 +170,7 @@ impl User {
         shared_state: Arc<Mutex<SharedState>>,
         logon_id: u64,
     ) -> std::io::Result<Self> {
-        SharedState::check_cancellation_token(shared_state.clone(), "from_logon_id")?;
+        shared_state_wrapper::check_cancellation_token(shared_state.clone(), "from_logon_id")?;
         let user_name;
         let mut user_groups: Vec<String> = Vec::new();
 
