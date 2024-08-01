@@ -456,7 +456,9 @@ mod tests {
         assert!(THREAD_PRIORITY_VERIFY_DONE.load(Ordering::Relaxed));
     }
 
-    #[tokio::test]
+    // this test is to test the event reader thread, it reads events from the events folder and send to wire server
+    // it requires more threads to run server and client
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_event_reader_thread() {
         let mut temp_dir = env::temp_dir();
         temp_dir.push("test_event_reader_thread");

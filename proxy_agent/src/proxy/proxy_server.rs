@@ -586,7 +586,9 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
-    #[tokio::test]
+    // this test is to test the direct request to the proxy server
+    // it requires more threads to run server and client
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn direct_request_test() {
         let logger_key = "direct_request_test";
         let mut temp_test_path = env::temp_dir();

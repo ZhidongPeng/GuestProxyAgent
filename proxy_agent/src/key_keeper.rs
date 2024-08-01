@@ -421,7 +421,9 @@ mod tests {
         _ = fs::remove_dir_all(&temp_test_path);
     }
 
-    #[tokio::test]
+    // this test is to test poll_secure_channel_status
+    // it requires more threads to run server and client
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn poll_secure_channel_status_tests() {
         let mut temp_test_path = env::temp_dir();
         temp_test_path.push("poll_secure_channel_status_tests");
