@@ -171,10 +171,10 @@ async fn get_provision_status_wait_async(port: u16, duration: Option<Duration>) 
         let (finished, message) = match provision_state {
             Ok(state) => (state.finished, state.errorMessage),
             Err(e) => {
-                logger::write_warning(format!(
-                    "Failed to query the current provision state with error:{}.",
+                println!(
+                    "Failed to query the current provision state with error: {}.",
                     e
-                ));
+                );
                 (false, String::new())
             }
         };

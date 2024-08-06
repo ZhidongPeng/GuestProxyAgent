@@ -15,13 +15,13 @@ pub mod shared_state;
 pub mod telemetry;
 pub mod test_mock;
 
-use common::helpers;
+use common::{constants, helpers};
 use proxy_agent_shared::misc_helpers;
 use shared_state::SharedState;
 use std::{process, time::Duration};
 
 #[cfg(windows)]
-use common::{constants, logger};
+use common::logger;
 #[cfg(windows)]
 use service::windows;
 #[cfg(windows)]
