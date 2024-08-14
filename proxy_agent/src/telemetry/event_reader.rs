@@ -6,7 +6,6 @@ use crate::common::constants;
 use crate::common::logger;
 use crate::host_clients::imds_client::ImdsClient;
 use crate::host_clients::wire_server_client::WireServerClient;
-use crate::shared_state::shared_state_wrapper;
 use crate::shared_state::telemetry_wrapper;
 use crate::shared_state::SharedState;
 use proxy_agent_shared::misc_helpers;
@@ -15,7 +14,6 @@ use proxy_agent_shared::telemetry::Event;
 use std::fs::remove_file;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::thread;
 use std::time::Duration;
 use thread_priority::ThreadPriority;
 
@@ -46,36 +44,23 @@ impl VMMetaData {
     }
 }
 
-pub fn start_async(
+pub async fn start_async(
     dir_path: PathBuf,
     interval: Duration,
     delay_start: bool,
     shared_state: Arc<Mutex<SharedState>>,
     verify_thread_priority_test_only: Option<fn(Result<ThreadPriority, thread_priority::Error>)>, // for test only
 ) {
-    _ = thread::Builder::new()
-        .name("event_reader".to_string())
-        .spawn(move || {
-            let runtime = shared_state_wrapper::get_runtime(shared_state.clone());
-            match runtime {
-                Some(rt) => {
-                    let _ = rt.lock().unwrap().block_on(async move {
-                        tokio::spawn(start(
-                            dir_path,
-                            Some(interval),
-                            delay_start,
-                            shared_state,
-                            verify_thread_priority_test_only,
-                        ))
-                        .await
-                    });
-                }
-                None => {
-                    let message = "Failed to get runtime.".to_string();
-                    logger::write_error(message);
-                }
-            }
-        });
+    tokio::spawn(async move {
+        start(
+            dir_path,
+            Some(interval),
+            delay_start,
+            shared_state,
+            verify_thread_priority_test_only,
+        )
+        .await
+    });
 }
 
 async fn start(
@@ -85,7 +70,7 @@ async fn start(
     shared_state: Arc<Mutex<SharedState>>,
     verify_thread_priority_test_only: Option<fn(Result<ThreadPriority, thread_priority::Error>)>, // for test only
 ) {
-    logger::write("telemetry event reader thread started.".to_string());
+    logger::write("telemetry event reader task started.".to_string());
 
     let interval = interval.unwrap_or(Duration::from_secs(300));
     let mut first = true;
@@ -93,14 +78,14 @@ async fn start(
     loop {
         if telemetry_wrapper::get_reader_shutdown(shared_state.clone()) {
             logger::write_warning(
-                "Stop signal received, closing event telemetry thread.".to_string(),
+                "Stop signal received, closing event telemetry task.".to_string(),
             );
             break;
         }
 
         if first {
             if delay_start {
-                // delay start the event_reader thread to give additional CPU cycles to more important threads
+                // delay start the event_reader task to give additional CPU cycles to more important threads
                 tokio::time::sleep(Duration::from_secs(60)).await;
             }
 
@@ -110,12 +95,12 @@ async fn start(
                         verify_thread_priority(thread_priority::get_current_thread_priority());
                     }
                     logger::write(
-                        "Successfully set the event_reader thread priority to min.".to_string(),
+                        "Successfully set the event_reader task priority to min.".to_string(),
                     );
                 }
                 Err(_) => {
                     logger::write_warning(
-                        "Failed to set the event_reader thread priority to min with error."
+                        "Failed to set the event_reader task priority to min with error."
                             .to_string(),
                     );
                 }
@@ -457,9 +442,7 @@ mod tests {
         assert!(THREAD_PRIORITY_VERIFY_DONE.load(Ordering::Relaxed));
     }
 
-    // this test is to test the event reader thread, it reads events from the events folder and send to wire server
-    // it requires more threads to run server and client
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test]
     async fn test_event_reader_thread() {
         let mut temp_dir = env::temp_dir();
         temp_dir.push("test_event_reader_thread");

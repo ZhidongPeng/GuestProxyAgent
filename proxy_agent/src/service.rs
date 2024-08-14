@@ -13,11 +13,9 @@ use std::sync::{Arc, Mutex};
 use url::Url;
 
 #[cfg(not(windows))]
-use std::thread;
-#[cfg(not(windows))]
 use std::time::Duration;
 
-pub fn start_service(shared_state: Arc<Mutex<SharedState>>) {
+pub async fn start_service(shared_state: Arc<Mutex<SharedState>>) {
     logger_manager::init_logger(
         logger::AGENT_LOGGER_KEY.to_string(),
         config::get_logs_dir(),
@@ -32,45 +30,27 @@ pub fn start_service(shared_state: Arc<Mutex<SharedState>>) {
         helpers::get_elapsed_time_in_millisec()
     ));
 
-    start_service_async(shared_state.clone());
+    let config_start_redirector = config::get_start_redirector();
+    crate::key_keeper::poll_status_async(
+        Url::parse(&format!("http://{}/", constants::WIRE_SERVER_IP)).unwrap(),
+        config::get_keys_dir(),
+        config::get_poll_key_status_duration(),
+        config_start_redirector,
+        shared_state.clone(),
+    )
+    .await;
 
-    // TODO:: need start the monitor thread and write proxy agent status to the file
-    // monitor::start_async(config::get_monitor_duration());
-}
-
-fn start_service_async(shared_state: Arc<Mutex<SharedState>>) {
-    let runtime = shared_state_wrapper::get_runtime(shared_state.clone());
-    match runtime {
-        Some(rt) => {
-            rt.lock().unwrap().spawn(async move {
-                let config_start_redirector = config::get_start_redirector();
-
-                crate::key_keeper::poll_status_async(
-                    Url::parse(&format!("http://{}/", constants::WIRE_SERVER_IP)).unwrap(),
-                    config::get_keys_dir(),
-                    config::get_poll_key_status_duration(),
-                    config_start_redirector,
-                    shared_state.clone(),
-                )
-                .await;
-
-                proxy_server::start_async(constants::PROXY_AGENT_PORT, shared_state.clone()).await;
-            });
-        }
-        None => {
-            logger::write_error("Failed to get tokio runtime.".to_string());
-        }
-    }
+    proxy_server::start_async(constants::PROXY_AGENT_PORT, shared_state.clone()).await;
 }
 
 #[cfg(not(windows))]
-pub fn start_service_wait() {
+pub async fn start_service_wait() {
     let shared_state = SharedState::new();
-    start_service(shared_state);
+    start_service(shared_state).await;
 
     loop {
         // continue to sleep until the service is stopped
-        thread::sleep(Duration::from_secs(1));
+        tokio::time::sleep(Duration::from_secs(1)).await;
     }
 }
 

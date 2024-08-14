@@ -31,7 +31,8 @@ use windows_service::{define_windows_service, service_dispatcher};
 #[cfg(windows)]
 define_windows_service!(ffi_service_main, proxy_agent_windows_service_main);
 
-fn main() {
+#[tokio::main(flavor = "multi_thread")]
+async fn main() {
     // start the Instant to calculate the elapsed time
     _ = helpers::get_elapsed_time_in_millisec();
 
@@ -39,7 +40,7 @@ fn main() {
     if args.len() > 1 {
         if args[1].to_lowercase() == "console" {
             let shared_state = SharedState::new();
-            service::start_service(shared_state.clone());
+            service::start_service(shared_state.clone()).await;
             println!("Press Enter to end it.");
             let mut temp = String::new();
             _ = std::io::stdin().read_line(&mut temp);
@@ -52,7 +53,8 @@ fn main() {
                 wait_time = args[3].parse::<u64>().unwrap_or(0);
             }
             let status =
-                provision::get_provision_status_wait(None, Some(Duration::from_secs(wait_time)));
+                provision::get_provision_status_wait(None, Some(Duration::from_secs(wait_time)))
+                    .await;
             if !status.0 {
                 // exit code 1 means provision not finished yet.
                 process::exit(1);
@@ -77,7 +79,7 @@ fn main() {
 
         #[cfg(not(windows))]
         {
-            service::start_service_wait();
+            service::start_service_wait().await;
         }
     }
 }

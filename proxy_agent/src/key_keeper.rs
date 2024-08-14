@@ -53,11 +53,11 @@ async fn poll_secure_channel_status(
     config_start_redirector: bool,
     shared_state: Arc<Mutex<SharedState>>,
 ) {
-    let message = "poll secure channel status thread started.";
+    let message = "poll secure channel status task started.";
     key_keeper_wrapper::set_status_message(shared_state.clone(), message.to_string());
     logger::write(message.to_string());
 
-    // launch redirector initialization when the key keeper thread is running
+    // launch redirector initialization when the key keeper task is running
     if config_start_redirector {
         redirector::start_async(constants::PROXY_AGENT_PORT, shared_state.clone()).await;
     }
@@ -89,7 +89,7 @@ async fn poll_secure_channel_status(
     let mut provision_timeup: bool = false;
     loop {
         if key_keeper_wrapper::get_shutdown(shared_state.clone()) {
-            let message = "Stop signal received, exiting the poll_secure_channel_status thread.";
+            let message = "Stop signal received, exiting the poll_secure_channel_status task.";
             key_keeper_wrapper::set_status_message(shared_state.clone(), message.to_string());
             logger::write_warning(message.to_string());
             break;
@@ -423,9 +423,7 @@ mod tests {
         _ = fs::remove_dir_all(&temp_test_path);
     }
 
-    // this test is to test poll_secure_channel_status
-    // it requires more threads to run server and client
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test]
     async fn poll_secure_channel_status_tests() {
         let mut temp_test_path = env::temp_dir();
         temp_test_path.push("poll_secure_channel_status_tests");

@@ -72,7 +72,8 @@ pub async fn start_event_threads(shared_state: Arc<Mutex<SharedState>>) {
         true,
         shared_state.clone(),
         None,
-    );
+    )
+    .await;
     provision_wrapper::set_event_log_threads_initialized(shared_state.clone(), true);
     proxy_agent_status::start_async(Duration::default(), shared_state.clone());
 }
@@ -126,7 +127,7 @@ fn write_provision_state(
     }
 }
 
-pub fn get_provision_status_wait(
+pub async fn get_provision_status_wait(
     provision_dir: Option<PathBuf>,
     duration: Option<Duration>,
 ) -> (bool, String) {
@@ -138,7 +139,7 @@ pub fn get_provision_status_wait(
 
         if let Some(d) = duration {
             if d.as_millis() >= helpers::get_elapsed_time_in_millisec() {
-                std::thread::sleep(Duration::from_millis(100));
+                tokio::time::sleep(Duration::from_millis(100)).await;
                 continue;
             }
         }
@@ -185,7 +186,7 @@ mod tests {
         _ = fs::remove_dir_all(&temp_test_path);
 
         let provision_status =
-            super::get_provision_status_wait(Some(temp_test_path.to_path_buf()), None);
+            super::get_provision_status_wait(Some(temp_test_path.to_path_buf()), None).await;
         assert!(!provision_status.0, "provision_status.0 must be false");
         assert_eq!(
             0,
@@ -224,7 +225,8 @@ mod tests {
         let provision_status = super::get_provision_status_wait(
             Some(temp_test_path.to_path_buf()),
             Some(Duration::from_millis(5)),
-        );
+        )
+        .await;
         assert!(provision_status.0, "provision_status.0 must be true");
         assert_eq!(
             0,

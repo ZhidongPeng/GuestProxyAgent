@@ -14,7 +14,6 @@ use proxy_agent_shared::telemetry::event_logger;
 use serde_derive::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::thread;
 
 #[cfg(not(windows))]
 pub use linux::BpfObject;
@@ -82,7 +81,7 @@ async fn start_impl(local_port: u16, shared_state: Arc<Mutex<SharedState>>) -> b
         if is_started(shared_state.clone()) {
             return true;
         }
-        thread::sleep(std::time::Duration::from_millis(10));
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
 
     is_started(shared_state.clone())

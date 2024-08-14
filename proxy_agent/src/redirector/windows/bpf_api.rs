@@ -8,10 +8,10 @@ use crate::common::logger;
 use libloading::{Library, Symbol};
 use once_cell::sync::Lazy;
 use proxy_agent_shared::misc_helpers;
+use std::env;
 use std::ffi::{c_char, c_int, c_uint, c_void, CString};
 use std::io::{Error, ErrorKind};
 use std::path::PathBuf;
-use std::{env, thread};
 
 static EBPF_API: Lazy<Option<Library>> = Lazy::new(init_ebpf_lib);
 const EBPF_API_FILE_NAME: &str = "EbpfApi.dll";
@@ -20,7 +20,7 @@ pub fn ebpf_api_is_loaded() -> bool {
     EBPF_API.is_some()
 }
 
-fn init_ebpf_lib() -> Option<Library> {
+async fn init_ebpf_lib() -> Option<Library> {
     for _ in 0..5 {
         let program_files_dir = env::var("ProgramFiles").unwrap_or("C:\\Program Files".to_string());
         let program_files_dir = PathBuf::from(program_files_dir);
@@ -49,7 +49,7 @@ fn init_ebpf_lib() -> Option<Library> {
             }
         }
 
-        thread::sleep(std::time::Duration::from_millis(10));
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
 
     // after 5 tries, still can't load ebpf api, return None
