@@ -19,7 +19,6 @@ const UNKNOWN_STATUS_MESSAGE: &str = "Status unknown.";
 
 #[derive(Clone)]
 pub struct SharedState {
-    runtime: Option<Arc<Mutex<tokio::runtime::Runtime>>>,
     cancellation_token: CancellationToken,
     // key_keeper
     key: Option<Key>,
@@ -77,9 +76,6 @@ impl SharedState {
 impl Default for SharedState {
     fn default() -> Self {
         SharedState {
-            runtime: Some(Arc::new(Mutex::new(
-                tokio::runtime::Runtime::new().unwrap(),
-            ))),
             cancellation_token: CancellationToken::new(),
             // key_keeper
             key: None,
@@ -130,26 +126,6 @@ pub mod shared_state_wrapper {
     use super::SharedState;
     use std::sync::{Arc, Mutex};
     use tokio_util::sync::CancellationToken;
-
-    pub fn get_runtime(
-        shared_state: Arc<Mutex<SharedState>>,
-    ) -> Option<Arc<Mutex<tokio::runtime::Runtime>>> {
-        shared_state.lock().unwrap().runtime.clone()
-    }
-
-    /// Shutdown the runtime and release the lock on runtime and shared_state
-    /// call it when need to stop the async tasks gracefully
-    pub fn shutdown_runtime(shared_state: Arc<Mutex<SharedState>>) {
-        let mut shared_state = shared_state.lock().unwrap();
-        let runtime = shared_state.runtime.clone();
-        shared_state.runtime = None;
-        drop(shared_state); // Release the lock on shared_state
-
-        if let Some(runtime) = runtime {
-            let runtime = runtime.lock().unwrap();
-            drop(runtime); // Release the lock on runtime
-        }
-    }
 
     pub fn cancel_cancellation_token(shared_state: Arc<Mutex<SharedState>>) {
         shared_state.lock().unwrap().cancellation_token.cancel();

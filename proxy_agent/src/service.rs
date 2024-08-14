@@ -69,6 +69,5 @@ pub fn stop_service(shared_state: Arc<Mutex<SharedState>>) {
     telemetry_wrapper::set_logger_shutdown(shared_state.clone(), true);
     event_reader::stop(shared_state.clone());
 
-    shared_state_wrapper::shutdown_runtime(shared_state.clone());
     logger::write_information("Async runtime dropped.".to_string());
 }
