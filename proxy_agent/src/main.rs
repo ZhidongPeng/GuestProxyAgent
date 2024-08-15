@@ -31,10 +31,19 @@ use windows_service::{define_windows_service, service_dispatcher};
 #[cfg(windows)]
 define_windows_service!(ffi_service_main, proxy_agent_windows_service_main);
 
+#[cfg(windows)]
+static ASYNC_RUNTIME_HANDLE: tokio::sync::OnceCell<tokio::runtime::Handle> =
+    tokio::sync::OnceCell::const_new();
+
 #[tokio::main(flavor = "multi_thread")]
 async fn main() {
     // start the Instant to calculate the elapsed time
     _ = helpers::get_elapsed_time_in_millisec();
+
+    // set the tokio runtime handle
+    ASYNC_RUNTIME_HANDLE
+        .set(tokio::runtime::Handle::current())
+        .unwrap();
 
     let args: Vec<String> = std::env::args().collect();
     if args.len() > 1 {
@@ -74,7 +83,15 @@ async fn main() {
     } else {
         #[cfg(windows)]
         {
-            _ = service_dispatcher::start(constants::PROXY_AGENT_SERVICE_NAME, ffi_service_main);
+            //
+            let main = std::thread::spawn(|| {
+                _ = service_dispatcher::start(
+                    constants::PROXY_AGENT_SERVICE_NAME,
+                    ffi_service_main,
+                );
+            });
+
+            main.join().unwrap();
         }
 
         #[cfg(not(windows))]
@@ -85,11 +102,28 @@ async fn main() {
 }
 
 #[cfg(windows)]
-fn proxy_agent_windows_service_main(args: Vec<OsString>) {
+fn proxy_agent_windows_service_main(_args: Vec<OsString>) {
     // start the Instant to calculate the elapsed time
     _ = helpers::get_elapsed_time_in_millisec();
 
-    if let Err(e) = windows::run_service(args) {
-        logger::write_error(format!("{e}"));
+    match ASYNC_RUNTIME_HANDLE.get() {
+        Some(handle) => {
+            handle.spawn(windows::run_service());
+        }
+        None => {
+            logger::write_error("Failed to get the tokio runtime handle.".to_string());
+        }
     }
+
+    // // windows_service crate does not support async funcation,
+    // // hence we have to start with normal fn and create a runtime to start async functions
+    // let rt = tokio::runtime::Builder::new_multi_thread()
+    //     .enable_all()
+    //     .build()
+    //     .unwrap();
+    // rt.block_on(async {
+    //     if let Err(e) = windows::run_service().await {
+    //         logger::write_error(format!("{e}"));
+    //     }
+    // });
 }

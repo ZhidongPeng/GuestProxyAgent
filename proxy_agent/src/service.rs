@@ -31,16 +31,18 @@ pub async fn start_service(shared_state: Arc<Mutex<SharedState>>) {
     ));
 
     let config_start_redirector = config::get_start_redirector();
-    crate::key_keeper::poll_status_async(
+    tokio::spawn(crate::key_keeper::poll_secure_channel_status(
         Url::parse(&format!("http://{}/", constants::WIRE_SERVER_IP)).unwrap(),
         config::get_keys_dir(),
         config::get_poll_key_status_duration(),
         config_start_redirector,
         shared_state.clone(),
-    )
-    .await;
+    ));
 
-    proxy_server::start_async(constants::PROXY_AGENT_PORT, shared_state.clone()).await;
+    tokio::spawn(proxy_server::start(
+        constants::PROXY_AGENT_PORT,
+        shared_state.clone(),
+    ));
 }
 
 #[cfg(not(windows))]
@@ -69,5 +71,5 @@ pub fn stop_service(shared_state: Arc<Mutex<SharedState>>) {
     telemetry_wrapper::set_logger_shutdown(shared_state.clone(), true);
     event_reader::stop(shared_state.clone());
 
-    logger::write_information("Async runtime dropped.".to_string());
+    logger::write_information("async runtime dropped.".to_string());
 }

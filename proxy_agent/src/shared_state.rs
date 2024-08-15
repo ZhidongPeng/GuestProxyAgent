@@ -56,8 +56,6 @@ pub struct SharedState {
     telemetry_reader_shutdown: bool,
     telemetry_logger_shutdown: bool,
     telemetry_logger_status_message: String,
-    mock_server_ip: Option<String>, // test only
-    mock_server_port: Option<u16>,  // test only
     // service
     #[cfg(windows)]
     service_status_handle: Option<ServiceStatusHandle>,
@@ -113,8 +111,6 @@ impl Default for SharedState {
             telemetry_reader_shutdown: false,
             telemetry_logger_shutdown: false,
             telemetry_logger_status_message: UNKNOWN_STATUS_MESSAGE.to_string(),
-            mock_server_ip: None,   // test only
-            mock_server_port: None, // test only
             // service
             #[cfg(windows)]
             service_status_handle: None,
@@ -614,28 +610,6 @@ pub mod telemetry_wrapper {
             .unwrap()
             .telemetry_logger_status_message
             .to_string()
-    }
-
-    pub fn set_mock_server_ip(shared_state: Arc<Mutex<SharedState>>, ip: String) {
-        shared_state.lock().unwrap().mock_server_ip = Some(ip);
-    }
-
-    pub fn get_mock_server_ip(shared_state: Arc<Mutex<SharedState>>) -> Option<String> {
-        shared_state.lock().unwrap().mock_server_ip.clone()
-    }
-
-    pub fn set_mock_server_port(shared_state: Arc<Mutex<SharedState>>, port: u16) {
-        shared_state.lock().unwrap().mock_server_port = Some(port);
-    }
-
-    pub fn get_mock_server_port(shared_state: Arc<Mutex<SharedState>>) -> Option<u16> {
-        shared_state.lock().unwrap().mock_server_port
-    }
-
-    pub fn reset_mock_server(shared_state: Arc<Mutex<SharedState>>) {
-        let mut state = shared_state.lock().unwrap();
-        state.mock_server_ip = None;
-        state.mock_server_port = None;
     }
 }
 

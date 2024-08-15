@@ -66,16 +66,21 @@ pub async fn start_event_threads(shared_state: Arc<Mutex<SharedState>>) {
             telemetry_wrapper::set_logger_status_message(cloned_state.clone(), status);
         },
     );
-    event_reader::start_async(
+
+    tokio::spawn(event_reader::start(
         config::get_events_dir(),
-        Duration::from_secs(300),
+        Some(Duration::from_secs(300)),
         true,
-        shared_state.clone(),
         None,
-    )
-    .await;
+        None,
+        shared_state.clone(),
+    ));
     provision_wrapper::set_event_log_threads_initialized(shared_state.clone(), true);
-    proxy_agent_status::start_async(Duration::default(), shared_state.clone());
+
+    tokio::spawn(proxy_agent_status::start(
+        Duration::default(),
+        shared_state.clone(),
+    ));
 }
 
 fn write_provision_state(
@@ -202,9 +207,9 @@ mod tests {
         let s2 = shared_state.clone();
         let s3 = shared_state.clone();
         let handles = vec![
-            tokio::spawn(async move { super::update_provision_state(1, Some(dir1), s1).await }),
-            tokio::spawn(async move { super::update_provision_state(2, Some(dir2), s2).await }),
-            tokio::spawn(async move { super::update_provision_state(4, Some(dir3), s3).await }),
+            tokio::spawn(super::update_provision_state(1, Some(dir1), s1)),
+            tokio::spawn(super::update_provision_state(2, Some(dir2), s2)),
+            tokio::spawn(super::update_provision_state(4, Some(dir3), s3)),
         ];
 
         for handle in handles {

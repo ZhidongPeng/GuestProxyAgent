@@ -44,13 +44,7 @@ impl AuditEntry {
 
 const MAX_STATUS_MESSAGE_LENGTH: usize = 1024;
 
-pub async fn start_async(local_port: u16, shared_state: Arc<Mutex<SharedState>>) {
-    tokio::spawn(async move {
-        start(local_port, shared_state).await;
-    });
-}
-
-async fn start(local_port: u16, shared_state: Arc<Mutex<SharedState>>) -> bool {
+pub async fn start(local_port: u16, shared_state: Arc<Mutex<SharedState>>) -> bool {
     let started = start_impl(local_port, shared_state.clone()).await;
 
     let level = if started {
