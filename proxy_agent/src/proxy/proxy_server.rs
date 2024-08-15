@@ -433,15 +433,6 @@ async fn forward_response(
         HeaderValue::from_static("value"),
     );
 
-    // print the response headers
-    Connection::write(
-        connection.id,
-        format!(
-            "Response headers: {:?}",
-            response.headers().iter().collect::<Vec<_>>()
-        ),
-    );
-
     log_connection_summary(&connection, response.status(), shared_state.clone());
     Ok(response)
 }

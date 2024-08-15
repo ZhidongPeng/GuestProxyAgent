@@ -41,6 +41,7 @@ async fn main() {
     _ = helpers::get_elapsed_time_in_millisec();
 
     // set the tokio runtime handle
+    #[cfg(windows)]
     ASYNC_RUNTIME_HANDLE
         .set(tokio::runtime::Handle::current())
         .unwrap();
