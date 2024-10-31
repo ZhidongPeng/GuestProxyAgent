@@ -1,17 +1,18 @@
 // Copyright (c) Microsoft Corporation
 // SPDX-License-Identifier: MIT
 
+pub mod key_keeper_wrapper;
+
 use crate::provision::ProvisionFlags;
 use crate::proxy::authorization_rules::ComputedAuthorizationItem;
+use crate::proxy::User;
 use crate::redirector;
 use crate::telemetry::event_reader::VMMetaData;
-use crate::{key_keeper::key::Key, proxy::User};
 use proxy_agent_shared::proxy_agent_aggregate_status::ProxyConnectionSummary;
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
 };
-use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 #[cfg(windows)]
@@ -33,22 +34,6 @@ const UNKNOWN_STATUS_MESSAGE: &str = "Status unknown.";
 pub struct SharedState {
     /// The cancellation token is used to cancel the agent when the agent is stopped
     cancellation_token: CancellationToken,
-
-    // key_keeper
-    /// The key is used to compute signature for the data between the agent and the host endpoints
-    key: Option<Key>,
-    /// The current secure channel state
-    current_secure_channel_state: String,
-    /// The rule ID for the WireServer endpoints
-    wireserver_rule_id: String,
-    /// The rule ID for the IMDS endpoints
-    imds_rule_id: String,
-    /// The flag to indicate if the key keeper is shutdown
-    key_keeper_shutdown: bool,
-    /// The status message for the key keeper module
-    key_keeper_status_message: String,
-    /// The notify object for the key keeper module
-    key_keeper_notify: Arc<Notify>,
 
     // proxy_listener
     /// The flag to indicate if the proxy listener is shutdown
@@ -126,14 +111,6 @@ impl Default for SharedState {
     fn default() -> Self {
         SharedState {
             cancellation_token: CancellationToken::new(),
-            // key_keeper
-            key: None,
-            current_secure_channel_state: crate::key_keeper::UNKNOWN_STATE.to_string(),
-            wireserver_rule_id: String::new(),
-            imds_rule_id: String::new(),
-            key_keeper_shutdown: false,
-            key_keeper_status_message: UNKNOWN_STATUS_MESSAGE.to_string(),
-            key_keeper_notify: Arc::new(Notify::new()),
             // proxy_listener
             proxy_listener_shutdown: false,
             connection_count: 0,
@@ -189,167 +166,6 @@ pub mod tokio_wrapper {
 
     pub fn cancel_cancellation_token(shared_state: Arc<Mutex<SharedState>>) {
         shared_state.lock().unwrap().cancellation_token.cancel();
-    }
-}
-
-/// wrapper functions for KeyKeeper related state fields
-/// Example:
-/// ```rust
-/// use proxy_agent::shared_state::key_keeper_wrapper;
-/// use proxy_agent::shared_state::SharedState;
-/// use std::sync::{Arc, Mutex};
-///
-/// let shared_state = SharedState::new();
-///
-/// // set the key once the feature is enabled
-/// key_keeper_wrapper::set_key(shared_state.clone(), key);
-/// key_keeper_wrapper::update_current_secure_channel_state(shared_state.clone(), state);
-/// key_keeper_wrapper::update_wireserver_rule_id(shared_state.clone(), rule_id);
-/// key_keeper_wrapper::update_imds_rule_id(shared_state.clone(), rule_id);
-///
-/// let key_value = key_keeper_wrapper::get_current_key_value(shared_state.clone());
-/// let key_guid = key_keeper_wrapper::get_current_key_guid(shared_state.clone());
-/// let key_incarnation = key_keeper_wrapper::get_current_key_incarnation(shared_state.clone());
-/// let state = key_keeper_wrapper::get_current_secure_channel_state(shared_state.clone());
-///
-/// // clear the key once the feature is disabled
-/// key_keeper_wrapper::clear_key(shared_state.clone());
-/// ```
-pub mod key_keeper_wrapper {
-    use super::SharedState;
-    use crate::key_keeper::key::Key;
-    use std::sync::{Arc, Mutex};
-    use tokio::sync::Notify;
-
-    pub fn set_key(shared_state: Arc<Mutex<SharedState>>, key: Key) {
-        shared_state.lock().unwrap().key = Some(key);
-    }
-
-    pub fn clear_key(shared_state: Arc<Mutex<SharedState>>) {
-        shared_state.lock().unwrap().key = None;
-    }
-
-    fn get_key(shared_state: Arc<Mutex<SharedState>>) -> Option<Key> {
-        shared_state.lock().unwrap().key.clone()
-    }
-
-    pub fn get_current_key_value(shared_state: Arc<Mutex<SharedState>>) -> Option<String> {
-        get_key(shared_state).map(|k| k.key)
-    }
-
-    pub fn get_current_key_guid(shared_state: Arc<Mutex<SharedState>>) -> Option<String> {
-        get_key(shared_state).map(|k| k.guid)
-    }
-
-    pub fn get_current_key_incarnation(shared_state: Arc<Mutex<SharedState>>) -> Option<u32> {
-        get_key(shared_state).map(|k| k.incarnationId)?
-    }
-
-    /// Update the current secure channel state
-    /// # Arguments
-    /// * `shared_state` - Arc<Mutex<SharedState>>
-    /// * `state` - String
-    /// # Returns
-    /// * `bool` - true if the state is update successfully
-    /// *        - false if state is the same as the current state
-    pub fn update_current_secure_channel_state(
-        shared_state: Arc<Mutex<SharedState>>,
-        state: String,
-    ) -> bool {
-        let mut current_state = shared_state.lock().unwrap();
-        if current_state.current_secure_channel_state == state {
-            false
-        } else {
-            current_state.current_secure_channel_state = state;
-            true
-        }
-    }
-
-    pub fn get_current_secure_channel_state(shared_state: Arc<Mutex<SharedState>>) -> String {
-        shared_state
-            .lock()
-            .unwrap()
-            .current_secure_channel_state
-            .to_string()
-    }
-
-    /// Update the WireServer rule ID
-    /// # Arguments
-    /// * `shared_state` - Arc<Mutex<SharedState>>
-    /// * `rule_id` - String
-    /// # Returns
-    /// * `bool` - true if the rule ID is update successfully
-    /// *        - false if rule ID is the same as the current state  
-    /// * `String` - the rule Id before the update operation
-    pub fn update_wireserver_rule_id(
-        shared_state: Arc<Mutex<SharedState>>,
-        rule_id: String,
-    ) -> (bool, String) {
-        let mut state = shared_state.lock().unwrap();
-        let old_rule_id = state.wireserver_rule_id.clone();
-        if old_rule_id == rule_id {
-            (false, old_rule_id)
-        } else {
-            state.wireserver_rule_id = rule_id;
-            (true, old_rule_id)
-        }
-    }
-
-    pub fn get_wireserver_rule_id(shared_state: Arc<Mutex<SharedState>>) -> String {
-        shared_state.lock().unwrap().wireserver_rule_id.to_string()
-    }
-
-    /// Update the IMDS rule ID
-    /// # Arguments
-    /// * `shared_state` - Arc<Mutex<SharedState>>
-    /// * `rule_id` - String
-    /// # Returns
-    /// * `bool` - true if the rule ID is update successfully
-    /// * `String` - the rule Id before the update operation
-    pub fn update_imds_rule_id(
-        shared_state: Arc<Mutex<SharedState>>,
-        rule_id: String,
-    ) -> (bool, String) {
-        let mut state = shared_state.lock().unwrap();
-        let old_rule_id = state.imds_rule_id.clone();
-        if old_rule_id == rule_id {
-            (false, old_rule_id)
-        } else {
-            state.imds_rule_id = rule_id;
-            (true, old_rule_id)
-        }
-    }
-
-    pub fn get_imds_rule_id(shared_state: Arc<Mutex<SharedState>>) -> String {
-        shared_state.lock().unwrap().imds_rule_id.to_string()
-    }
-
-    pub fn set_shutdown(shared_state: Arc<Mutex<SharedState>>, shutdown: bool) {
-        shared_state.lock().unwrap().key_keeper_shutdown = shutdown;
-    }
-
-    pub fn get_shutdown(shared_state: Arc<Mutex<SharedState>>) -> bool {
-        shared_state.lock().unwrap().key_keeper_shutdown
-    }
-
-    pub fn set_status_message(shared_state: Arc<Mutex<SharedState>>, status_message: String) {
-        shared_state.lock().unwrap().key_keeper_status_message = status_message;
-    }
-
-    pub fn get_status_message(shared_state: Arc<Mutex<SharedState>>) -> String {
-        shared_state
-            .lock()
-            .unwrap()
-            .key_keeper_status_message
-            .to_string()
-    }
-
-    pub fn notify(shared_state: Arc<Mutex<SharedState>>) {
-        shared_state.lock().unwrap().key_keeper_notify.notify_one();
-    }
-
-    pub fn get_notify(shared_state: Arc<Mutex<SharedState>>) -> Arc<Notify> {
-        shared_state.lock().unwrap().key_keeper_notify.clone()
     }
 }
 
