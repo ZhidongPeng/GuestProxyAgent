@@ -82,6 +82,11 @@ impl AuditEntry {
 
 const MAX_STATUS_MESSAGE_LENGTH: usize = 1024;
 
+pub struct Redirector{
+    local_port: u16,
+    shared_state: Arc<Mutex<SharedState>>,
+}
+
 pub async fn start(local_port: u16, shared_state: Arc<Mutex<SharedState>>) -> bool {
     let started = start_impl(local_port, shared_state.clone()).await;
 

@@ -2,12 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 pub mod key_keeper_wrapper;
+pub mod telemetry_wrapper;
 
 use crate::provision::ProvisionFlags;
 use crate::proxy::authorization_rules::ComputedAuthorizationItem;
 use crate::proxy::User;
 use crate::redirector;
-use crate::telemetry::event_reader::VMMetaData;
+use crate::telemetry::event_reader::VmMetaData;
 use proxy_agent_shared::proxy_agent_aggregate_status::ProxyConnectionSummary;
 use std::{
     collections::HashMap,
@@ -19,6 +20,48 @@ use tokio_util::sync::CancellationToken;
 use windows_service::service_control_handler::ServiceStatusHandle;
 
 const UNKNOWN_STATUS_MESSAGE: &str = "Status unknown.";
+
+#[derive(Clone)]
+pub struct SharedStateSenders { // TODO: rename it to SharedState
+    /// The cancellation token is used to cancel the agent when the agent is stopped
+    cancellation_token: CancellationToken,
+    /// The sender for the key keeper module
+    key_keeper_state: key_keeper_wrapper::KeyKeeperState,
+    /// The sender for the telemetry event modules
+    telemetry_state: telemetry_wrapper::TelemetryState,
+    shared_state: Arc<Mutex<SharedState>>, // TODO: remove this field
+}
+
+impl SharedStateSenders {
+    pub fn start_all() -> Self {
+        SharedStateSenders {
+            cancellation_token: CancellationToken::new(),
+            key_keeper_state: key_keeper_wrapper::KeyKeeperState::start_new(),
+            telemetry_state: telemetry_wrapper::TelemetryState::start_new(),
+            shared_state: SharedState::new(),
+        }
+    }
+
+    pub fn get_key_keeper_state(&self) -> key_keeper_wrapper::KeyKeeperState {
+        self.key_keeper_state.clone()
+    }
+
+    pub fn get_shared_state(&self) -> Arc<Mutex<SharedState>> {
+        self.shared_state.clone()
+    }
+
+    pub fn get_cancellation_token(&self) -> CancellationToken {
+        self.cancellation_token.clone()
+    }
+
+    pub fn cancel_cancellation_token(&self) {
+        self.cancellation_token.cancel();
+    }
+
+    pub fn get_telemetry_state(&self) -> telemetry_wrapper::TelemetryState {
+        self.telemetry_state.clone()
+    }
+}
 
 /// Shared state for the proxy agent
 /// The shared state is used to store the state of the agent, such as the key, secure channel state, provision state, etc.
@@ -32,9 +75,6 @@ const UNKNOWN_STATUS_MESSAGE: &str = "Status unknown.";
 /// ```
 #[derive(Clone)]
 pub struct SharedState {
-    /// The cancellation token is used to cancel the agent when the agent is stopped
-    cancellation_token: CancellationToken,
-
     // proxy_listener
     /// The flag to indicate if the proxy listener is shutdown
     proxy_listener_shutdown: bool,
@@ -81,7 +121,7 @@ pub struct SharedState {
 
     // telemetry
     /// The VM metadata for the telemetry events
-    vm_metadata: Option<VMMetaData>,
+    vm_metadata: Option<VmMetaData>,
     /// The flag to indicate if the telemetry reader task is shutdown
     telemetry_reader_shutdown: bool,
     /// The flag to indicate if the telemetry logger task is shutdown
@@ -110,7 +150,6 @@ impl Default for SharedState {
     /// Create a default SharedState instance
     fn default() -> Self {
         SharedState {
-            cancellation_token: CancellationToken::new(),
             // proxy_listener
             proxy_listener_shutdown: false,
             connection_count: 0,
@@ -142,30 +181,6 @@ impl Default for SharedState {
             #[cfg(windows)]
             service_status_handle: None,
         }
-    }
-}
-
-/// wrapper functions for tokio related state fields
-/// Example:
-/// ```rust
-/// use proxy_agent::shared_state::SharedState;
-/// use proxy_agent::shared_state::tokio_wrapper;
-/// use std::sync::{Arc, Mutex};
-///
-/// let shared_state = SharedState::new();
-/// let cancellation_token = tokio_wrapper::get_cancellation_token(shared_state.clone());
-/// ```
-pub mod tokio_wrapper {
-    use super::SharedState;
-    use std::sync::{Arc, Mutex};
-    use tokio_util::sync::CancellationToken;
-
-    pub fn get_cancellation_token(shared_state: Arc<Mutex<SharedState>>) -> CancellationToken {
-        shared_state.lock().unwrap().cancellation_token.clone()
-    }
-
-    pub fn cancel_cancellation_token(shared_state: Arc<Mutex<SharedState>>) {
-        shared_state.lock().unwrap().cancellation_token.cancel();
     }
 }
 
@@ -458,16 +473,16 @@ pub mod proxy_wrapper {
     }
 }
 
-pub mod telemetry_wrapper {
+pub mod telemetry_wrapper_old {
     use super::SharedState;
-    use crate::telemetry::event_reader::VMMetaData;
+    use crate::telemetry::event_reader::VmMetaData;
     use std::sync::{Arc, Mutex};
 
-    pub fn set_vm_metadata(shared_state: Arc<Mutex<SharedState>>, vm_metadata: VMMetaData) {
+    pub fn set_vm_metadata(shared_state: Arc<Mutex<SharedState>>, vm_metadata: VmMetaData) {
         shared_state.lock().unwrap().vm_metadata = Some(vm_metadata);
     }
 
-    pub fn get_vm_metadata(shared_state: Arc<Mutex<SharedState>>) -> Option<VMMetaData> {
+    pub fn get_vm_metadata(shared_state: Arc<Mutex<SharedState>>) -> Option<VmMetaData> {
         shared_state.lock().unwrap().vm_metadata.clone()
     }
 

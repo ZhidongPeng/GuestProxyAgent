@@ -20,33 +20,34 @@
 //!
 //! ```
 
-use crate::common::{
-    error::{Error, WireServerErrorType},
-    hyper_client, logger,
-    result::Result,
-};
 use crate::host_clients::goal_state::{GoalState, SharedConfig};
-use crate::shared_state::{key_keeper_wrapper, SharedState};
+use crate::{
+    common::{
+        error::{Error, WireServerErrorType},
+        hyper_client, logger,
+        result::Result,
+    },
+    shared_state::key_keeper_wrapper::KeyKeeperState,
+};
 use http::Method;
 use hyper::Uri;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 
 pub struct WireServerClient {
     ip: String,
     port: u16,
-    shared_state: Arc<Mutex<SharedState>>,
+    key_keeper_state: KeyKeeperState,
 }
 
 const TELEMETRY_DATA_URI: &str = "machine/?comp=telemetrydata";
 const GOALSTATE_URI: &str = "machine?comp=goalstate";
 
 impl WireServerClient {
-    pub fn new(ip: &str, port: u16, shared_state: Arc<Mutex<SharedState>>) -> Self {
+    pub fn new(ip: &str, port: u16, key_keeper_state: KeyKeeperState) -> Self {
         WireServerClient {
             ip: ip.to_string(),
             port,
-            shared_state,
+            key_keeper_state,
         }
     }
 
@@ -112,8 +113,14 @@ impl WireServerClient {
         hyper_client::get(
             &url,
             &headers,
-            key_keeper_wrapper::get_current_key_guid(self.shared_state.clone()),
-            key_keeper_wrapper::get_current_key_value(self.shared_state.clone()),
+            self.key_keeper_state
+                .get_current_key_guid()
+                .await
+                .unwrap_or(None),
+            self.key_keeper_state
+                .get_current_key_value()
+                .await
+                .unwrap_or(None),
             logger::write_warning,
         )
         .await
@@ -130,8 +137,14 @@ impl WireServerClient {
         hyper_client::get(
             &url,
             &headers,
-            key_keeper_wrapper::get_current_key_guid(self.shared_state.clone()),
-            key_keeper_wrapper::get_current_key_value(self.shared_state.clone()),
+            self.key_keeper_state
+                .get_current_key_guid()
+                .await
+                .unwrap_or(None),
+            self.key_keeper_state
+                .get_current_key_value()
+                .await
+                .unwrap_or(None),
             logger::write_warning,
         )
         .await

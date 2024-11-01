@@ -1,10 +1,10 @@
 // Copyright (c) Microsoft Corporation
 // SPDX-License-Identifier: MIT
 
-/// The KeyKeeperSender struct is used to send actions to the KeyKeeper module related sahred state fields
+/// The KeyKeeperState struct is used to send actions to the KeyKeeper module related sahred state fields
 /// Example:
 /// ```
-/// use crate::shared_state::key_keeper_wrapper::KeyKeeperSender;
+/// use crate::shared_state::key_keeper_wrapper::KeyKeeperState;
 /// use crate::key_keeper::key::Key;
 /// use crate::common::result::Result;
 /// use std::sync::Arc;
@@ -12,33 +12,36 @@
 ///
 /// #[tokio::main]
 /// async fn main() -> Result<()> {
-///    let key_keeper_sender = KeyKeeperSender::start_new();
+///    let key_keeper_state = KeyKeeperState::start_new();
 ///    let key = Key {
 ///        key: "key".to_string(),
 ///        guid: "guid".to_string(),
 ///        incarnationId: 1,
 ///    };
 ///   // set the set when the feature is enabled
-///   key_keeper_sender.update_key(key).await?;
-///   let key = key_keeper_sender.get_current_key_value().await?;
-///   let guid = key_keeper_sender.get_current_key_guid().await?;
-///   let incarnation = key_keeper_sender.get_current_key_incarnation().await?;
-///   let state = key_keeper_sender.get_current_secure_channel_state().await?;
-///   let rule_id = key_keeper_sender.get_wireserver_rule_id().await?;
-///   let rule_id = key_keeper_sender.get_imds_rule_id().await?;
-///   let status_message = key_keeper_sender.get_status_message().await?;
+///   key_keeper_state.update_key(key).await?;
+///   let key = key_keeper_state.get_current_key_value().await?;
+///   let guid = key_keeper_state.get_current_key_guid().await?;
+///   let incarnation = key_keeper_state.get_current_key_incarnation().await?;
+///   let state = key_keeper_state.get_current_secure_channel_state().await?;
+///   let rule_id = key_keeper_state.get_wireserver_rule_id().await?;
+///   let rule_id = key_keeper_state.get_imds_rule_id().await?;
+///   let status_message = key_keeper_state.get_status_message().await?;
 ///
 ///   // clear the key once the feature is disabled
-///   key_keeper_sender.clear_key().await?;
+///   key_keeper_state.clear_key().await?;
 ///
-///   let notify = key_keeper_sender.get_notify().await?;
-///   key_keeper_sender.notify().await?;
+///   let notify = key_keeper_state.get_notify().await?;
+///   key_keeper_state.notify().await?;
 ///   Ok(())
 /// }
 /// ```
 use crate::common::error::Error;
 use crate::common::result::Result;
+use crate::key_keeper::UNKNOWN_STATE;
 use crate::{common::logger, key_keeper::key::Key};
+use proxy_agent_shared::proxy_agent_aggregate_status::{ModuleState, ProxyAgentDetailStatus};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, Notify};
 
@@ -72,12 +75,12 @@ enum KeyKeeperAction {
     GetImdsRuleId {
         response: oneshot::Sender<String>,
     },
-    SetKeyKeeperShutdown {
-        shutdown: bool,
-        response: oneshot::Sender<()>,
+    GetState {
+        response: oneshot::Sender<ModuleState>,
     },
-    GetKeyKeeperShutdown {
-        response: oneshot::Sender<bool>,
+    SetState {
+        state: ModuleState,
+        response: oneshot::Sender<()>,
     },
     SetKeyKeeperStatusMessage {
         message: String,
@@ -92,9 +95,9 @@ enum KeyKeeperAction {
 }
 
 #[derive(Clone, Debug)]
-pub struct KeyKeeperSender(mpsc::Sender<KeyKeeperAction>);
+pub struct KeyKeeperState(mpsc::Sender<KeyKeeperAction>);
 
-impl KeyKeeperSender {
+impl KeyKeeperState {
     pub fn start_new() -> Self {
         let (sender, mut receiver) = mpsc::channel(100);
 
@@ -108,8 +111,8 @@ impl KeyKeeperSender {
             let mut wireserver_rule_id: String = String::new();
             // The rule ID for the IMDS endpoints
             let mut imds_rule_id: String = String::new();
-            // The flag to indicate if the key keeper is shutdown
-            let mut key_keeper_shutdown: bool = false;
+            // The state for key keeper module
+            let mut key_keeper_state: ModuleState = ModuleState::UNKNOWN;
             // The status message for the key keeper module
             let mut key_keeper_status_message: String = super::UNKNOWN_STATUS_MESSAGE.to_string();
             let notify = Arc::new(Notify::new());
@@ -181,25 +184,25 @@ impl KeyKeeperSender {
                     Some(KeyKeeperAction::GetImdsRuleId { response }) => {
                         if let Err(rule_id) = response.send(imds_rule_id.clone()) {
                             logger::write_warning(format!(
-                                "Failed to send response to KeyKeeperAction::GetImdsRuleId with error {}",
+                                "Failed to send response to KeyKeeperAction::GetImdsRuleId '{}'",
                                 rule_id
                             ));
                         }
                     }
-                    Some(KeyKeeperAction::SetKeyKeeperShutdown { shutdown, response }) => {
-                        key_keeper_shutdown = shutdown;
-                        if response.send(()).is_err() {
+                    Some(KeyKeeperAction::GetState { response }) => {
+                        if let Err(state) = response.send(key_keeper_state.clone()) {
                             logger::write_warning(format!(
-                                "Failed to send response to KeyKeeperAction::SetKeyKeeperShutdown '{}'",
-                                shutdown
+                                "Failed to send response to KeyKeeperAction::GetState '{:?}'",
+                                state
                             ));
                         }
                     }
-                    Some(KeyKeeperAction::GetKeyKeeperShutdown { response }) => {
-                        if let Err(shutdown) = response.send(key_keeper_shutdown) {
+                    Some(KeyKeeperAction::SetState { state, response }) => {
+                        key_keeper_state = state.clone();
+                        if response.send(()).is_err() {
                             logger::write_warning(format!(
-                                "Failed to send response to KeyKeeperAction::GetKeyKeeperShutdown with error {:?}",
-                                shutdown
+                                "Failed to send response to KeyKeeperAction::SetState '{:?}'",
+                                state
                             ));
                         }
                     }
@@ -232,7 +235,7 @@ impl KeyKeeperSender {
             }
         });
 
-        KeyKeeperSender(sender)
+        Self(sender)
     }
 
     async fn set_key(&self, key: Option<Key>) -> Result<()> {
@@ -466,30 +469,30 @@ impl KeyKeeperSender {
         })
     }
 
-    pub async fn get_shutdown(&self) -> Result<bool> {
+    pub async fn get_current_state(&self) -> Result<ModuleState> {
         let (response, receiver) = oneshot::channel();
         self.0
-            .send(KeyKeeperAction::GetKeyKeeperShutdown { response })
+            .send(KeyKeeperAction::GetState { response })
             .await
             .map_err(|e| {
-                Error::SendError("KeyKeeperAction::GetKeyKeeperShutdown".to_string(), e.to_string())
+                Error::SendError("KeyKeeperAction::GetState".to_string(), e.to_string())
             })?;
         receiver
             .await
-            .map_err(|e| Error::RecvError("KeyKeeperAction::GetKeyKeeperShutdown".to_string(), e))
+            .map_err(|e| Error::RecvError("KeyKeeperAction::GetState".to_string(), e))
     }
 
-    pub async fn set_shutdown(&self, shutdown: bool) -> Result<()> {
+    pub async fn set_state(&self, state: ModuleState) -> Result<()> {
         let (response, receiver) = oneshot::channel();
         self.0
-            .send(KeyKeeperAction::SetKeyKeeperShutdown { shutdown, response })
+            .send(KeyKeeperAction::SetState { state, response })
             .await
             .map_err(|e| {
-                Error::SendError("KeyKeeperAction::SetKeyKeeperShutdown".to_string(), e.to_string())
+                Error::SendError("KeyKeeperAction::SetState".to_string(), e.to_string())
             })?;
         receiver
             .await
-            .map_err(|e| Error::RecvError("KeyKeeperAction::SetKeyKeeperShutdown".to_string(), e))
+            .map_err(|e| Error::RecvError("KeyKeeperAction::SetState".to_string(), e))
     }
 
     pub async fn get_notify(&self) -> Result<Arc<Notify>> {
@@ -509,5 +512,48 @@ impl KeyKeeperSender {
         let notify = self.get_notify().await?;
         notify.notify_one();
         Ok(())
+    }
+
+    pub async fn get_status(&self) -> ProxyAgentDetailStatus {
+        let mut states = HashMap::new();
+        states.insert(
+            "secureChannelState".to_string(),
+            self
+                .get_current_secure_channel_state()
+                .await
+                .unwrap_or(UNKNOWN_STATE.to_string()),
+        );
+        if let Ok(Some(key_guid)) = self.get_current_key_guid().await {
+            states.insert("keyGuid".to_string(), key_guid);
+        }
+        states.insert(
+            "wireServerRuleId".to_string(),
+            self
+                .get_wireserver_rule_id()
+                .await
+                .unwrap_or(UNKNOWN_STATE.to_string()),
+        );
+        states.insert(
+            "imdsRuleId".to_string(),
+            self
+                .get_imds_rule_id()
+                .await
+                .unwrap_or(UNKNOWN_STATE.to_string()),
+        );
+        if let Ok(Some(incarnation)) = self.get_current_key_incarnation().await {
+            states.insert("keyIncarnationId".to_string(), incarnation.to_string());
+        }
+
+        ProxyAgentDetailStatus {
+            status: self
+                .get_current_state()
+                .await
+                .unwrap_or(ModuleState::UNKNOWN),
+            message: self
+                .get_status_message()
+                .await
+                .unwrap_or(super::UNKNOWN_STATUS_MESSAGE.to_string()),
+            states: Some(states),
+        }
     }
 }

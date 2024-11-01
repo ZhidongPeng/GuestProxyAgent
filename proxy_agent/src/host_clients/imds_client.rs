@@ -21,24 +21,24 @@
 
 use super::instance_info::InstanceInfo;
 use crate::common::{error::Error, hyper_client, logger, result::Result};
-use crate::shared_state::key_keeper_wrapper::KeyKeeperSender;
+use crate::shared_state::key_keeper_wrapper::KeyKeeperState;
 use hyper::Uri;
 use std::collections::HashMap;
 
 pub struct ImdsClient {
     ip: String,
     port: u16,
-    key_keeper_sender: KeyKeeperSender,
+    key_keeper_state: KeyKeeperState,
 }
 
 const IMDS_URI: &str = "metadata/instance?api-version=2018-02-01";
 
 impl ImdsClient {
-    pub fn new(ip: &str, port: u16, key_keeper_sender: KeyKeeperSender) -> Self {
+    pub fn new(ip: &str, port: u16, key_keeper_state: KeyKeeperState) -> Self {
         ImdsClient {
             ip: ip.to_string(),
             port,
-            key_keeper_sender,
+            key_keeper_state,
         }
     }
 
@@ -54,11 +54,11 @@ impl ImdsClient {
         hyper_client::get(
             &url,
             &headers,
-            self.key_keeper_sender
+            self.key_keeper_state
                 .get_current_key_guid()
                 .await
                 .unwrap_or(None),
-            self.key_keeper_sender
+            self.key_keeper_state
                 .get_current_key_value()
                 .await
                 .unwrap_or(None),
