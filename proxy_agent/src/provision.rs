@@ -186,7 +186,9 @@ async fn update_provision_state(
         if provision_state.contains(ProvisionFlags::ALL_READY) {
             if let Err(e) = provision_shared_state.set_provision_finished(true).await {
                 // log the error and continue
-                logger::write_error(format!("Failed to set provision finished with error: {e}"));
+                logger::write_error(format!(
+                    "update_provision_state::Failed to set provision finished with error: {e}"
+                ));
             }
 
             // write provision success state here
@@ -225,9 +227,14 @@ async fn reset_provision_state(
             return;
         }
     };
-    provision_shared_state
+    if let Err(e) = provision_shared_state
         .set_provision_finished(provision_state.contains(ProvisionFlags::ALL_READY))
-        .await;
+        .await
+    {
+        logger::write_error(format!(
+            "reset_provision_state::Failed to set provision finished with error: {e}"
+        ));
+    }
 }
 
 /// Update provision state when provision timedout
@@ -250,7 +257,9 @@ pub async fn provision_timeup(
         .await
         .unwrap_or(ProvisionFlags::NONE);
     if !provision_state.contains(ProvisionFlags::ALL_READY) {
-        provision_shared_state.set_provision_finished(true).await;
+        if let Err(e) = provision_shared_state.set_provision_finished(true).await {
+            logger::write_error(format!("Failed to set provision finished with error: {e}"));
+        }
 
         // write provision state
         write_provision_state(
@@ -290,7 +299,7 @@ pub async fn start_event_threads(
         move |status: String| {
             let cloned_telemetry_state = cloned_telemetry_state.clone();
             async move {
-                cloned_telemetry_state
+                let _ = cloned_telemetry_state
                     .set_logger_status_message(status)
                     .await;
             }
@@ -310,9 +319,14 @@ pub async fn start_event_threads(
                 .await;
         }
     });
-    provision_shared_state
+    if let Err(e) = provision_shared_state
         .set_event_log_threads_initialized()
-        .await;
+        .await
+    {
+        logger::write_warning(format!(
+            "Failed to set event log threads initialized with error: {e}"
+        ));
+    }
 
     tokio::spawn({
         let agent_status_task = proxy_agent_status::ProxyAgentStatusTask::new(
@@ -511,17 +525,11 @@ mod tests {
     use crate::provision::ProvisionFlags;
     use crate::proxy::proxy_connection::Connection;
     use crate::proxy::proxy_server;
-    use crate::shared_state::agent_status_wrapper;
-    use crate::shared_state::key_keeper_wrapper::KeyKeeperSharedState;
-    use crate::shared_state::provision_wrapper::ProvisionSharedState;
-    use crate::shared_state::proxy_server_wrapper::ProxyServerSharedState;
-    use crate::shared_state::redirector_wrapper::RedirectorSharedState;
-    use crate::shared_state::telemetry_wrapper::TelemetrySharedState;
+    use crate::shared_state::SharedState;
     use proxy_agent_shared::logger_manager;
     use std::env;
     use std::fs;
     use std::time::Duration;
-    use tokio_util::sync::CancellationToken;
 
     #[tokio::test]
     async fn provision_state_test() {
@@ -542,22 +550,14 @@ mod tests {
         Connection::init_logger(temp_test_path.to_path_buf());
 
         // start listener, the port must different from the one used in production code
-        let cancellation_token = CancellationToken::new();
-        let provision_shared_state = ProvisionSharedState::start_new();
-        let key_keeper_shared_state = KeyKeeperSharedState::start_new();
-        let telemetry_shared_state = TelemetrySharedState::start_new();
-        let agent_status_shared_state = agent_status_wrapper::AgentStatusSharedState::start_new();
+        let shared_state = SharedState::start_all();
+        let cancellation_token = shared_state.get_cancellation_token();
+        let provision_shared_state = shared_state.get_provision_shared_state();
+        let key_keeper_shared_state = shared_state.get_key_keeper_shared_state();
+        let telemetry_shared_state = shared_state.get_telemetry_shared_state();
+        let agent_status_shared_state = shared_state.get_agent_status_shared_state();
         let port: u16 = 8092;
-        let proxy_server = proxy_server::ProxyServer::new(
-            port,
-            cancellation_token.clone(),
-            key_keeper_shared_state.clone(),
-            telemetry_shared_state.clone(),
-            provision_shared_state.clone(),
-            agent_status_shared_state.clone(),
-            RedirectorSharedState::start_new(),
-            ProxyServerSharedState::start_new(),
-        );
+        let proxy_server = proxy_server::ProxyServer::new(port, &shared_state);
 
         tokio::spawn({
             let proxy_server = proxy_server.clone();

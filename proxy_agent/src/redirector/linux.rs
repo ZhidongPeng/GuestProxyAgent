@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 mod ebpf_obj;
 
+use crate::proxy::authorization_rules::AuthorizationMode;
 use crate::redirector::{ip_to_string, AuditEntry};
 use crate::shared_state::redirector_wrapper::RedirectorSharedState;
 use crate::{
@@ -94,7 +95,13 @@ impl BpfObject {
         Ok(())
     }
 
-    fn update_policy_map(&mut self, local_port: u16) -> Result<()> {
+    pub fn update_policy_elem_bpf_map(
+        &mut self,
+        endpoint_name: &str,
+        local_port: u16,
+        dest_ipv4: u32,
+        dest_port: u16,
+    ) -> Result<()> {
         let policy_map_name = "policy_map";
         match self.0.map_mut(policy_map_name) {
             Some(map) => match HashMap::<&mut MapData, [u32; 6], [u32; 6]>::try_from(map) {
@@ -108,51 +115,17 @@ impl BpfObject {
                         logger::AGENT_LOGGER_KEY,
                     );
                     let local_ip = super::string_to_ip(&local_ip);
-                    let key = destination_entry::from_ipv4(
-                        constants::WIRE_SERVER_IP_NETWORK_BYTE_ORDER,
-                        constants::WIRE_SERVER_PORT,
-                    );
+
+                    let key = destination_entry::from_ipv4(dest_ipv4, dest_port);
                     let value = destination_entry::from_ipv4(local_ip, local_port);
                     match policy_map.insert(key.to_array(), value.to_array(), 0) {
                         Ok(_) => {
-                            logger::write("policy_map updated for WireServer endpoints".to_string())
+                            logger::write(format!("policy_map updated for {endpoint_name}"));
                         }
                         Err(err) => {
                             return Err(Error::Bpf(BpfErrorType::UpdateBpfMapHashMap(
                                 policy_map_name.to_string(),
-                                "WireServer endpoints".to_string(),
-                                err.to_string(),
-                            )));
-                        }
-                    }
-
-                    let key = destination_entry::from_ipv4(
-                        constants::IMDS_IP_NETWORK_BYTE_ORDER,
-                        constants::IMDS_PORT,
-                    );
-                    match policy_map.insert(key.to_array(), value.to_array(), 0) {
-                        Ok(_) => logger::write("policy_map updated for IMDS endpoints".to_string()),
-                        Err(err) => {
-                            return Err(Error::Bpf(BpfErrorType::UpdateBpfMapHashMap(
-                                policy_map_name.to_string(),
-                                "IMDS endpoints".to_string(),
-                                err.to_string(),
-                            )));
-                        }
-                    }
-
-                    let key = destination_entry::from_ipv4(
-                        constants::GA_PLUGIN_IP_NETWORK_BYTE_ORDER,
-                        constants::GA_PLUGIN_PORT,
-                    );
-                    match policy_map.insert(key.to_array(), value.to_array(), 0) {
-                        Ok(_) => logger::write(
-                            "policy_map updated for HostGAPlugin endpoints".to_string(),
-                        ),
-                        Err(err) => {
-                            return Err(Error::Bpf(BpfErrorType::UpdateBpfMapHashMap(
-                                policy_map_name.to_string(),
-                                "HostGAPlugin endpoints".to_string(),
+                                endpoint_name.to_string(),
                                 err.to_string(),
                             )));
                         }
@@ -417,10 +390,54 @@ impl super::Redirector {
             self.set_error_status(format!("{}", e)).await;
             return false;
         }
-        if let Err(e) = bpf_object.update_policy_map(self.local_port) {
-            self.set_error_status(format!("{}", e)).await;
-            return false;
+        let wireserver_mode =
+            if let Ok(Some(rules)) = self.key_keeper_shared_state.get_wireserver_rules().await {
+                rules.mode
+            } else {
+                AuthorizationMode::Audit
+            };
+        if (wireserver_mode != AuthorizationMode::Disabled)
+            || (config::get_wire_server_support() > 0)
+        {
+            if let Err(e) = bpf_object.update_policy_elem_bpf_map(
+                "WireServer endpoints",
+                self.local_port,
+                constants::WIRE_SERVER_IP_NETWORK_BYTE_ORDER, //0x10813FA8 - 168.63.129.16
+                constants::WIRE_SERVER_PORT,
+            ) {
+                self.set_error_status(format!("{}", e)).await;
+                return false;
+            }
         }
+        let imds_mode = if let Ok(Some(rules)) = self.key_keeper_shared_state.get_imds_rules().await
+        {
+            rules.mode
+        } else {
+            AuthorizationMode::Audit
+        };
+        if (imds_mode != AuthorizationMode::Disabled) || (config::get_imds_support() > 0) {
+            if let Err(e) = bpf_object.update_policy_elem_bpf_map(
+                "IMDS endpoints",
+                self.local_port,
+                constants::IMDS_IP_NETWORK_BYTE_ORDER,
+                constants::IMDS_PORT,
+            ) {
+                self.set_error_status(format!("{}", e)).await;
+                return false;
+            }
+        }
+        if config::get_host_gaplugin_support() > 0 {
+            if let Err(e) = bpf_object.update_policy_elem_bpf_map(
+                "Host GAPlugin endpoints",
+                self.local_port,
+                constants::GA_PLUGIN_IP_NETWORK_BYTE_ORDER,
+                constants::GA_PLUGIN_PORT,
+            ) {
+                self.set_error_status(format!("{}", e)).await;
+                return false;
+            }
+        }
+
         if let Err(e) = bpf_object.attach_kprobe_program() {
             self.set_error_status(format!("{}", e)).await;
             return false;
@@ -447,7 +464,7 @@ impl super::Redirector {
         };
         if let Err(e) = bpf_object.attach_cgroup_program(cgroup2_path) {
             let message = format!("Failed to attach cgroup program for redirection. {}", e);
-            self.set_error_status(message.to_string());
+            self.set_error_status(message.to_string()).await;
 
             event_logger::write_event(
                 event_logger::WARN_LEVEL,
@@ -459,12 +476,20 @@ impl super::Redirector {
             return false;
         }
 
-        self.redirector_shared_state
+        if let Err(e) = self
+            .redirector_shared_state
             .update_bpf_object(Arc::new(Mutex::new(bpf_object)))
-            .await;
-        self.redirector_shared_state
+            .await
+        {
+            logger::write_error(format!("Failed to update bpf object. {}", e));
+        }
+        if let Err(e) = self
+            .redirector_shared_state
             .set_local_port(self.local_port)
-            .await;
+            .await
+        {
+            logger::write_error(format!("Failed to set local port. {}", e));
+        }
 
         let message = helpers::write_startup_event(
             "Started Redirector with cgroup redirection",
@@ -472,12 +497,20 @@ impl super::Redirector {
             "redirector",
             logger::AGENT_LOGGER_KEY,
         );
-        self.agent_status_shared_state
+        if let Err(e) = self
+            .agent_status_shared_state
             .set_module_status_message(message.to_string(), AgentStatusModule::Redirector)
-            .await;
-        self.agent_status_shared_state
+            .await
+        {
+            logger::write_error(format!("Failed to set module status message. {}", e));
+        }
+        if let Err(e) = self
+            .agent_status_shared_state
             .set_module_state(ModuleState::RUNNING, AgentStatusModule::Redirector)
-            .await;
+            .await
+        {
+            logger::write_error(format!("Failed to set module state. {}", e));
+        }
 
         true
     }
@@ -521,6 +554,7 @@ pub async fn update_imds_redirect_policy(
 #[cfg(feature = "test-with-root")]
 mod tests {
     use crate::common::config;
+    use crate::common::constants;
     use crate::common::logger;
     use crate::redirector::linux::ebpf_obj::sock_addr_audit_entry;
     use crate::redirector::linux::ebpf_obj::sock_addr_audit_key;
@@ -582,7 +616,12 @@ mod tests {
             result.is_ok(),
             "update_skip_process_map should return success"
         );
-        let result = bpf.update_policy_map(80);
+        let result = bpf.update_policy_elem_bpf_map(
+            "test endpoints",
+            80,
+            constants::GA_PLUGIN_IP_NETWORK_BYTE_ORDER,
+            constants::GA_PLUGIN_PORT,
+        );
         assert!(result.is_ok(), "update_policy_map should return success");
 
         // Do not attach the program to real cgroup2 path

@@ -19,8 +19,7 @@ use windows_service::service_control_handler::ServiceStatusHandle;
 const UNKNOWN_STATUS_MESSAGE: &str = "Status unknown.";
 
 #[derive(Clone)]
-pub struct SharedStateSenders {
-    // TODO: rename it to SharedState
+pub struct SharedState {
     /// The cancellation token is used to cancel the agent when the agent is stopped
     cancellation_token: CancellationToken,
     /// The sender for the key keeper module
@@ -33,17 +32,20 @@ pub struct SharedStateSenders {
     agent_status_shared_state: agent_status_wrapper::AgentStatusSharedState,
     /// The sender for the redirector module
     redirector_shared_state: redirector_wrapper::RedirectorSharedState,
+    /// The sender for the proxy server module
+    proxy_server_shared_state: proxy_server_wrapper::ProxyServerSharedState,
 }
 
-impl SharedStateSenders {
+impl SharedState {
     pub fn start_all() -> Self {
-        SharedStateSenders {
+        SharedState {
             cancellation_token: CancellationToken::new(),
             key_keeper_shared_state: key_keeper_wrapper::KeyKeeperSharedState::start_new(),
             telemetry_shared_state: telemetry_wrapper::TelemetrySharedState::start_new(),
             provision_shared_state: provision_wrapper::ProvisionSharedState::start_new(),
             agent_status_shared_state: agent_status_wrapper::AgentStatusSharedState::start_new(),
             redirector_shared_state: redirector_wrapper::RedirectorSharedState::start_new(),
+            proxy_server_shared_state: proxy_server_wrapper::ProxyServerSharedState::start_new(),
         }
     }
 
@@ -65,6 +67,10 @@ impl SharedStateSenders {
 
     pub fn get_redirector_shared_state(&self) -> redirector_wrapper::RedirectorSharedState {
         self.redirector_shared_state.clone()
+    }
+
+    pub fn get_proxy_server_shared_state(&self) -> proxy_server_wrapper::ProxyServerSharedState {
+        self.proxy_server_shared_state.clone()
     }
 
     pub fn get_cancellation_token(&self) -> CancellationToken {

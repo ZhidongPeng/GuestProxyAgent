@@ -22,25 +22,25 @@ enum TelemetryAction {
     GetReaderState {
         response: oneshot::Sender<ModuleState>,
     },
-    SetLoggerState{
+    SetLoggerState {
         logger_state: ModuleState,
         response: oneshot::Sender<()>,
     },
-    GetLoggerState{
+    GetLoggerState {
         response: oneshot::Sender<ModuleState>,
     },
-    SetReaderStatusMessage{
+    SetReaderStatusMessage {
         reader_status_message: String,
         response: oneshot::Sender<()>,
     },
-    GetReaderStatusMessage{
+    GetReaderStatusMessage {
         response: oneshot::Sender<String>,
     },
-    SetLoggerStatusMessage{
+    SetLoggerStatusMessage {
         logger_status_message: String,
         response: oneshot::Sender<()>,
     },
-    GetLoggerStatusMessage{
+    GetLoggerStatusMessage {
         response: oneshot::Sender<String>,
     },
 }
@@ -265,7 +265,10 @@ impl TelemetrySharedState {
             })
             .await
             .map_err(|e| {
-                Error::SendError("TelemetryAction::SetReaderStatusMessage".to_string(), e.to_string())
+                Error::SendError(
+                    "TelemetryAction::SetReaderStatusMessage".to_string(),
+                    e.to_string(),
+                )
             })?;
         receiver
             .await
@@ -278,7 +281,10 @@ impl TelemetrySharedState {
             .send(TelemetryAction::GetReaderStatusMessage { response })
             .await
             .map_err(|e| {
-                Error::SendError("TelemetryAction::GetReaderStatusMessage".to_string(), e.to_string())
+                Error::SendError(
+                    "TelemetryAction::GetReaderStatusMessage".to_string(),
+                    e.to_string(),
+                )
             })?;
         receiver
             .await
@@ -294,7 +300,10 @@ impl TelemetrySharedState {
             })
             .await
             .map_err(|e| {
-                Error::SendError("TelemetryAction::SetLoggerStatusMessage".to_string(), e.to_string())
+                Error::SendError(
+                    "TelemetryAction::SetLoggerStatusMessage".to_string(),
+                    e.to_string(),
+                )
             })?;
         receiver
             .await
@@ -307,7 +316,10 @@ impl TelemetrySharedState {
             .send(TelemetryAction::GetLoggerStatusMessage { response })
             .await
             .map_err(|e| {
-                Error::SendError("TelemetryAction::GetLoggerStatusMessage".to_string(), e.to_string())
+                Error::SendError(
+                    "TelemetryAction::GetLoggerStatusMessage".to_string(),
+                    e.to_string(),
+                )
             })?;
         receiver
             .await
@@ -316,16 +328,28 @@ impl TelemetrySharedState {
 
     pub async fn get_telemetry_logger_status(&self) -> ProxyAgentDetailStatus {
         ProxyAgentDetailStatus {
-            status:self.get_logger_state().await.unwrap_or(ModuleState::UNKNOWN),
-            message: self.get_logger_status_message().await.unwrap_or(super::UNKNOWN_STATUS_MESSAGE.to_string()),
+            status: self
+                .get_logger_state()
+                .await
+                .unwrap_or(ModuleState::UNKNOWN),
+            message: self
+                .get_logger_status_message()
+                .await
+                .unwrap_or(super::UNKNOWN_STATUS_MESSAGE.to_string()),
             states: None,
         }
     }
 
     pub async fn get_telemetry_reader_status(&self) -> ProxyAgentDetailStatus {
         ProxyAgentDetailStatus {
-            status:self.get_reader_state().await.unwrap_or(ModuleState::UNKNOWN),
-            message: self.get_reader_status_message().await.unwrap_or(super::UNKNOWN_STATUS_MESSAGE.to_string()),
+            status: self
+                .get_reader_state()
+                .await
+                .unwrap_or(ModuleState::UNKNOWN),
+            message: self
+                .get_reader_status_message()
+                .await
+                .unwrap_or(super::UNKNOWN_STATUS_MESSAGE.to_string()),
             states: None,
         }
     }

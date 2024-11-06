@@ -163,12 +163,12 @@ impl super::Redirector {
 
         true
     }
+}
 
-    pub async fn close_bpf_object(&self) {
-        if let Ok(Some(bpf_object)) = self.redirector_shared_state.get_bpf_object().await {
-            bpf_object.lock().unwrap().close_bpf_object();
-            logger::write("Success closed bpf object.".to_string());
-        }
+pub async fn close_bpf_object(redirector_shared_state: RedirectorSharedState) {
+    if let Ok(Some(bpf_object)) = redirector_shared_state.get_bpf_object().await {
+        bpf_object.lock().unwrap().close_bpf_object();
+        logger::write("Success closed bpf object.".to_string());
     }
 }
 

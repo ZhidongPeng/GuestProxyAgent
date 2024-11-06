@@ -142,18 +142,6 @@ impl Redirector {
         false
     }
 
-    pub async fn close(&self) {
-        #[cfg(windows)]
-        {
-            self.close_bpf_object().await;
-        }
-        // reset ebpf object
-        self.agent_status_shared_state
-            .set_module_state(ModuleState::STOPPED, AgentStatusModule::Redirector)
-            .await;
-        self.redirector_shared_state.clear_bpf_object().await;
-    }
-
     async fn get_status_message(&self) -> String {
         self.agent_status_shared_state
             .get_module_status(AgentStatusModule::Redirector)
@@ -170,9 +158,16 @@ impl Redirector {
     }
 
     async fn set_error_status(&self, message: String) {
-        self.agent_status_shared_state
+        if let Err(e) = self
+            .agent_status_shared_state
             .set_module_status_message(message.to_string(), AgentStatusModule::Redirector)
-            .await;
+            .await
+        {
+            logger::write_error(format!(
+                "Failed to set error status '{}' for redirector: {}",
+                message, e
+            ));
+        }
         event_logger::write_event(
             event_logger::ERROR_LEVEL,
             message,
@@ -272,6 +267,22 @@ pub async fn lookup_audit(
     } else {
         Err(Error::Bpf(BpfErrorType::GetBpfObject))
     }
+}
+
+pub async fn close(
+    redirector_shared_state: RedirectorSharedState,
+    agent_status_shared_state: AgentStatusSharedState,
+) {
+    let _ = agent_status_shared_state
+        .set_module_state(ModuleState::STOPPED, AgentStatusModule::Redirector)
+        .await;
+
+    // reset ebpf object
+    #[cfg(windows)]
+    {
+        windows::close_bpf_object(redirector_shared_state.clone()).await;
+    }
+    let _ = redirector_shared_state.clear_bpf_object().await;
 }
 
 #[cfg(not(windows))]

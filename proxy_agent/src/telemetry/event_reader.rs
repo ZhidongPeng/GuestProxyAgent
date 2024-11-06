@@ -57,7 +57,8 @@ pub struct VmMetaData {
 }
 
 impl VmMetaData {
-    pub fn default() -> Self {
+    #[cfg(test)]
+    pub fn empty() -> Self {
         VmMetaData {
             container_id: constants::EMPTY_GUID.to_string(),
             tenant_name: constants::EMPTY_GUID.to_string(),
@@ -187,7 +188,8 @@ impl EventReader {
     }
 
     async fn stop(&self) {
-        self.telemetry_shared_state
+        let _ = self
+            .telemetry_shared_state
             .set_reader_state(ModuleState::STOPPED)
             .await;
     }
@@ -342,7 +344,7 @@ impl EventReader {
         if let Ok(Some(vm_meta_data)) = self.telemetry_shared_state.get_vm_meta_data().await {
             vm_meta_data
         } else {
-            VmMetaData::default()
+            VmMetaData::empty()
         }
     }
 }
@@ -391,7 +393,10 @@ mod tests {
         let wire_server_client = WireServerClient::new(ip, port, key_keeper_shared_state.clone());
         let imds_client = ImdsClient::new(ip, port, key_keeper_shared_state.clone());
 
-        key_keeper_shared_state.update_key(Key::empty()).await.unwrap();
+        key_keeper_shared_state
+            .update_key(Key::empty())
+            .await
+            .unwrap();
         tokio::spawn(server_mock::start(
             ip.to_string(),
             port,

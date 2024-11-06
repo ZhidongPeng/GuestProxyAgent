@@ -55,27 +55,6 @@ enum AgentStatusAction {
     IncreaseConnectionCount {
         response: oneshot::Sender<u128>,
     },
-    SetSecureChannelState {
-        state: String,
-        response: oneshot::Sender<()>,
-    },
-    GetSecureChannelState {
-        response: oneshot::Sender<String>,
-    },
-    SetWireServerRuleId {
-        rule_id: String,
-        response: oneshot::Sender<()>,
-    },
-    GetWireServerRuleId {
-        response: oneshot::Sender<String>,
-    },
-    SetImdsRuleId {
-        rule_id: String,
-        response: oneshot::Sender<()>,
-    },
-    GetImdsRuleId {
-        response: oneshot::Sender<String>,
-    },
 }
 
 #[derive(Clone, Debug)]
@@ -112,14 +91,6 @@ impl AgentStatusSharedState {
                 HashMap::new();
             // The proxied connection count for the listener
             let mut connection_count: u128 = 0;
-
-            // The current secure channel state
-            let mut current_secure_channel_state: String =
-                crate::key_keeper::UNKNOWN_STATE.to_string();
-            // The rule ID for the WireServer endpoints
-            let mut wireserver_rule_id: String = String::new();
-            // The rule ID for the IMDS endpoints
-            let mut imds_rule_id: String = String::new();
 
             while let Some(action) = rx.recv().await {
                 match action {
@@ -289,54 +260,6 @@ impl AgentStatusSharedState {
                             ));
                         }
                     }
-                    AgentStatusAction::SetSecureChannelState { state, response } => {
-                        current_secure_channel_state = state;
-                        if response.send(()).is_err() {
-                            logger::write_warning("Failed to send response to AgentStatusAction::SetSecureChannelState".to_string());
-                        }
-                    }
-                    AgentStatusAction::GetSecureChannelState { response } => {
-                        if let Err(state) = response.send(current_secure_channel_state.clone()) {
-                            logger::write_warning(format!(
-                                "Failed to send response to AgentStatusAction::GetSecureChannelState with state '{:?}'",
-                                state
-                            ));
-                        }
-                    }
-                    AgentStatusAction::SetWireServerRuleId { rule_id, response } => {
-                        wireserver_rule_id = rule_id;
-                        if response.send(()).is_err() {
-                            logger::write_warning(
-                                "Failed to send response to AgentStatusAction::SetWireServerRuleId"
-                                    .to_string(),
-                            );
-                        }
-                    }
-                    AgentStatusAction::GetWireServerRuleId { response } => {
-                        if let Err(rule_id) = response.send(wireserver_rule_id.clone()) {
-                            logger::write_warning(format!(
-                                "Failed to send response to AgentStatusAction::GetWireServerRuleId with rule_id '{:?}'",
-                                rule_id
-                            ));
-                        }
-                    }
-                    AgentStatusAction::SetImdsRuleId { rule_id, response } => {
-                        imds_rule_id = rule_id;
-                        if response.send(()).is_err() {
-                            logger::write_warning(
-                                "Failed to send response to AgentStatusAction::SetImdsRuleId"
-                                    .to_string(),
-                            );
-                        }
-                    }
-                    AgentStatusAction::GetImdsRuleId { response } => {
-                        if let Err(rule_id) = response.send(imds_rule_id.clone()) {
-                            logger::write_warning(format!(
-                                "Failed to send response to AgentStatusAction::GetImdsRuleId with rule_id '{:?}'",
-                                rule_id
-                            ));
-                        }
-                    }
                 }
             }
         });
@@ -358,9 +281,9 @@ impl AgentStatusSharedState {
                     e.to_string(),
                 )
             })?;
-        response_rx
-            .await
-            .map_err(|e| Error::RecvError("AgentStatusAction::AddOneConnectionSummary".to_string(), e))
+        response_rx.await.map_err(|e| {
+            Error::RecvError("AgentStatusAction::AddOneConnectionSummary".to_string(), e)
+        })
     }
 
     pub async fn add_one_failed_connection_summary(&self, summary: ProxySummary) -> Result<()> {
@@ -377,9 +300,12 @@ impl AgentStatusSharedState {
                     e.to_string(),
                 )
             })?;
-        response_rx
-            .await
-            .map_err(|e| Error::RecvError("AgentStatusAction::AddOneFailedConnectionSummary".to_string(), e))
+        response_rx.await.map_err(|e| {
+            Error::RecvError(
+                "AgentStatusAction::AddOneFailedConnectionSummary".to_string(),
+                e,
+            )
+        })
     }
 
     pub async fn clear_all_summary(&self) -> Result<()> {
@@ -459,7 +385,7 @@ impl AgentStatusSharedState {
             .map_err(|e| Error::RecvError(format!("AgentStatusAction::GetState ({:?})", module), e))
     }
 
-   pub async fn set_module_state(
+    pub async fn set_module_state(
         &self,
         state: ModuleState,
         module: AgentStatusModule,
@@ -524,9 +450,12 @@ impl AgentStatusSharedState {
                     e.to_string(),
                 )
             })?;
-        response_rx
-            .await
-            .map_err(|e| Error::RecvError(format!("AgentStatusAction::SetStatusMessage ({:?})", module), e))
+        response_rx.await.map_err(|e| {
+            Error::RecvError(
+                format!("AgentStatusAction::SetStatusMessage ({:?})", module),
+                e,
+            )
+        })
     }
 
     pub async fn get_module_status(&self, module: AgentStatusModule) -> ProxyAgentDetailStatus {
@@ -603,5 +532,4 @@ impl AgentStatusSharedState {
             Error::RecvError("AgentStatusAction::IncreaseConnectionCount".to_string(), e)
         })
     }
-
 }

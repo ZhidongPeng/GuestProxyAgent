@@ -199,7 +199,7 @@ impl Authorizer for GAPlugin {
                 return AuthorizeResult::Forbidden;
             }
         }
-        return AuthorizeResult::Ok;
+        AuthorizeResult::Ok
     }
 
     fn to_string(&self) -> String {

@@ -5,8 +5,9 @@ pub mod windows;
 
 use crate::common::{config, constants, helpers, logger};
 use crate::key_keeper::KeyKeeper;
-use crate::proxy::proxy_server::{self, ProxyServer};
-use crate::shared_state::SharedStateSenders;
+use crate::proxy::proxy_server::ProxyServer;
+use crate::redirector;
+use crate::shared_state::SharedState;
 use proxy_agent_shared::logger_manager;
 use proxy_agent_shared::telemetry::event_logger;
 
@@ -23,7 +24,7 @@ use std::time::Duration;
 /// let shared_state = SharedState::new();
 /// service::start_service(shared_state);
 /// ```
-pub fn start_service(shared_state_senders: SharedStateSenders) {
+pub fn start_service(shared_state: SharedState) {
     logger_manager::init_logger(
         logger::AGENT_LOGGER_KEY.to_string(),
         config::get_logs_dir(),
@@ -47,10 +48,7 @@ pub fn start_service(shared_state_senders: SharedStateSenders) {
             config::get_logs_dir(),
             config::get_poll_key_status_duration(),
             config::get_start_redirector(),
-            shared_state_senders.get_cancellation_token(),
-            shared_state_senders.get_key_keeper_state(),
-            shared_state_senders.get_telemetry_state(),
-            shared_state_senders.get_shared_state(),
+            &shared_state,
         );
         async move {
             key_keeper.poll_secure_channel_status().await;
@@ -58,13 +56,7 @@ pub fn start_service(shared_state_senders: SharedStateSenders) {
     });
 
     tokio::spawn({
-        let proxy_server = ProxyServer::new(
-            constants::PROXY_AGENT_PORT,
-            shared_state_senders.get_cancellation_token(),
-            shared_state_senders.get_key_keeper_state(),
-            shared_state_senders.get_telemetry_state(),
-            shared_state_senders.get_shared_state(),
-        );
+        let proxy_server = ProxyServer::new(constants::PROXY_AGENT_PORT, &shared_state);
         async move {
             proxy_server.start().await;
         }
@@ -79,8 +71,8 @@ pub fn start_service(shared_state_senders: SharedStateSenders) {
 /// ```
 #[cfg(not(windows))]
 pub async fn start_service_wait() {
-    let shared_state_senders = SharedStateSenders::start_all();
-    start_service(shared_state_senders);
+    let shared_state = SharedState::start_all();
+    start_service(shared_state);
 
     loop {
         // continue to sleep until the service is stopped
@@ -98,15 +90,17 @@ pub async fn start_service_wait() {
 /// let shared_state = SharedState::new();
 /// service::stop_service(shared_state);
 /// ```
-pub fn stop_service(shared_state_senders: SharedStateSenders) {
-    let shared_state = shared_state_senders.get_shared_state();
+pub async fn stop_service(shared_state: SharedState) {
     logger::write_information(format!(
         "============== GuestProxyAgent is stopping, elapsed: {}",
         helpers::get_elapsed_time_in_millisec()
     ));
-    shared_state_senders.cancel_cancellation_token();
+    shared_state.cancel_cancellation_token();
 
-    crate::redirector::close(shared_state.clone());
-    proxy_server::stop(shared_state.clone());
+    redirector::close(
+        shared_state.get_redirector_shared_state(),
+        shared_state.get_agent_status_shared_state(),
+    )
+    .await;
     event_logger::stop();
 }

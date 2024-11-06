@@ -21,7 +21,7 @@ use common::constants;
 use common::helpers;
 use provision::ProvisionQuery;
 use proxy_agent_shared::misc_helpers;
-use shared_state::SharedStateSenders;
+use shared_state::SharedState;
 use std::{process, time::Duration};
 
 #[cfg(windows)]
@@ -116,12 +116,12 @@ async fn main() {
 
     if let Some(Commands::Console) = cli.command {
         // console mode - start GPA as long running process
-        let shared_state_senders = SharedStateSenders::start_all();
-        service::start_service(shared_state_senders.clone());
+        let shared_state = SharedState::start_all();
+        service::start_service(shared_state.clone());
         println!("Press Enter to end it.");
         let mut temp = String::new();
         let _read = std::io::stdin().read_line(&mut temp);
-        service::stop_service(shared_state_senders.clone());
+        service::stop_service(shared_state.clone()).await;
     } else {
         // no argument provided, start the GPA as an OS service
         #[cfg(windows)]

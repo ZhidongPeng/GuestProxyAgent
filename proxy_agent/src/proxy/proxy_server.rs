@@ -31,6 +31,7 @@ use crate::shared_state::provision_wrapper::ProvisionSharedState;
 use crate::shared_state::proxy_server_wrapper::ProxyServerSharedState;
 use crate::shared_state::redirector_wrapper::RedirectorSharedState;
 use crate::shared_state::telemetry_wrapper::TelemetrySharedState;
+use crate::shared_state::SharedState;
 use crate::{provision, redirector};
 use http_body_util::Full;
 use http_body_util::{combinators::BoxBody, BodyExt};
@@ -70,25 +71,16 @@ pub struct ProxyServer {
 }
 
 impl ProxyServer {
-    pub fn new(
-        port: u16,
-        cancellation_token: CancellationToken,
-        key_keeper_shared_state: KeyKeeperSharedState,
-        telemetry_shared_state: TelemetrySharedState,
-        provision_shared_state: ProvisionSharedState,
-        agent_status_shared_state: AgentStatusSharedState,
-        redirector_shared_state: RedirectorSharedState,
-        proxy_server_shared_state: ProxyServerSharedState,
-    ) -> Self {
+    pub fn new(port: u16, shared_state: &SharedState) -> Self {
         ProxyServer {
             port,
-            cancellation_token,
-            key_keeper_shared_state,
-            telemetry_shared_state,
-            provision_shared_state,
-            agent_status_shared_state,
-            redirector_shared_state,
-            proxy_server_shared_state,
+            cancellation_token: shared_state.get_cancellation_token(),
+            key_keeper_shared_state: shared_state.get_key_keeper_shared_state(),
+            telemetry_shared_state: shared_state.get_telemetry_shared_state(),
+            provision_shared_state: shared_state.get_provision_shared_state(),
+            agent_status_shared_state: shared_state.get_agent_status_shared_state(),
+            redirector_shared_state: shared_state.get_redirector_shared_state(),
+            proxy_server_shared_state: shared_state.get_proxy_server_shared_state(),
         }
     }
 
@@ -147,9 +139,16 @@ impl ProxyServer {
             Ok(listener) => listener,
             Err(e) => {
                 let message = e.to_string();
-                self.agent_status_shared_state
+                if let Err(e) = self
+                    .agent_status_shared_state
                     .set_module_status_message(message.to_string(), AgentStatusModule::ProxyServer)
-                    .await;
+                    .await
+                {
+                    Connection::write_warning(
+                        INITIAL_CONNECTION_ID,
+                        format!("Failed to set module status message: {}", e),
+                    );
+                }
                 // send this critical error to event logger
                 event_logger::write_event(
                     event_logger::WARN_LEVEL,
@@ -169,12 +168,26 @@ impl ProxyServer {
             "proxy_server",
             logger::AGENT_LOGGER_KEY,
         );
-        self.agent_status_shared_state
+        if let Err(e) = self
+            .agent_status_shared_state
             .set_module_status_message(message.to_string(), AgentStatusModule::ProxyServer)
-            .await;
-        self.agent_status_shared_state
+            .await
+        {
+            Connection::write_warning(
+                INITIAL_CONNECTION_ID,
+                format!("Failed to set module status message: {}", e),
+            );
+        }
+        if let Err(e) = self
+            .agent_status_shared_state
             .set_module_state(ModuleState::RUNNING, AgentStatusModule::ProxyServer)
-            .await;
+            .await
+        {
+            Connection::write_warning(
+                INITIAL_CONNECTION_ID,
+                format!("Failed to set module state: {}", e),
+            );
+        }
         provision::listener_started(
             self.cancellation_token.clone(),
             self.key_keeper_shared_state.clone(),
@@ -189,7 +202,7 @@ impl ProxyServer {
             tokio::select! {
                 _ = self.cancellation_token.cancelled() => {
                     logger::write_warning("cancellation token signal received, stop the listener.".to_string());
-                    self.agent_status_shared_state
+                    let _= self.agent_status_shared_state
                         .set_module_state(ModuleState::STOPPED, AgentStatusModule::ProxyServer)
                         .await;
                     return;
@@ -562,7 +575,9 @@ impl ProxyServer {
         }
 
         // notify key_keeper to poll the status
-        self.key_keeper_shared_state.notify().await;
+        if let Err(e) = self.key_keeper_shared_state.notify().await {
+            Connection::write_warning(connection_id, format!("Failed to notify key_keeper: {}", e));
+        }
 
         let provision_state = provision::get_provision_state(
             self.provision_shared_state.clone(),
@@ -675,13 +690,25 @@ impl ProxyServer {
             );
         };
         if log_authorize_failed {
-            self.agent_status_shared_state
+            if let Err(e) = self
+                .agent_status_shared_state
                 .add_one_failed_connection_summary(summary)
-                .await;
-        } else {
-            self.agent_status_shared_state
-                .add_one_connection_summary(summary)
-                .await;
+                .await
+            {
+                Connection::write_warning(
+                    connection.id,
+                    format!("Failed to add failed connection summary: {}", e),
+                );
+            }
+        } else if let Err(e) = self
+            .agent_status_shared_state
+            .add_one_connection_summary(summary)
+            .await
+        {
+            Connection::write_warning(
+                connection.id,
+                format!("Failed to add connection summary: {}", e),
+            );
         }
     }
 
@@ -800,19 +827,13 @@ mod tests {
     use crate::common::logger;
     use crate::proxy::proxy_connection::Connection;
     use crate::proxy::proxy_server;
-    use crate::shared_state::agent_status_wrapper::AgentStatusSharedState;
-    use crate::shared_state::key_keeper_wrapper::KeyKeeperSharedState;
-    use crate::shared_state::provision_wrapper::ProvisionSharedState;
-    use crate::shared_state::proxy_server_wrapper::ProxyServerSharedState;
-    use crate::shared_state::redirector_wrapper::RedirectorSharedState;
-    use crate::shared_state::telemetry_wrapper::TelemetrySharedState;
+    use crate::shared_state;
     use http::Method;
     use proxy_agent_shared::logger_manager;
     use std::collections::HashMap;
     use std::env;
     use std::fs;
     use std::time::Duration;
-    use tokio_util::sync::CancellationToken;
 
     #[tokio::test]
     async fn direct_request_test() {
@@ -831,19 +852,10 @@ mod tests {
         // start listener, the port must different from the one used in production code
         let host = "127.0.0.1";
         let port: u16 = 8091;
-        let key_keeper_shared_state = KeyKeeperSharedState::start_new();
-        let telemetry_shared_state = TelemetrySharedState::start_new();
-        let cancellation_token = CancellationToken::new();
-        let proxy_server = proxy_server::ProxyServer::new(
-            port,
-            cancellation_token.clone(),
-            key_keeper_shared_state.clone(),
-            telemetry_shared_state.clone(),
-            ProvisionSharedState::start_new(),
-            AgentStatusSharedState::start_new(),
-            RedirectorSharedState::start_new(),
-            ProxyServerSharedState::start_new(),
-        );
+        let shared_state = shared_state::SharedState::start_all();
+        let key_keeper_shared_state = shared_state.get_key_keeper_shared_state();
+        let cancellation_token = shared_state.get_cancellation_token();
+        let proxy_server = proxy_server::ProxyServer::new(port, &shared_state);
 
         tokio::spawn({
             let proxy_server = proxy_server.clone();

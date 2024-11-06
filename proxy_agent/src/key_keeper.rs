@@ -34,11 +34,13 @@ use crate::shared_state::key_keeper_wrapper::KeyKeeperSharedState;
 use crate::shared_state::provision_wrapper::ProvisionSharedState;
 use crate::shared_state::redirector_wrapper::RedirectorSharedState;
 use crate::shared_state::telemetry_wrapper::TelemetrySharedState;
+use crate::shared_state::SharedState;
 use crate::{acl, redirector};
 use hyper::Uri;
 use proxy_agent_shared::misc_helpers;
 use proxy_agent_shared::proxy_agent_aggregate_status::ModuleState;
 use proxy_agent_shared::telemetry::event_logger;
+use std::path::Path;
 use std::time::Instant;
 use std::{path::PathBuf, time::Duration};
 use tokio_util::sync::CancellationToken;
@@ -86,12 +88,7 @@ impl KeyKeeper {
         log_dir: PathBuf,
         interval: Duration,
         config_start_redirector: bool,
-        cancellation_token: CancellationToken,
-        key_keeper_shared_state: KeyKeeperSharedState,
-        telemetry_shared_state: TelemetrySharedState,
-        redirector_shared_state: RedirectorSharedState,
-        provision_shared_state: ProvisionSharedState,
-        agent_status_shared_state: AgentStatusSharedState,
+        shared_state: &SharedState,
     ) -> Self {
         KeyKeeper {
             base_url,
@@ -99,21 +96,25 @@ impl KeyKeeper {
             log_dir,
             interval,
             config_start_redirector,
-            cancellation_token,
-            key_keeper_shared_state,
-            telemetry_shared_state,
-            redirector_shared_state,
-            provision_shared_state,
-            agent_status_shared_state,
+            cancellation_token: shared_state.get_cancellation_token(),
+            key_keeper_shared_state: shared_state.get_key_keeper_shared_state(),
+            telemetry_shared_state: shared_state.get_telemetry_shared_state(),
+            redirector_shared_state: shared_state.get_redirector_shared_state(),
+            provision_shared_state: shared_state.get_provision_shared_state(),
+            agent_status_shared_state: shared_state.get_agent_status_shared_state(),
         }
     }
 
     /// poll secure channel status at interval from the WireServer endpoint
-    pub async fn poll_secure_channel_status<'a>(&'a self) {
+    pub async fn poll_secure_channel_status<'a>(&self) {
         let message = "poll secure channel status task started.";
-        self.agent_status_shared_state
+        if let Err(e) = self
+            .agent_status_shared_state
             .set_module_status_message(message.to_string(), AgentStatusModule::KeyKeeper)
-            .await;
+            .await
+        {
+            logger::write_warning(format!("Failed to set module status message: {}", e));
+        }
         logger::write(message.to_string());
 
         // launch redirector initialization when the key keeper task is running
@@ -179,17 +180,21 @@ impl KeyKeeper {
         tokio::select! {
             _ = self.loop_poll() => {
                 let message = "poll_secure_channel_status task exited.";
-                self.agent_status_shared_state
-                .set_module_status_message(message.to_string(), AgentStatusModule::KeyKeeper)
-                .await;
-                    logger::write(message.to_string());
+                if let Err(e) = self.agent_status_shared_state
+                    .set_module_status_message(message.to_string(), AgentStatusModule::KeyKeeper)
+                    .await {
+                    logger::write_warning(format!("Failed to set module status message: {}", e));
+                }
+                logger::write(message.to_string());
             },
             _ = self.cancellation_token.cancelled() => {
                 let message = "poll_secure_channel_status task cancelled.";
-                self.agent_status_shared_state
-                .set_module_status_message(message.to_string(), AgentStatusModule::KeyKeeper)
-                .await;
-                    logger::write(message.to_string());
+                if let Err(e) = self.agent_status_shared_state
+                    .set_module_status_message(message.to_string(), AgentStatusModule::KeyKeeper)
+                    .await {
+                        logger::write_warning(format!("Failed to set module status message: {}", e));
+                }
+                logger::write(message.to_string());
                 self.stop().await;
             }
         }
@@ -209,9 +214,16 @@ impl KeyKeeper {
         };
 
         // set the key keeper task state to running
-        self.agent_status_shared_state
+        if let Err(e) = self
+            .agent_status_shared_state
             .set_module_state(ModuleState::RUNNING, AgentStatusModule::KeyKeeper)
-            .await;
+            .await
+        {
+            logger::write_error(format!(
+                "Failed to set key_keeper module state to 'Running' with error: {} ",
+                e
+            ));
+        }
 
         let mut start = Instant::now();
         loop {
@@ -302,12 +314,19 @@ impl KeyKeeper {
                 Ok(s) => s,
                 Err(e) => {
                     let message: String = format!("Failed to get key status - {}", e);
-                    self.agent_status_shared_state
+                    if let Err(e) = self
+                        .agent_status_shared_state
                         .set_module_status_message(
                             message.to_string(),
                             AgentStatusModule::KeyKeeper,
                         )
-                        .await;
+                        .await
+                    {
+                        logger::write_warning(format!(
+                            "Failed to set module status message: {}",
+                            e
+                        ));
+                    }
                     logger::write_warning(message);
                     continue;
                 }
@@ -328,9 +347,13 @@ impl KeyKeeper {
                             "Wireserver rule id changed from {} to {}.",
                             old_wire_server_rule_id, wireserver_rule_id
                         ));
-                        self.key_keeper_shared_state
+                        if let Err(e) = self
+                            .key_keeper_shared_state
                             .set_wireserver_rules(status.get_wireserver_rules())
-                            .await;
+                            .await
+                        {
+                            logger::write_error(format!("Failed to set wireserver rules: {}", e));
+                        }
                         access_control_rules_changed = true;
                     }
                 }
@@ -350,8 +373,13 @@ impl KeyKeeper {
                             "IMDS rule id changed from {} to {}.",
                             old_imds_rule_id, imds_rule_id
                         ));
-                        self.key_keeper_shared_state
-                            .set_imds_rules(status.get_imds_rules());
+                        if let Err(e) = self
+                            .key_keeper_shared_state
+                            .set_imds_rules(status.get_imds_rules())
+                            .await
+                        {
+                            logger::write_error(format!("Failed to set imds rules: {}", e));
+                        }
                         access_control_rules_changed = true;
                     }
                 }
@@ -405,12 +433,19 @@ impl KeyKeeper {
                                     "key_keeper",
                                     logger::AGENT_LOGGER_KEY,
                                 );
-                                self.agent_status_shared_state
+                                if let Err(e) = self
+                                    .agent_status_shared_state
                                     .set_module_status_message(
                                         message.to_string(),
                                         AgentStatusModule::KeyKeeper,
                                     )
-                                    .await;
+                                    .await
+                                {
+                                    logger::write_warning(format!(
+                                        "Failed to set module status message: {}",
+                                        e
+                                    ));
+                                }
                                 key_found = true;
 
                                 provision::key_latched(
@@ -486,7 +521,11 @@ impl KeyKeeper {
                         match key::attest_key(&self.base_url, &key).await {
                             Ok(()) => {
                                 // update in memory
-                                self.key_keeper_shared_state.update_key(key.clone()).await;
+                                if let Err(e) =
+                                    self.key_keeper_shared_state.update_key(key.clone()).await
+                                {
+                                    logger::write_warning(format!("Failed to update key: {}", e));
+                                }
 
                                 let message = helpers::write_startup_event(
                                     "Successfully attest the key and ready to use.",
@@ -494,12 +533,19 @@ impl KeyKeeper {
                                     "key_keeper",
                                     logger::AGENT_LOGGER_KEY,
                                 );
-                                self.agent_status_shared_state
+                                if let Err(e) = self
+                                    .agent_status_shared_state
                                     .set_module_status_message(
                                         message.to_string(),
                                         AgentStatusModule::KeyKeeper,
                                     )
-                                    .await;
+                                    .await
+                                {
+                                    logger::write_warning(format!(
+                                        "Failed to set module status message: {}",
+                                        e
+                                    ));
+                                }
                                 provision::key_latched(
                                     self.cancellation_token.clone(),
                                     self.key_keeper_shared_state.clone(),
@@ -552,14 +598,23 @@ impl KeyKeeper {
                                 logger::AGENT_LOGGER_KEY,
                             );
                             // Update the status message and let the provision to continue
-                            self.agent_status_shared_state
+                            if let Err(e) = self
+                                .agent_status_shared_state
                                 .set_module_status_message(
                                     message.to_string(),
                                     AgentStatusModule::KeyKeeper,
                                 )
-                                .await;
+                                .await
+                            {
+                                logger::write_warning(format!(
+                                    "Failed to set module status message: {}",
+                                    e
+                                ));
+                            }
                             // clear key in memory for disabled state
-                            self.key_keeper_shared_state.clear_key().await;
+                            if let Err(e) = self.key_keeper_shared_state.clear_key().await {
+                                logger::write_warning(format!("Failed to clear key: {}", e));
+                            }
                             provision::key_latched(
                                 self.cancellation_token.clone(),
                                 self.key_keeper_shared_state.clone(),
@@ -581,7 +636,7 @@ impl KeyKeeper {
     // key is saved locally correctly
     // true if the key file found and its guid and key value are corrected;
     // other wise return false
-    fn check_local_key(key_dir: &PathBuf, key: &Key) -> bool {
+    fn check_local_key(key_dir: &Path, key: &Key) -> bool {
         let guid = key.guid.to_string();
         let mut key_file = key_dir.join(guid);
         key_file.set_extension("key");
@@ -601,9 +656,16 @@ impl KeyKeeper {
 
     /// Stop the key keeper task
     async fn stop(&self) {
-        self.agent_status_shared_state
+        if let Err(e) = self
+            .agent_status_shared_state
             .set_module_state(ModuleState::STOPPED, AgentStatusModule::KeyKeeper)
-            .await;
+            .await
+        {
+            logger::write_warning(format!(
+                "Failed to set key_keeper module state to 'Stopped' with error: {} ",
+                e
+            ));
+        }
     }
 }
 

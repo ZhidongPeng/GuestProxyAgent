@@ -17,6 +17,7 @@ enum ProxyServerAction {
         user_id: u64,
         response: oneshot::Sender<Option<User>>,
     },
+    #[cfg(test)]
     GetUsersCount {
         response: oneshot::Sender<usize>,
     },
@@ -48,6 +49,7 @@ impl ProxyServerSharedState {
                             logger::write_warning(format!("Failed to send response to ProxyServerAction::GetUser with id '{}'", user_id));
                         }
                     }
+                    #[cfg(test)]
                     ProxyServerAction::GetUsersCount { response } => {
                         if response.send(users.len()).is_err() {
                             logger::write_warning(
@@ -86,7 +88,10 @@ impl ProxyServerSharedState {
     pub async fn get_user(&self, user_id: u64) -> Result<Option<User>> {
         let (tx, rx) = oneshot::channel();
         self.0
-            .send(ProxyServerAction::GetUser { user_id, response: tx })
+            .send(ProxyServerAction::GetUser {
+                user_id,
+                response: tx,
+            })
             .await
             .map_err(|e| {
                 Error::SendError("ProxyServerAction::GetUser".to_string(), e.to_string())
@@ -102,7 +107,10 @@ impl ProxyServerSharedState {
             .send(ProxyServerAction::GetUsersCount { response: tx })
             .await
             .map_err(|e| {
-                Error::SendError("ProxyServerAction::GetUsersCount".to_string(), e.to_string())
+                Error::SendError(
+                    "ProxyServerAction::GetUsersCount".to_string(),
+                    e.to_string(),
+                )
             })?;
         rx.await
             .map_err(|e| Error::RecvError("ProxyServerAction::GetUsersCount".to_string(), e))
