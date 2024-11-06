@@ -43,19 +43,18 @@
 use crate::common::{
     config, constants, error::Error, helpers, hyper_client, logger, result::Result,
 };
-use crate::proxy::proxy_server;
-use crate::shared_state::key_keeper_wrapper::KeyKeeperState;
-use crate::shared_state::telemetry_wrapper::TelemetryState;
-use crate::shared_state::{provision_wrapper, SharedState};
+use crate::proxy_agent_status;
+use crate::shared_state::agent_status_wrapper::{AgentStatusModule, AgentStatusSharedState};
+use crate::shared_state::key_keeper_wrapper::KeyKeeperSharedState;
+use crate::shared_state::provision_wrapper::ProvisionSharedState;
+use crate::shared_state::telemetry_wrapper::TelemetrySharedState;
 use crate::telemetry::event_reader::EventReader;
-use crate::{proxy_agent_status, redirector};
 use proxy_agent_shared::misc_helpers;
 use proxy_agent_shared::telemetry::event_logger;
 use serde_derive::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
@@ -86,7 +85,7 @@ bitflags::bitflags! {
     /// assert_eq!(true, flags.contains(ProvisionFlags::KEY_LATCH_READY));
     /// assert_eq!(true, flags.contains(ProvisionFlags::LISTENER_READY));
     /// ```
-    #[derive(Clone)]
+    #[derive(Clone, Debug)]
     pub struct ProvisionFlags: u8 {
         const NONE = 0;
         const REDIRECTOR_READY = 1;
@@ -114,17 +113,19 @@ pub const PROVISION_URL_PATH: &str = "/provision";
 /// It could  be called by redirector module
 pub async fn redirector_ready(
     cancellation_token: CancellationToken,
-    key_keeper_state: KeyKeeperState,
-    telemetry_state: TelemetryState,
-    shared_state: Arc<Mutex<SharedState>>,
+    key_keeper_shared_state: KeyKeeperSharedState,
+    telemetry_shared_state: TelemetrySharedState,
+    provision_shared_state: ProvisionSharedState,
+    agent_status_shared_state: AgentStatusSharedState,
 ) {
     update_provision_state(
         ProvisionFlags::REDIRECTOR_READY,
         None,
         cancellation_token,
-        key_keeper_state,
-        telemetry_state,
-        shared_state,
+        key_keeper_shared_state,
+        telemetry_shared_state,
+        provision_shared_state,
+        agent_status_shared_state,
     )
     .await;
 }
@@ -133,17 +134,19 @@ pub async fn redirector_ready(
 /// It could  be called by key latch module
 pub async fn key_latched(
     cancellation_token: CancellationToken,
-    key_keeper_state: KeyKeeperState,
-    telemetry_state: TelemetryState,
-    shared_state: Arc<Mutex<SharedState>>,
+    key_keeper_shared_state: KeyKeeperSharedState,
+    telemetry_shared_state: TelemetrySharedState,
+    provision_shared_state: ProvisionSharedState,
+    agent_status_shared_state: AgentStatusSharedState,
 ) {
     update_provision_state(
         ProvisionFlags::KEY_LATCH_READY,
         None,
         cancellation_token,
-        key_keeper_state,
-        telemetry_state,
-        shared_state,
+        key_keeper_shared_state,
+        telemetry_shared_state,
+        provision_shared_state,
+        agent_status_shared_state,
     )
     .await;
 }
@@ -152,17 +155,19 @@ pub async fn key_latched(
 /// It could  be called by listener module
 pub async fn listener_started(
     cancellation_token: CancellationToken,
-    key_keeper_state: KeyKeeperState,
-    telemetry_state: TelemetryState,
-    shared_state: Arc<Mutex<SharedState>>,
+    key_keeper_shared_state: KeyKeeperSharedState,
+    telemetry_shared_state: TelemetrySharedState,
+    provision_shared_state: ProvisionSharedState,
+    agent_status_shared_state: AgentStatusSharedState,
 ) {
     update_provision_state(
         ProvisionFlags::LISTENER_READY,
         None,
         cancellation_token,
-        key_keeper_state,
-        telemetry_state,
-        shared_state,
+        key_keeper_shared_state,
+        telemetry_shared_state,
+        provision_shared_state,
+        agent_status_shared_state,
     )
     .await;
 }
@@ -172,43 +177,57 @@ async fn update_provision_state(
     state: ProvisionFlags,
     provision_dir: Option<PathBuf>,
     cancellation_token: CancellationToken,
-    key_keeper_state: KeyKeeperState,
-    telemetry_state: TelemetryState,
-    shared_state: Arc<Mutex<SharedState>>,
+    key_keeper_shared_state: KeyKeeperSharedState,
+    telemetry_shared_state: TelemetrySharedState,
+    provision_shared_state: ProvisionSharedState,
+    agent_status_shared_state: AgentStatusSharedState,
 ) {
-    let provision_state = provision_wrapper::update_state(shared_state.clone(), state);
-    if provision_state.contains(ProvisionFlags::ALL_READY) {
-        provision_wrapper::set_provision_finished(shared_state.clone(), true);
+    if let Ok(provision_state) = provision_shared_state.update_one_state(state).await {
+        if provision_state.contains(ProvisionFlags::ALL_READY) {
+            if let Err(e) = provision_shared_state.set_provision_finished(true).await {
+                // log the error and continue
+                logger::write_error(format!("Failed to set provision finished with error: {e}"));
+            }
 
-        // write provision success state here
-        write_provision_state(
-            provision_dir,
-            key_keeper_state.clone(),
-            shared_state.clone(),
-        )
-        .await;
+            // write provision success state here
+            write_provision_state(
+                provision_dir,
+                provision_shared_state.clone(),
+                agent_status_shared_state.clone(),
+            )
+            .await;
 
-        // start event threads right after provision successfully
-        start_event_threads(
-            cancellation_token,
-            key_keeper_state,
-            telemetry_state,
-            shared_state.clone(),
-        )
-        .await;
+            // start event threads right after provision successfully
+            start_event_threads(
+                cancellation_token,
+                key_keeper_shared_state,
+                telemetry_shared_state,
+                provision_shared_state,
+                agent_status_shared_state,
+            )
+            .await;
+        }
     }
 }
 
-pub fn key_latch_ready_state_reset(shared_state: Arc<Mutex<SharedState>>) {
-    reset_provision_state(ProvisionFlags::KEY_LATCH_READY, shared_state);
+pub async fn key_latch_ready_state_reset(provision_shared_state: ProvisionSharedState) {
+    reset_provision_state(ProvisionFlags::KEY_LATCH_READY, provision_shared_state).await;
 }
 
-fn reset_provision_state(state_to_reset: ProvisionFlags, shared_state: Arc<Mutex<SharedState>>) {
-    let provision_state = provision_wrapper::reset_state(shared_state.clone(), state_to_reset);
-    provision_wrapper::set_provision_finished(
-        shared_state.clone(),
-        provision_state.contains(ProvisionFlags::ALL_READY),
-    );
+async fn reset_provision_state(
+    state_to_reset: ProvisionFlags,
+    provision_shared_state: ProvisionSharedState,
+) {
+    let provision_state = match provision_shared_state.reset_one_state(state_to_reset).await {
+        Ok(state) => state,
+        Err(e) => {
+            logger::write_error(format!("Failed to reset provision state with error: {e}"));
+            return;
+        }
+    };
+    provision_shared_state
+        .set_provision_finished(provision_state.contains(ProvisionFlags::ALL_READY))
+        .await;
 }
 
 /// Update provision state when provision timedout
@@ -223,15 +242,23 @@ fn reset_provision_state(state_to_reset: ProvisionFlags, shared_state: Arc<Mutex
 /// ```
 pub async fn provision_timeup(
     provision_dir: Option<PathBuf>,
-    key_keeper_state: KeyKeeperState,
-    shared_state: Arc<Mutex<SharedState>>,
+    provision_shared_state: ProvisionSharedState,
+    agent_status_shared_state: AgentStatusSharedState,
 ) {
-    let provision_state = provision_wrapper::get_state(shared_state.clone());
+    let provision_state = provision_shared_state
+        .get_state()
+        .await
+        .unwrap_or(ProvisionFlags::NONE);
     if !provision_state.contains(ProvisionFlags::ALL_READY) {
-        provision_wrapper::set_provision_finished(shared_state.clone(), true);
+        provision_shared_state.set_provision_finished(true).await;
 
         // write provision state
-        write_provision_state(provision_dir, key_keeper_state, shared_state).await;
+        write_provision_state(
+            provision_dir,
+            provision_shared_state,
+            agent_status_shared_state,
+        )
+        .await;
     }
 }
 
@@ -240,17 +267,21 @@ pub async fn provision_timeup(
 /// it is designed to delay start those tasks to give more cpu time to provision tasks
 pub async fn start_event_threads(
     cancellation_token: CancellationToken,
-    key_keeper_state: KeyKeeperState,
-    telemetry_state: TelemetryState,
-    shared_state: Arc<Mutex<SharedState>>,
+    key_keeper_shared_state: KeyKeeperSharedState,
+    telemetry_shared_state: TelemetrySharedState,
+    provision_shared_state: ProvisionSharedState,
+    agent_status_shared_state: AgentStatusSharedState,
 ) {
-    let logger_threads_initialized =
-        provision_wrapper::get_event_log_threads_initialized(shared_state.clone());
-    if logger_threads_initialized {
-        return;
+    if let Ok(logger_threads_initialized) = provision_shared_state
+        .get_event_log_threads_initialized()
+        .await
+    {
+        if logger_threads_initialized {
+            return;
+        }
     }
 
-    let cloned_telemetry_state = telemetry_state.clone();
+    let cloned_telemetry_state = telemetry_shared_state.clone();
     event_logger::start_async(
         config::get_events_dir(),
         Duration::default(),
@@ -270,9 +301,8 @@ pub async fn start_event_threads(
             config::get_events_dir(),
             true,
             cancellation_token.clone(),
-            key_keeper_state.clone(),
-            telemetry_state.clone(),
-            shared_state.clone(),
+            key_keeper_shared_state.clone(),
+            telemetry_shared_state.clone(),
         );
         async move {
             event_reader
@@ -280,16 +310,17 @@ pub async fn start_event_threads(
                 .await;
         }
     });
-    provision_wrapper::set_event_log_threads_initialized(shared_state.clone(), true);
+    provision_shared_state
+        .set_event_log_threads_initialized()
+        .await;
 
     tokio::spawn({
         let agent_status_task = proxy_agent_status::ProxyAgentStatusTask::new(
             Duration::from_secs(60),
             config::get_logs_dir(),
             cancellation_token.clone(),
-            key_keeper_state.clone(),
-            telemetry_state.clone(),
-            shared_state.clone(),
+            key_keeper_shared_state.clone(),
+            agent_status_shared_state.clone(),
         );
         async move {
             agent_status_task.start().await;
@@ -306,8 +337,8 @@ pub async fn start_event_threads(
 ///  empty means provision success, otherwise provision failed with error message
 async fn write_provision_state(
     provision_dir: Option<PathBuf>,
-    key_keeper_state: KeyKeeperState,
-    shared_state: Arc<Mutex<SharedState>>,
+    provision_shared_state: ProvisionSharedState,
+    agent_status_shared_state: AgentStatusSharedState,
 ) {
     let provision_dir = provision_dir.unwrap_or_else(config::get_keys_dir);
 
@@ -325,7 +356,7 @@ async fn write_provision_state(
     }
 
     let failed_state_message =
-        get_provision_failed_state_message(key_keeper_state, shared_state.clone()).await;
+        get_provision_failed_state_message(provision_shared_state, agent_status_shared_state).await;
     let status_file: PathBuf = provision_dir.join(STATUS_TAG_TMP_FILE_NAME);
     match std::fs::write(status_file, failed_state_message.as_bytes()) {
         Ok(_) => {
@@ -347,30 +378,45 @@ async fn write_provision_state(
 
 /// Get provision failed state message
 async fn get_provision_failed_state_message(
-    key_keeper_state: KeyKeeperState,
-    shared_state: Arc<Mutex<SharedState>>,
+    provision_shared_state: ProvisionSharedState,
+    agent_status_shared_state: AgentStatusSharedState,
 ) -> String {
-    let provision_state = provision_wrapper::get_state(shared_state.clone());
+    let provision_state = match provision_shared_state.get_state().await {
+        Ok(state) => state,
+        Err(e) => {
+            logger::write_error(format!("Failed to get provision state with error: {e}"));
+            ProvisionFlags::NONE
+        }
+    };
 
     let mut state = String::new(); //provision success, write 0 byte to file
     if !provision_state.contains(ProvisionFlags::REDIRECTOR_READY) {
         state.push_str(&format!(
             "ebpfProgramStatus - {}\r\n",
-            redirector::get_status(shared_state.clone()).message
+            agent_status_shared_state
+                .get_module_status(AgentStatusModule::Redirector)
+                .await
+                .message
         ));
     }
 
     if !provision_state.contains(ProvisionFlags::KEY_LATCH_READY) {
         state.push_str(&format!(
             "keyLatchStatus - {}\r\n",
-            key_keeper_state.get_status().await.message
+            agent_status_shared_state
+                .get_module_status(AgentStatusModule::KeyKeeper)
+                .await
+                .message
         ));
     }
 
     if !provision_state.contains(ProvisionFlags::LISTENER_READY) {
         state.push_str(&format!(
             "proxyListenerStatus - {}\r\n",
-            proxy_server::get_status(shared_state.clone()).message
+            agent_status_shared_state
+                .get_module_status(AgentStatusModule::ProxyServer)
+                .await
+                .message
         ));
     }
 
@@ -381,12 +427,19 @@ async fn get_provision_failed_state_message(
 /// It returns the current GPA serice provision state (from shared_state) for GPA service
 /// This function is designed and invoked in GPA service
 pub async fn get_provision_state(
-    key_keeper_state: KeyKeeperState,
-    shared_state: Arc<Mutex<SharedState>>,
+    provision_shared_state: ProvisionSharedState,
+    agent_status_shared_state: AgentStatusSharedState,
 ) -> ProvisionState {
     ProvisionState {
-        finished: provision_wrapper::get_provision_finished(shared_state.clone()),
-        errorMessage: get_provision_failed_state_message(key_keeper_state, shared_state).await,
+        finished: provision_shared_state
+            .get_provision_finished()
+            .await
+            .unwrap_or(false),
+        errorMessage: get_provision_failed_state_message(
+            provision_shared_state,
+            agent_status_shared_state,
+        )
+        .await,
     }
 }
 
@@ -458,10 +511,10 @@ mod tests {
     use crate::provision::ProvisionFlags;
     use crate::proxy::proxy_connection::Connection;
     use crate::proxy::proxy_server;
-    use crate::shared_state::key_keeper_wrapper::KeyKeeperState;
-    use crate::shared_state::provision_wrapper;
-    use crate::shared_state::telemetry_wrapper::TelemetryState;
-    use crate::shared_state::SharedState;
+    use crate::shared_state::agent_status_wrapper;
+    use crate::shared_state::key_keeper_wrapper::KeyKeeperSharedState;
+    use crate::shared_state::provision_wrapper::ProvisionSharedState;
+    use crate::shared_state::telemetry_wrapper::TelemetrySharedState;
     use proxy_agent_shared::logger_manager;
     use std::env;
     use std::fs;
@@ -487,17 +540,18 @@ mod tests {
         Connection::init_logger(temp_test_path.to_path_buf());
 
         // start listener, the port must different from the one used in production code
-        let shared_state = SharedState::new();
         let cancellation_token = CancellationToken::new();
-        let key_keeper_state = KeyKeeperState::start_new();
-        let telemetry_state = TelemetryState::start_new();
+        let provision_shared_state = ProvisionSharedState::start_new();
+        let key_keeper_shared_state = KeyKeeperSharedState::start_new();
+        let telemetry_shared_state = TelemetrySharedState::start_new();
+        let agent_status_shared_state = agent_status_wrapper::AgentStatusSharedState::start_new();
         let port: u16 = 8092;
         let proxy_server = proxy_server::ProxyServer::new(
             port,
             cancellation_token.clone(),
-            key_keeper_state.clone(),
-            telemetry_state.clone(),
-            shared_state.clone(),
+            key_keeper_shared_state.clone(),
+            telemetry_shared_state.clone(),
+            agent_status_shared_state.clone(),
         );
 
         tokio::spawn({
@@ -523,33 +577,34 @@ mod tests {
         let dir1 = temp_test_path.to_path_buf();
         let dir2 = temp_test_path.to_path_buf();
         let dir3 = temp_test_path.to_path_buf();
-        let s1 = shared_state.clone();
-        let s2 = shared_state.clone();
-        let s3 = shared_state.clone();
+
         let handles = vec![
             tokio::spawn(super::update_provision_state(
                 ProvisionFlags::REDIRECTOR_READY,
                 Some(dir1),
                 cancellation_token.clone(),
-                key_keeper_state.clone(),
-                telemetry_state.clone(),
-                s1,
+                key_keeper_shared_state.clone(),
+                telemetry_shared_state.clone(),
+                provision_shared_state.clone(),
+                agent_status_shared_state.clone(),
             )),
             tokio::spawn(super::update_provision_state(
                 ProvisionFlags::KEY_LATCH_READY,
                 Some(dir2),
                 cancellation_token.clone(),
-                key_keeper_state.clone(),
-                telemetry_state.clone(),
-                s2,
+                key_keeper_shared_state.clone(),
+                telemetry_shared_state.clone(),
+                provision_shared_state.clone(),
+                agent_status_shared_state.clone(),
             )),
             tokio::spawn(super::update_provision_state(
                 ProvisionFlags::LISTENER_READY,
                 Some(dir3),
                 cancellation_token.clone(),
-                key_keeper_state.clone(),
-                telemetry_state.clone(),
-                s3,
+                key_keeper_shared_state.clone(),
+                telemetry_shared_state.clone(),
+                provision_shared_state.clone(),
+                agent_status_shared_state.clone(),
             )),
         ];
         for handle in handles {
@@ -576,13 +631,15 @@ mod tests {
             "provision_status.1 must be empty"
         );
 
-        let event_threads_initialized =
-            provision_wrapper::get_event_log_threads_initialized(shared_state.clone());
+        let event_threads_initialized = provision_shared_state
+            .get_event_log_threads_initialized()
+            .await
+            .unwrap();
         assert!(event_threads_initialized);
 
         // test reset key latch provision state
-        super::key_latch_ready_state_reset(shared_state.clone());
-        let provision_state = provision_wrapper::get_state(shared_state.clone());
+        super::key_latch_ready_state_reset(provision_shared_state.clone()).await;
+        let provision_state = provision_shared_state.get_state().await.unwrap();
         assert!(!provision_state.contains(ProvisionFlags::KEY_LATCH_READY));
         let provision_status = provision_query.get_provision_status_wait().await;
         assert!(!provision_status.0, "provision_status.0 must be false");
@@ -595,11 +652,13 @@ mod tests {
         // test key_latched ready again
         super::key_latched(
             cancellation_token.clone(),
-            key_keeper_state.clone(),
-            telemetry_state.clone(),
-            shared_state.clone(),
-        );
-        let provision_state = provision_wrapper::get_state(shared_state.clone());
+            key_keeper_shared_state.clone(),
+            telemetry_shared_state.clone(),
+            provision_shared_state.clone(),
+            agent_status_shared_state.clone(),
+        )
+        .await;
+        let provision_state = provision_shared_state.get_state().await.unwrap();
         assert!(
             provision_state.contains(ProvisionFlags::ALL_READY),
             "ALL_READY must be true after key_latched again"

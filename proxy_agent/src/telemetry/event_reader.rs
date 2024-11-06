@@ -29,16 +29,14 @@ use super::telemetry_event::TelemetryEvent;
 use crate::common::{constants, logger, result::Result};
 use crate::host_clients::imds_client::ImdsClient;
 use crate::host_clients::wire_server_client::WireServerClient;
-use crate::shared_state::key_keeper_wrapper::KeyKeeperState;
-use crate::shared_state::telemetry_wrapper::TelemetryState;
-use crate::shared_state::SharedState;
+use crate::shared_state::key_keeper_wrapper::KeyKeeperSharedState;
+use crate::shared_state::telemetry_wrapper::TelemetrySharedState;
 use proxy_agent_shared::misc_helpers;
 use proxy_agent_shared::proxy_agent_aggregate_status::ModuleState;
 use proxy_agent_shared::telemetry::event_logger;
 use proxy_agent_shared::telemetry::Event;
 use std::fs::remove_file;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
@@ -77,10 +75,8 @@ pub struct EventReader {
     dir_path: PathBuf,
     delay_start: bool,
     cancellation_token: CancellationToken,
-    key_keeper_state: KeyKeeperState,
-    telemetry_state: TelemetryState,
-    /// Shared state to store the telemetry data and the vm metadata. -- deprecated
-    shared_state: Arc<Mutex<SharedState>>,
+    key_keeper_shared_state: KeyKeeperSharedState,
+    telemetry_shared_state: TelemetrySharedState,
 }
 
 impl EventReader {
@@ -88,17 +84,15 @@ impl EventReader {
         dir_path: PathBuf,
         delay_start: bool,
         cancellation_token: CancellationToken,
-        key_keeper_state: KeyKeeperState,
-        telemetry_state: TelemetryState,
-        shared_state: Arc<Mutex<SharedState>>,
+        key_keeper_shared_state: KeyKeeperSharedState,
+        telemetry_shared_state: TelemetrySharedState,
     ) -> EventReader {
         EventReader {
             dir_path,
             delay_start,
             cancellation_token,
-            key_keeper_state,
-            telemetry_state,
-            shared_state,
+            key_keeper_shared_state,
+            telemetry_shared_state,
         }
     }
 
@@ -113,12 +107,12 @@ impl EventReader {
         let wire_server_client = WireServerClient::new(
             server_ip.unwrap_or(constants::WIRE_SERVER_IP),
             server_port.unwrap_or(constants::WIRE_SERVER_PORT),
-            self.key_keeper_state.clone(),
+            self.key_keeper_shared_state.clone(),
         );
         let imds_client = ImdsClient::new(
             server_ip.unwrap_or(constants::IMDS_IP),
             server_port.unwrap_or(constants::IMDS_PORT),
-            self.key_keeper_state.clone(),
+            self.key_keeper_shared_state.clone(),
         );
 
         let interval = interval.unwrap_or(Duration::from_secs(300));
@@ -161,7 +155,7 @@ impl EventReader {
                 }
             }
 
-            if let Ok(Some(vm_meta_data)) = self.telemetry_state.get_vm_meta_data().await {
+            if let Ok(Some(vm_meta_data)) = self.telemetry_shared_state.get_vm_meta_data().await {
                 // vm metadata is updated, process events
                 match misc_helpers::get_files(&self.dir_path) {
                     Ok(files) => {
@@ -193,7 +187,7 @@ impl EventReader {
     }
 
     async fn stop(&self) {
-        self.telemetry_state
+        self.telemetry_shared_state
             .set_reader_state(ModuleState::STOPPED)
             .await;
     }
@@ -219,7 +213,7 @@ impl EventReader {
             vm_id: instance_info.get_vm_id(),
             image_origin: instance_info.get_image_origin(),
         };
-        self.telemetry_state
+        self.telemetry_shared_state
             .set_vm_meta_data(Some(vm_meta_data))
             .await?;
 
@@ -345,7 +339,7 @@ impl EventReader {
 
     #[cfg(test)]
     async fn get_vm_meta_data(&self) -> VmMetaData {
-        if let Ok(Some(vm_meta_data)) = self.telemetry_state.get_vm_meta_data().await {
+        if let Ok(Some(vm_meta_data)) = self.telemetry_shared_state.get_vm_meta_data().await {
             vm_meta_data
         } else {
             VmMetaData::default()
@@ -385,21 +379,19 @@ mod tests {
         // start wire_server listener
         let ip = "127.0.0.1";
         let port = 7071u16;
-        let shared_state = SharedState::new();
         let cancellation_token = CancellationToken::new();
-        let key_keeper_state = KeyKeeperState::start_new();
+        let key_keeper_shared_state = KeyKeeperSharedState::start_new();
         let event_reader = EventReader {
             dir_path: events_dir.clone(),
             delay_start: false,
-            key_keeper_state: key_keeper_state.clone(),
-            telemetry_state: TelemetryState::start_new(),
+            key_keeper_shared_state: key_keeper_shared_state.clone(),
+            telemetry_shared_state: TelemetrySharedState::start_new(),
             cancellation_token: cancellation_token.clone(),
-            shared_state: shared_state.clone(),
         };
-        let wire_server_client = WireServerClient::new(ip, port, key_keeper_state.clone());
-        let imds_client = ImdsClient::new(ip, port, key_keeper_state.clone());
+        let wire_server_client = WireServerClient::new(ip, port, key_keeper_shared_state.clone());
+        let imds_client = ImdsClient::new(ip, port, key_keeper_shared_state.clone());
 
-        key_keeper_state.update_key(Key::empty()).await.unwrap();
+        key_keeper_shared_state.update_key(Key::empty()).await.unwrap();
         tokio::spawn(server_mock::start(
             ip.to_string(),
             port,

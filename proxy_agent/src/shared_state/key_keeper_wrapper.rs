@@ -38,10 +38,9 @@
 /// ```
 use crate::common::error::Error;
 use crate::common::result::Result;
-use crate::key_keeper::UNKNOWN_STATE;
+use crate::key_keeper::key::AuthorizationItem;
+use crate::proxy::authorization_rules::ComputedAuthorizationItem;
 use crate::{common::logger, key_keeper::key::Key};
-use proxy_agent_shared::proxy_agent_aggregate_status::{ModuleState, ProxyAgentDetailStatus};
-use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, Notify};
 
@@ -75,19 +74,19 @@ enum KeyKeeperAction {
     GetImdsRuleId {
         response: oneshot::Sender<String>,
     },
-    GetState {
-        response: oneshot::Sender<ModuleState>,
-    },
-    SetState {
-        state: ModuleState,
+    SetWireServerRules {
+        rules: Option<ComputedAuthorizationItem>,
         response: oneshot::Sender<()>,
     },
-    SetKeyKeeperStatusMessage {
-        message: String,
+    GetWireServerRules {
+        response: oneshot::Sender<Option<ComputedAuthorizationItem>>,
+    },
+    SetImdsRules {
+        rules: Option<ComputedAuthorizationItem>,
         response: oneshot::Sender<()>,
     },
-    GetKeyKeeperStatusMessage {
-        response: oneshot::Sender<String>,
+    GetImdsRules {
+        response: oneshot::Sender<Option<ComputedAuthorizationItem>>,
     },
     GetNotify {
         response: oneshot::Sender<Arc<Notify>>,
@@ -95,9 +94,9 @@ enum KeyKeeperAction {
 }
 
 #[derive(Clone, Debug)]
-pub struct KeyKeeperState(mpsc::Sender<KeyKeeperAction>);
+pub struct KeyKeeperSharedState(mpsc::Sender<KeyKeeperAction>);
 
-impl KeyKeeperState {
+impl KeyKeeperSharedState {
     pub fn start_new() -> Self {
         let (sender, mut receiver) = mpsc::channel(100);
 
@@ -111,10 +110,11 @@ impl KeyKeeperState {
             let mut wireserver_rule_id: String = String::new();
             // The rule ID for the IMDS endpoints
             let mut imds_rule_id: String = String::new();
-            // The state for key keeper module
-            let mut key_keeper_state: ModuleState = ModuleState::UNKNOWN;
-            // The status message for the key keeper module
-            let mut key_keeper_status_message: String = super::UNKNOWN_STATUS_MESSAGE.to_string();
+            // The authorization rules for the WireServer endpoints
+            let mut wireserver_rules: Option<ComputedAuthorizationItem> = None;
+            // The authorization rules for the IMDS endpoints
+            let mut imds_rules: Option<ComputedAuthorizationItem> = None;
+
             let notify = Arc::new(Notify::new());
             loop {
                 match receiver.recv().await {
@@ -189,38 +189,38 @@ impl KeyKeeperState {
                             ));
                         }
                     }
-                    Some(KeyKeeperAction::GetState { response }) => {
-                        if let Err(state) = response.send(key_keeper_state.clone()) {
-                            logger::write_warning(format!(
-                                "Failed to send response to KeyKeeperAction::GetState '{:?}'",
-                                state
-                            ));
-                        }
-                    }
-                    Some(KeyKeeperAction::SetState { state, response }) => {
-                        key_keeper_state = state.clone();
+                    Some(KeyKeeperAction::SetWireServerRules { rules, response }) => {
+                        wireserver_rules = rules;
                         if response.send(()).is_err() {
-                            logger::write_warning(format!(
-                                "Failed to send response to KeyKeeperAction::SetState '{:?}'",
-                                state
-                            ));
+                            logger::write_warning(
+                                "Failed to send response to KeyKeeperAction::SetWireServerRules"
+                                    .to_string(),
+                            );
                         }
                     }
-                    Some(KeyKeeperAction::SetKeyKeeperStatusMessage { message, response }) => {
-                        key_keeper_status_message = message.to_string();
+                    Some(KeyKeeperAction::GetWireServerRules { response }) => {
+                        if response.send(wireserver_rules.clone()).is_err() {
+                            logger::write_warning(
+                                "Failed to send response to KeyKeeperAction::GetWireServerRules"
+                                    .to_string(),
+                            );
+                        }
+                    }
+                    Some(KeyKeeperAction::SetImdsRules { rules, response }) => {
+                        imds_rules = rules;
                         if response.send(()).is_err() {
-                            logger::write_warning(format!(
-                                "Failed to send response to KeyKeeperAction::SetKeyKeeperStatusMessage '{}'",
-                                message
-                            ));
+                            logger::write_warning(
+                                "Failed to send response to KeyKeeperAction::SetImdsRules"
+                                    .to_string(),
+                            );
                         }
                     }
-                    Some(KeyKeeperAction::GetKeyKeeperStatusMessage { response }) => {
-                        if let Err(message) = response.send(key_keeper_status_message.clone()) {
-                            logger::write_warning(format!(
-                                "Failed to send response to KeyKeeperAction::GetKeyKeeperStatusMessage '{}'",
-                                message
-                            ));
+                    Some(KeyKeeperAction::GetImdsRules { response }) => {
+                        if response.send(imds_rules.clone()).is_err() {
+                            logger::write_warning(
+                                "Failed to send response to KeyKeeperAction::GetImdsRules"
+                                    .to_string(),
+                            );
                         }
                     }
                     Some(KeyKeeperAction::GetNotify { response }) => {
@@ -437,62 +437,68 @@ impl KeyKeeperState {
         }
     }
 
-    pub async fn get_status_message(&self) -> Result<String> {
+    pub async fn set_wireserver_rules(&self, rules: Option<AuthorizationItem>) -> Result<()> {
         let (response, receiver) = oneshot::channel();
         self.0
-            .send(KeyKeeperAction::GetKeyKeeperStatusMessage { response })
+            .send(KeyKeeperAction::SetWireServerRules {
+                rules: rules.map(ComputedAuthorizationItem::from_authorization_item),
+                response,
+            })
             .await
             .map_err(|e| {
                 Error::SendError(
-                    "KeyKeeperAction::GetKeyKeeperStatusMessage".to_string(),
+                    "KeyKeeperAction::SetWireServerRules".to_string(),
                     e.to_string(),
                 )
             })?;
-        receiver.await.map_err(|e| {
-            Error::RecvError("KeyKeeperAction::GetKeyKeeperStatusMessage".to_string(), e)
-        })
+        receiver
+            .await
+            .map_err(|e| Error::RecvError("KeyKeeperAction::SetWireServerRules".to_string(), e))
     }
 
-    pub async fn set_status_message(&self, message: String) -> Result<()> {
+    pub async fn get_wireserver_rules(&self) -> Result<Option<ComputedAuthorizationItem>> {
         let (response, receiver) = oneshot::channel();
         self.0
-            .send(KeyKeeperAction::SetKeyKeeperStatusMessage { message, response })
+            .send(KeyKeeperAction::GetWireServerRules { response })
             .await
             .map_err(|e| {
                 Error::SendError(
-                    "KeyKeeperAction::SetKeyKeeperStatusMessage".to_string(),
+                    "KeyKeeperAction::GetWireServerRules".to_string(),
                     e.to_string(),
                 )
             })?;
-        receiver.await.map_err(|e| {
-            Error::RecvError("KeyKeeperAction::SetKeyKeeperStatusMessage".to_string(), e)
-        })
+        receiver
+            .await
+            .map_err(|e| Error::RecvError("KeyKeeperAction::GetWireServerRules".to_string(), e))
     }
 
-    pub async fn get_current_state(&self) -> Result<ModuleState> {
+    pub async fn set_imds_rules(&self, rules: Option<AuthorizationItem>) -> Result<()> {
         let (response, receiver) = oneshot::channel();
         self.0
-            .send(KeyKeeperAction::GetState { response })
+            .send(KeyKeeperAction::SetImdsRules {
+                rules: rules.map(ComputedAuthorizationItem::from_authorization_item),
+                response,
+            })
             .await
             .map_err(|e| {
-                Error::SendError("KeyKeeperAction::GetState".to_string(), e.to_string())
+                Error::SendError("KeyKeeperAction::SetImdsRules".to_string(), e.to_string())
             })?;
         receiver
             .await
-            .map_err(|e| Error::RecvError("KeyKeeperAction::GetState".to_string(), e))
+            .map_err(|e| Error::RecvError("KeyKeeperAction::SetImdsRules".to_string(), e))
     }
 
-    pub async fn set_state(&self, state: ModuleState) -> Result<()> {
+    pub async fn get_imds_rules(&self) -> Result<Option<ComputedAuthorizationItem>> {
         let (response, receiver) = oneshot::channel();
         self.0
-            .send(KeyKeeperAction::SetState { state, response })
+            .send(KeyKeeperAction::GetImdsRules { response })
             .await
             .map_err(|e| {
-                Error::SendError("KeyKeeperAction::SetState".to_string(), e.to_string())
+                Error::SendError("KeyKeeperAction::GetImdsRules".to_string(), e.to_string())
             })?;
         receiver
             .await
-            .map_err(|e| Error::RecvError("KeyKeeperAction::SetState".to_string(), e))
+            .map_err(|e| Error::RecvError("KeyKeeperAction::GetImdsRules".to_string(), e))
     }
 
     pub async fn get_notify(&self) -> Result<Arc<Notify>> {
@@ -512,48 +518,5 @@ impl KeyKeeperState {
         let notify = self.get_notify().await?;
         notify.notify_one();
         Ok(())
-    }
-
-    pub async fn get_status(&self) -> ProxyAgentDetailStatus {
-        let mut states = HashMap::new();
-        states.insert(
-            "secureChannelState".to_string(),
-            self
-                .get_current_secure_channel_state()
-                .await
-                .unwrap_or(UNKNOWN_STATE.to_string()),
-        );
-        if let Ok(Some(key_guid)) = self.get_current_key_guid().await {
-            states.insert("keyGuid".to_string(), key_guid);
-        }
-        states.insert(
-            "wireServerRuleId".to_string(),
-            self
-                .get_wireserver_rule_id()
-                .await
-                .unwrap_or(UNKNOWN_STATE.to_string()),
-        );
-        states.insert(
-            "imdsRuleId".to_string(),
-            self
-                .get_imds_rule_id()
-                .await
-                .unwrap_or(UNKNOWN_STATE.to_string()),
-        );
-        if let Ok(Some(incarnation)) = self.get_current_key_incarnation().await {
-            states.insert("keyIncarnationId".to_string(), incarnation.to_string());
-        }
-
-        ProxyAgentDetailStatus {
-            status: self
-                .get_current_state()
-                .await
-                .unwrap_or(ModuleState::UNKNOWN),
-            message: self
-                .get_status_message()
-                .await
-                .unwrap_or(super::UNKNOWN_STATUS_MESSAGE.to_string()),
-            states: Some(states),
-        }
     }
 }

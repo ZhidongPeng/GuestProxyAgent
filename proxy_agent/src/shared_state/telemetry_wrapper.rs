@@ -46,9 +46,9 @@ enum TelemetryAction {
 }
 
 #[derive(Clone, Debug)]
-pub struct TelemetryState(mpsc::Sender<TelemetryAction>);
+pub struct TelemetrySharedState(mpsc::Sender<TelemetryAction>);
 
-impl TelemetryState {
+impl TelemetrySharedState {
     pub fn start_new() -> Self {
         let (sender, mut receiver) = mpsc::channel(100);
         tokio::spawn(async move {

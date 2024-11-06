@@ -24,8 +24,12 @@ use crate::common::{
 };
 use crate::proxy::proxy_connection::{Connection, ConnectionContext};
 use crate::proxy::{proxy_authorizer, proxy_summary::ProxySummary, Claims};
-use crate::shared_state::key_keeper_wrapper::KeyKeeperState;
-use crate::shared_state::telemetry_wrapper::TelemetryState;
+use crate::shared_state::agent_status_wrapper::{AgentStatusModule, AgentStatusSharedState};
+use crate::shared_state::key_keeper_wrapper::KeyKeeperSharedState;
+use crate::shared_state::provision_wrapper::ProvisionSharedState;
+use crate::shared_state::proxy_server_wrapper::ProxyServerSharedState;
+use crate::shared_state::redirector_wrapper::RedirectorSharedState;
+use crate::shared_state::telemetry_wrapper::TelemetrySharedState;
 use crate::shared_state::{agent_status_wrapper, proxy_listener_wrapper, SharedState};
 use crate::{provision, redirector};
 use http_body_util::Full;
@@ -38,7 +42,6 @@ use hyper::{Request, Response};
 use hyper_util::rt::TokioIo;
 use proxy_agent_shared::misc_helpers;
 use proxy_agent_shared::proxy_agent_aggregate_status::ModuleState;
-use proxy_agent_shared::proxy_agent_aggregate_status::ProxyAgentDetailStatus;
 use proxy_agent_shared::telemetry::event_logger;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -58,43 +61,38 @@ pub fn stop(shared_state: Arc<Mutex<SharedState>>) {
     proxy_listener_wrapper::set_shutdown(shared_state.clone(), true);
 }
 
-pub fn get_status(shared_state: Arc<Mutex<SharedState>>) -> ProxyAgentDetailStatus {
-    let status = if proxy_listener_wrapper::get_shutdown(shared_state.clone()) {
-        ModuleState::STOPPED
-    } else {
-        ModuleState::RUNNING
-    };
-
-    ProxyAgentDetailStatus {
-        status,
-        message: proxy_listener_wrapper::get_status_message(shared_state.clone()),
-        states: None,
-    }
-}
-
 #[derive(Clone)]
 pub struct ProxyServer {
     port: u16,
     cancellation_token: CancellationToken,
-    key_keeper_state: KeyKeeperState,
-    telemetry_state: TelemetryState,
-    shared_state: Arc<Mutex<SharedState>>, // deprecated
+    key_keeper_shared_state: KeyKeeperSharedState,
+    telemetry_shared_state: TelemetrySharedState,
+    provision_shared_state: ProvisionSharedState,
+    agent_status_shared_state: AgentStatusSharedState,
+    redirector_shared_state: RedirectorSharedState,
+    proxy_server_shared_state: ProxyServerSharedState,
 }
 
 impl ProxyServer {
     pub fn new(
         port: u16,
         cancellation_token: CancellationToken,
-        key_keeper_state: KeyKeeperState,
-        telemetry_state: TelemetryState,
-        shared_state: Arc<Mutex<SharedState>>,
+        key_keeper_shared_state: KeyKeeperSharedState,
+        telemetry_shared_state: TelemetrySharedState,
+        provision_shared_state: ProvisionSharedState,
+        agent_status_shared_state: AgentStatusSharedState,
+        redirector_shared_state: RedirectorSharedState,
+        proxy_server_shared_state: ProxyServerSharedState,
     ) -> Self {
         ProxyServer {
             port,
             cancellation_token,
-            key_keeper_state,
-            telemetry_state,
-            shared_state,
+            key_keeper_shared_state,
+            telemetry_shared_state,
+            provision_shared_state,
+            agent_status_shared_state,
+            redirector_shared_state,
+            proxy_server_shared_state,
         }
     }
 
@@ -153,10 +151,9 @@ impl ProxyServer {
             Ok(listener) => listener,
             Err(e) => {
                 let message = e.to_string();
-                proxy_listener_wrapper::set_status_message(
-                    self.shared_state.clone(),
-                    message.to_string(),
-                );
+                self.agent_status_shared_state
+                    .set_module_status_message(message.to_string(), AgentStatusModule::ProxyServer)
+                    .await;
                 // send this critical error to event logger
                 event_logger::write_event(
                     event_logger::WARN_LEVEL,
@@ -176,12 +173,18 @@ impl ProxyServer {
             "proxy_server",
             logger::AGENT_LOGGER_KEY,
         );
-        proxy_listener_wrapper::set_status_message(self.shared_state.clone(), message.to_string());
+        self.agent_status_shared_state
+            .set_module_status_message(message.to_string(), AgentStatusModule::ProxyServer)
+            .await;
+        self.agent_status_shared_state
+            .set_module_state(ModuleState::RUNNING, AgentStatusModule::ProxyServer)
+            .await;
         provision::listener_started(
             self.cancellation_token.clone(),
-            self.key_keeper_state.clone(),
-            self.telemetry_state.clone(),
-            self.shared_state.clone(),
+            self.key_keeper_shared_state.clone(),
+            self.telemetry_shared_state.clone(),
+            self.provision_shared_state.clone(),
+            self.agent_status_shared_state.clone(),
         )
         .await;
 
@@ -320,8 +323,20 @@ impl ProxyServer {
         request: Request<Limited<hyper::body::Incoming>>,
         mut connection: ConnectionContext,
     ) -> Result<Response<BoxBody<Bytes, hyper::Error>>> {
-        let connection_id =
-            proxy_listener_wrapper::increase_connection_count(self.shared_state.clone());
+        let connection_id = match self
+            .agent_status_shared_state
+            .increase_connection_count()
+            .await
+        {
+            Ok(id) => id,
+            Err(e) => {
+                Connection::write_error(
+                    INITIAL_CONNECTION_ID,
+                    format!("Failed to increase connection count: {}", e),
+                );
+                return Ok(Self::empty_response(StatusCode::INTERNAL_SERVER_ERROR));
+            }
+        };
         connection.id = connection_id;
         Connection::write_information(
             connection_id,
@@ -341,7 +356,9 @@ impl ProxyServer {
         let client_source_port = connection.client_addr.port();
 
         let mut entry = None;
-        match redirector::lookup_audit(client_source_port, self.shared_state.clone()) {
+        match redirector::lookup_audit(client_source_port, self.redirector_shared_state.clone())
+            .await
+        {
             Ok(data) => entry = Some(data),
             Err(e) => {
                 let err = format!("Failed to get lookup_audit: {}", e);
@@ -385,18 +402,23 @@ impl ProxyServer {
             }
         };
 
-        let claims =
-            match Claims::from_audit_entry(&entry, client_source_ip, self.shared_state.clone()) {
-                Ok(claims) => claims,
-                Err(e) => {
-                    Connection::write_warning(
-                        connection_id,
-                        format!("Failed to get claims from audit entry: {}", e),
-                    );
-                    self.log_connection_summary(&connection, StatusCode::MISDIRECTED_REQUEST);
-                    return Ok(Self::empty_response(StatusCode::MISDIRECTED_REQUEST));
-                }
-            };
+        let claims = match Claims::from_audit_entry(
+            &entry,
+            client_source_ip,
+            self.proxy_server_shared_state.clone(),
+        )
+        .await
+        {
+            Ok(claims) => claims,
+            Err(e) => {
+                Connection::write_warning(
+                    connection_id,
+                    format!("Failed to get claims from audit entry: {}", e),
+                );
+                self.log_connection_summary(&connection, StatusCode::MISDIRECTED_REQUEST);
+                return Ok(Self::empty_response(StatusCode::MISDIRECTED_REQUEST));
+            }
+        };
 
         let claim_details: String = match serde_json::to_string(&claims) {
             Ok(json) => json,
@@ -514,10 +536,10 @@ impl ProxyServer {
         }
 
         // notify key_keeper to poll the status
-        self.key_keeper_state.notify().await;
+        self.key_keeper_shared_state.notify().await;
 
         let provision_state = provision::get_provision_state(
-            self.key_keeper_state.clone(),
+            self.key_keeper_shared_state.clone(),
             self.shared_state.clone(),
         )
         .await;
@@ -665,11 +687,11 @@ impl ProxyServer {
         // sign the request
         // Add header x-ms-azure-host-authorization
         if let (Some(key), Some(key_guid)) = (
-            self.key_keeper_state
+            self.key_keeper_shared_state
                 .get_current_key_guid()
                 .await
                 .unwrap_or(None),
-            self.key_keeper_state
+            self.key_keeper_shared_state
                 .get_current_key_value()
                 .await
                 .unwrap_or(None),
@@ -738,7 +760,7 @@ mod tests {
     use crate::proxy::proxy_connection::Connection;
     use crate::proxy::proxy_server;
     use crate::shared_state::key_keeper_wrapper;
-    use crate::shared_state::telemetry_wrapper::TelemetryState;
+    use crate::shared_state::telemetry_wrapper::TelemetrySharedState;
     use crate::shared_state::SharedState;
     use http::Method;
     use proxy_agent_shared::logger_manager;
@@ -766,14 +788,14 @@ mod tests {
         let shared_state = SharedState::new();
         let host = "127.0.0.1";
         let port: u16 = 8091;
-        let key_keeper_state = key_keeper_wrapper::KeyKeeperState::start_new();
-        let telemetry_state = TelemetryState::start_new();
+        let key_keeper_shared_state = key_keeper_wrapper::KeyKeeperSharedState::start_new();
+        let telemetry_shared_state = TelemetrySharedState::start_new();
         let cancellation_token = CancellationToken::new();
         let proxy_server = proxy_server::ProxyServer::new(
             port,
             cancellation_token.clone(),
-            key_keeper_state.clone(),
-            telemetry_state.clone(),
+            key_keeper_shared_state.clone(),
+            telemetry_shared_state.clone(),
             shared_state.clone(),
         );
 
@@ -794,11 +816,11 @@ mod tests {
             &url,
             &HashMap::new(),
             None,
-            key_keeper_state
+            key_keeper_shared_state
                 .get_current_key_guid()
                 .await
                 .unwrap_or(None),
-            key_keeper_state
+            key_keeper_shared_state
                 .get_current_key_value()
                 .await
                 .unwrap_or(None),
@@ -820,11 +842,11 @@ mod tests {
             &url,
             &HashMap::new(),
             Some(body.as_slice()),
-            key_keeper_state
+            key_keeper_shared_state
                 .get_current_key_guid()
                 .await
                 .unwrap_or(None),
-            key_keeper_state
+            key_keeper_shared_state
                 .get_current_key_value()
                 .await
                 .unwrap_or(None),

@@ -28,16 +28,17 @@ use self::key::Key;
 use crate::common::{constants, helpers, logger};
 use crate::provision;
 use crate::proxy::authorization_rules::{AuthorizationRulesForLogging, ComputedAuthorizationRules};
-use crate::proxy::proxy_authorizer;
-use crate::shared_state::key_keeper_wrapper::KeyKeeperState;
-use crate::shared_state::telemetry_wrapper::TelemetryState;
-use crate::shared_state::{proxy_authenticator_wrapper, SharedState};
+use crate::redirector::Redirector;
+use crate::shared_state::agent_status_wrapper::{AgentStatusModule, AgentStatusSharedState};
+use crate::shared_state::key_keeper_wrapper::KeyKeeperSharedState;
+use crate::shared_state::provision_wrapper::ProvisionSharedState;
+use crate::shared_state::redirector_wrapper::RedirectorSharedState;
+use crate::shared_state::telemetry_wrapper::TelemetrySharedState;
 use crate::{acl, redirector};
 use hyper::Uri;
 use proxy_agent_shared::misc_helpers;
 use proxy_agent_shared::proxy_agent_aggregate_status::ModuleState;
 use proxy_agent_shared::telemetry::event_logger;
-use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use std::{path::PathBuf, time::Duration};
 use tokio_util::sync::CancellationToken;
@@ -66,12 +67,16 @@ pub struct KeyKeeper {
     config_start_redirector: bool,
     /// cancellation_token: the cancellation token to cancel the key keeper task
     cancellation_token: CancellationToken,
-    /// key_keeper_state: the sender to send the key details, secure channel state, access control rule
-    key_keeper_state: KeyKeeperState,
-    /// telemetry_state: the sender to send the telemetry events
-    telemetry_state: TelemetryState,
-    /// shared_state: the global shared state - deprecated
-    shared_state: Arc<Mutex<SharedState>>,
+    /// key_keeper_shared_state: the sender for the key details, secure channel state, access control rule
+    key_keeper_shared_state: KeyKeeperSharedState,
+    /// telemetry_shared_state: the sender for the telemetry events
+    telemetry_shared_state: TelemetrySharedState,
+    /// redirector_shared_state: the sender for the redirector/eBPF module
+    redirector_shared_state: RedirectorSharedState,
+    /// provision_shared_state: the sender for the provision state
+    provision_shared_state: ProvisionSharedState,
+    /// agent_status_shared_state: the sender for the agent status
+    agent_status_shared_state: AgentStatusSharedState,
 }
 
 impl KeyKeeper {
@@ -82,9 +87,11 @@ impl KeyKeeper {
         interval: Duration,
         config_start_redirector: bool,
         cancellation_token: CancellationToken,
-        key_keeper_state: KeyKeeperState,
-        telemetry_state: TelemetryState,
-        shared_state: Arc<Mutex<SharedState>>,
+        key_keeper_shared_state: KeyKeeperSharedState,
+        telemetry_shared_state: TelemetrySharedState,
+        redirector_shared_state: RedirectorSharedState,
+        provision_shared_state: ProvisionSharedState,
+        agent_status_shared_state: AgentStatusSharedState,
     ) -> Self {
         KeyKeeper {
             base_url,
@@ -93,26 +100,50 @@ impl KeyKeeper {
             interval,
             config_start_redirector,
             cancellation_token,
-            key_keeper_state,
-            telemetry_state,
-            shared_state,
+            key_keeper_shared_state,
+            telemetry_shared_state,
+            redirector_shared_state,
+            provision_shared_state,
+            agent_status_shared_state,
         }
     }
 
     /// poll secure channel status at interval from the WireServer endpoint
     pub async fn poll_secure_channel_status<'a>(&'a self) {
         let message = "poll secure channel status task started.";
-        self.key_keeper_state
-            .set_status_message(message.to_string())
+        self.agent_status_shared_state
+            .set_module_status_message(message.to_string(), AgentStatusModule::KeyKeeper)
             .await;
         logger::write(message.to_string());
 
         // launch redirector initialization when the key keeper task is running
         if self.config_start_redirector {
-            tokio::spawn(redirector::start(
-                constants::PROXY_AGENT_PORT,
-                self.shared_state.clone(), // todo replace this
-            ));
+            tokio::spawn({
+                let cancellation_token = self.cancellation_token.clone();
+                let key_keeper_shared_state = self.key_keeper_shared_state.clone();
+                let telemetry_shared_state = self.telemetry_shared_state.clone();
+                let provision_shared_state = self.provision_shared_state.clone();
+                let agent_status_shared_state = self.agent_status_shared_state.clone();
+
+                let redirector = Redirector::new(
+                    constants::PROXY_AGENT_PORT,
+                    self.redirector_shared_state.clone(),
+                    agent_status_shared_state.clone(),
+                );
+                async move {
+                    redirector.start().await;
+                    if redirector.is_started().await {
+                        provision::redirector_ready(
+                            cancellation_token.clone(),
+                            key_keeper_shared_state.clone(),
+                            telemetry_shared_state.clone(),
+                            provision_shared_state.clone(),
+                            agent_status_shared_state.clone(),
+                        )
+                        .await;
+                    }
+                }
+            });
         }
 
         if let Err(e) = misc_helpers::try_create_folder(&self.key_dir) {
@@ -147,13 +178,17 @@ impl KeyKeeper {
         tokio::select! {
             _ = self.loop_poll() => {
                 let message = "poll_secure_channel_status task exited.";
-                self.key_keeper_state. set_status_message( message.to_string());
-                logger::write(message.to_string());
+                self.agent_status_shared_state
+                .set_module_status_message(message.to_string(), AgentStatusModule::KeyKeeper)
+                .await;
+                    logger::write(message.to_string());
             },
             _ = self.cancellation_token.cancelled() => {
                 let message = "poll_secure_channel_status task cancelled.";
-                self.key_keeper_state.set_status_message( message.to_string());
-                logger::write(message.to_string());
+                self.agent_status_shared_state
+                .set_module_status_message(message.to_string(), AgentStatusModule::KeyKeeper)
+                .await;
+                    logger::write(message.to_string());
                 self.stop().await;
             }
         }
@@ -164,7 +199,7 @@ impl KeyKeeper {
         let mut first_iteration: bool = true;
         let mut started_event_threads: bool = false;
         let mut provision_timeup: bool = false;
-        let notify = match self.key_keeper_state.get_notify().await {
+        let notify = match self.key_keeper_shared_state.get_notify().await {
             Ok(notify) => notify,
             Err(e) => {
                 logger::write_error(format!("Failed to get notify: {}", e));
@@ -173,7 +208,9 @@ impl KeyKeeper {
         };
 
         // set the key keeper task state to running
-        self.key_keeper_state.set_state(ModuleState::RUNNING).await;
+        self.agent_status_shared_state
+            .set_module_state(ModuleState::RUNNING, AgentStatusModule::KeyKeeper)
+            .await;
 
         let mut start = Instant::now();
         loop {
@@ -181,7 +218,7 @@ impl KeyKeeper {
                 // skip the sleep for the first loop
 
                 let current_state = match self
-                    .key_keeper_state
+                    .key_keeper_shared_state
                     .get_current_secure_channel_state()
                     .await
                 {
@@ -213,7 +250,7 @@ impl KeyKeeper {
                     _ = notify.notified() => {
                         if  current_state == DISABLE_STATE || current_state == UNKNOWN_STATE {
                             logger::write_warning(format!("poll_secure_channel_status task notified and secure channel state is '{}', start poll status now.", current_state));
-                            provision::key_latch_ready_state_reset(self.shared_state.clone()); // TODO: replace this
+                            provision::key_latch_ready_state_reset(self.provision_shared_state.clone()).await;
 
                             if start.elapsed().as_millis() > PROVISION_TIMEUP_IN_MILLISECONDS {
                                 // already timeup, reset the start timer
@@ -238,9 +275,10 @@ impl KeyKeeper {
             if !provision_timeup && start.elapsed().as_millis() > PROVISION_TIMEUP_IN_MILLISECONDS {
                 provision::provision_timeup(
                     None,
-                    self.key_keeper_state.clone(),
-                    self.shared_state.clone(),
-                );
+                    self.provision_shared_state.clone(),
+                    self.agent_status_shared_state.clone(),
+                )
+                .await;
                 provision_timeup = true;
             }
 
@@ -250,10 +288,12 @@ impl KeyKeeper {
             {
                 provision::start_event_threads(
                     self.cancellation_token.clone(),
-                    self.key_keeper_state.clone(),
-                    self.telemetry_state.clone(),
-                    self.shared_state.clone(), //TODO:: replace this
-                );
+                    self.key_keeper_shared_state.clone(),
+                    self.telemetry_shared_state.clone(),
+                    self.provision_shared_state.clone(),
+                    self.agent_status_shared_state.clone(),
+                )
+                .await;
                 started_event_threads = true;
             }
 
@@ -261,8 +301,12 @@ impl KeyKeeper {
                 Ok(s) => s,
                 Err(e) => {
                     let message: String = format!("Failed to get key status - {}", e);
-                    self.key_keeper_state
-                        .set_status_message(message.to_string());
+                    self.agent_status_shared_state
+                        .set_module_status_message(
+                            message.to_string(),
+                            AgentStatusModule::KeyKeeper,
+                        )
+                        .await;
                     logger::write_warning(message);
                     continue;
                 }
@@ -273,7 +317,7 @@ impl KeyKeeper {
             let wireserver_rule_id = status.get_wireserver_rule_id();
             let imds_rule_id: String = status.get_imds_rule_id();
             match self
-                .key_keeper_state
+                .key_keeper_shared_state
                 .update_wireserver_rule_id(wireserver_rule_id.to_string())
                 .await
             {
@@ -283,10 +327,9 @@ impl KeyKeeper {
                             "Wireserver rule id changed from {} to {}.",
                             old_wire_server_rule_id, wireserver_rule_id
                         ));
-                        proxy_authorizer::set_wireserver_rules(
-                            self.shared_state.clone(), // TODO: replace this
-                            status.get_wireserver_rules(),
-                        );
+                        self.key_keeper_shared_state
+                            .set_wireserver_rules(status.get_wireserver_rules())
+                            .await;
                         access_control_rules_changed = true;
                     }
                 }
@@ -296,7 +339,7 @@ impl KeyKeeper {
             }
 
             match self
-                .key_keeper_state
+                .key_keeper_shared_state
                 .update_imds_rule_id(imds_rule_id.to_string())
                 .await
             {
@@ -306,10 +349,8 @@ impl KeyKeeper {
                             "IMDS rule id changed from {} to {}.",
                             old_imds_rule_id, imds_rule_id
                         ));
-                        proxy_authorizer::set_imds_rules(
-                            self.shared_state.clone(), // TODO: replace this
-                            status.get_imds_rules(),
-                        );
+                        self.key_keeper_shared_state
+                            .set_imds_rules(status.get_imds_rules());
                         access_control_rules_changed = true;
                     }
                 }
@@ -319,25 +360,26 @@ impl KeyKeeper {
             }
 
             if access_control_rules_changed {
-                let rules = AuthorizationRulesForLogging::new(
-                    status.authorizationRules.clone(),
-                    ComputedAuthorizationRules {
-                        wireserver: proxy_authenticator_wrapper::get_wireserver_rules(
-                            self.shared_state.clone(), // TODO: replace this
-                        ),
-                        imds: proxy_authenticator_wrapper::get_imds_rules(
-                            self.shared_state.clone(),
-                        ), // TODO: replace this
-                    },
-                );
-                rules.write_all(&self.log_dir, constants::MAX_LOG_FILE_COUNT);
+                if let (Ok(wireserver_rules), Ok(imds_rules)) = (
+                    self.key_keeper_shared_state.get_wireserver_rules().await,
+                    self.key_keeper_shared_state.get_imds_rules().await,
+                ) {
+                    let rules = AuthorizationRulesForLogging::new(
+                        status.authorizationRules.clone(),
+                        ComputedAuthorizationRules {
+                            wireserver: wireserver_rules,
+                            imds: imds_rules,
+                        },
+                    );
+                    rules.write_all(&self.log_dir, constants::MAX_LOG_FILE_COUNT);
+                }
             }
 
             let state = status.get_secure_channel_state();
             // check if need fetch the key
             if state != DISABLE_STATE
                 && (status.keyGuid.is_none()  // key has not latched yet
-                || status.keyGuid != self.key_keeper_state.get_current_key_guid().await.unwrap_or(None))
+                || status.keyGuid != self.key_keeper_shared_state.get_current_key_guid().await.unwrap_or(None))
             // key changed
             {
                 let mut key_found = false;
@@ -350,7 +392,8 @@ impl KeyKeeper {
                         // read the key details locally and update
                         match misc_helpers::json_read_from_file::<Key>(&key_file) {
                             Ok(key) => {
-                                if let Err(e) = self.key_keeper_state.update_key(key.clone()).await
+                                if let Err(e) =
+                                    self.key_keeper_shared_state.update_key(key.clone()).await
                                 {
                                     logger::write_warning(format!("Failed to update key: {}", e));
                                 }
@@ -361,16 +404,20 @@ impl KeyKeeper {
                                     "key_keeper",
                                     logger::AGENT_LOGGER_KEY,
                                 );
-                                self.key_keeper_state
-                                    .set_status_message(message.to_string())
+                                self.agent_status_shared_state
+                                    .set_module_status_message(
+                                        message.to_string(),
+                                        AgentStatusModule::KeyKeeper,
+                                    )
                                     .await;
                                 key_found = true;
 
                                 provision::key_latched(
                                     self.cancellation_token.clone(),
-                                    self.key_keeper_state.clone(),
-                                    self.telemetry_state.clone(),
-                                    self.shared_state.clone(),
+                                    self.key_keeper_shared_state.clone(),
+                                    self.telemetry_shared_state.clone(),
+                                    self.provision_shared_state.clone(),
+                                    self.agent_status_shared_state.clone(),
                                 )
                                 .await;
                             }
@@ -438,7 +485,7 @@ impl KeyKeeper {
                         match key::attest_key(&self.base_url, &key).await {
                             Ok(()) => {
                                 // update in memory
-                                self.key_keeper_state.update_key(key.clone()).await;
+                                self.key_keeper_shared_state.update_key(key.clone()).await;
 
                                 let message = helpers::write_startup_event(
                                     "Successfully attest the key and ready to use.",
@@ -446,14 +493,18 @@ impl KeyKeeper {
                                     "key_keeper",
                                     logger::AGENT_LOGGER_KEY,
                                 );
-                                self.key_keeper_state
-                                    .set_status_message(message.to_string())
+                                self.agent_status_shared_state
+                                    .set_module_status_message(
+                                        message.to_string(),
+                                        AgentStatusModule::KeyKeeper,
+                                    )
                                     .await;
                                 provision::key_latched(
                                     self.cancellation_token.clone(),
-                                    self.key_keeper_state.clone(),
-                                    self.telemetry_state.clone(),
-                                    self.shared_state.clone(),
+                                    self.key_keeper_shared_state.clone(),
+                                    self.telemetry_shared_state.clone(),
+                                    self.provision_shared_state.clone(),
+                                    self.agent_status_shared_state.clone(),
                                 )
                                 .await;
                             }
@@ -473,7 +524,7 @@ impl KeyKeeper {
 
             // update the current secure channel state if different
             match self
-                .key_keeper_state
+                .key_keeper_shared_state
                 .update_current_secure_channel_state(state.to_string())
                 .await
             {
@@ -482,12 +533,14 @@ impl KeyKeeper {
                         // update the redirector policy map
                         redirector::update_wire_server_redirect_policy(
                             status.get_wire_server_mode() != DISABLE_STATE,
-                            self.shared_state.clone(),
-                        );
+                            self.redirector_shared_state.clone(),
+                        )
+                        .await;
                         redirector::update_imds_redirect_policy(
                             status.get_imds_mode() != DISABLE_STATE,
-                            self.shared_state.clone(),
-                        );
+                            self.redirector_shared_state.clone(),
+                        )
+                        .await;
 
                         // customer has not enforce the secure channel state
                         if state == DISABLE_STATE {
@@ -498,16 +551,20 @@ impl KeyKeeper {
                                 logger::AGENT_LOGGER_KEY,
                             );
                             // Update the status message and let the provision to continue
-                            self.key_keeper_state
-                                .set_status_message(message.to_string())
+                            self.agent_status_shared_state
+                                .set_module_status_message(
+                                    message.to_string(),
+                                    AgentStatusModule::KeyKeeper,
+                                )
                                 .await;
                             // clear key in memory for disabled state
-                            self.key_keeper_state.clear_key().await;
+                            self.key_keeper_shared_state.clear_key().await;
                             provision::key_latched(
                                 self.cancellation_token.clone(),
-                                self.key_keeper_state.clone(),
-                                self.telemetry_state.clone(),
-                                self.shared_state.clone(),
+                                self.key_keeper_shared_state.clone(),
+                                self.telemetry_shared_state.clone(),
+                                self.provision_shared_state.clone(),
+                                self.agent_status_shared_state.clone(),
                             )
                             .await;
                         }
@@ -543,7 +600,9 @@ impl KeyKeeper {
 
     /// Stop the key keeper task
     async fn stop(&self) {
-        self.key_keeper_state.set_state(ModuleState::STOPPED).await;
+        self.agent_status_shared_state
+            .set_module_state(ModuleState::STOPPED, AgentStatusModule::KeyKeeper)
+            .await;
     }
 }
 
@@ -553,7 +612,6 @@ mod tests {
     use crate::common::logger;
     use crate::key_keeper;
     use crate::key_keeper::KeyKeeper;
-    use crate::shared_state::SharedState;
     use crate::test_mock::server_mock;
     use proxy_agent_shared::{logger_manager, misc_helpers};
     use std::env;
@@ -619,7 +677,6 @@ mod tests {
             20,
         );
 
-        let shared_state = SharedState::new();
         let cancellation_token = CancellationToken::new();
         // start wire_server listener
         let ip = "127.0.0.1";
@@ -643,9 +700,11 @@ mod tests {
             interval: Duration::from_millis(10),
             config_start_redirector: false,
             cancellation_token: cancellation_token.clone(),
-            key_keeper_state: key_keeper::KeyKeeperState::start_new(),
-            telemetry_state: key_keeper::TelemetryState::start_new(),
-            shared_state: shared_state.clone(),
+            key_keeper_shared_state: key_keeper::KeyKeeperSharedState::start_new(),
+            telemetry_shared_state: key_keeper::TelemetrySharedState::start_new(),
+            redirector_shared_state: key_keeper::RedirectorSharedState::start_new(),
+            provision_shared_state: key_keeper::ProvisionSharedState::start_new(),
+            agent_status_shared_state: key_keeper::AgentStatusSharedState::start_new(),
         };
 
         tokio::spawn({

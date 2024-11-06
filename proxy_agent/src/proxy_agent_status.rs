@@ -18,21 +18,17 @@
 //! tokio::spawn(proxy_agent_status::start(interval, shared_state));
 //! ```
 
-use crate::common::{config, logger};
-use crate::proxy::proxy_server;
-use crate::shared_state::key_keeper_wrapper::KeyKeeperState;
-use crate::shared_state::telemetry_wrapper::TelemetryState;
-use crate::shared_state::{
-    agent_status_wrapper, proxy_listener_wrapper, telemetry_wrapper, SharedState,
-};
-use crate::{key_keeper, redirector};
+use crate::common::logger;
+use crate::key_keeper::UNKNOWN_STATE;
+use crate::shared_state::agent_status_wrapper::{AgentStatusModule, AgentStatusSharedState};
+use crate::shared_state::key_keeper_wrapper::KeyKeeperSharedState;
 use proxy_agent_shared::misc_helpers;
 use proxy_agent_shared::proxy_agent_aggregate_status::{
     GuestProxyAgentAggregateStatus, ModuleState, OverallState, ProxyAgentDetailStatus,
     ProxyAgentStatus,
 };
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
@@ -40,9 +36,8 @@ pub struct ProxyAgentStatusTask {
     interval: Duration,
     status_dir: PathBuf,
     cancellation_token: CancellationToken,
-    key_keeper_state: KeyKeeperState,
-    telemetry_state: TelemetryState,
-    shared_state: Arc<Mutex<SharedState>>, // deprecated
+    key_keeper_shared_state: KeyKeeperSharedState,
+    agent_status_shared_state: AgentStatusSharedState,
 }
 
 impl ProxyAgentStatusTask {
@@ -50,17 +45,15 @@ impl ProxyAgentStatusTask {
         interval: Duration,
         status_dir: PathBuf,
         cancellation_token: CancellationToken,
-        key_keeper_state: KeyKeeperState,
-        telemetry_state: TelemetryState,
-        shared_state: Arc<Mutex<SharedState>>,
+        key_keeper_shared_state: KeyKeeperSharedState,
+        agent_status_shared_state: AgentStatusSharedState,
     ) -> ProxyAgentStatusTask {
         ProxyAgentStatusTask {
             interval,
             status_dir,
             cancellation_token,
-            key_keeper_state,
-            telemetry_state,
-            shared_state,
+            key_keeper_shared_state,
+            agent_status_shared_state,
         }
     }
 
@@ -90,7 +83,9 @@ impl ProxyAgentStatusTask {
                     "Clearing the connection summary map and failed authenticate summary map."
                         .to_string(),
                 );
-                agent_status_wrapper::clear_all_summary(self.shared_state.clone());
+                if let Err(e) = self.agent_status_shared_state.clear_all_summary().await {
+                    logger::write_error(format!("Error clearing the connection summary map and failed authenticate summary map: {}", e));
+                }
                 start_time = Instant::now();
             }
 
@@ -98,10 +93,58 @@ impl ProxyAgentStatusTask {
         }
     }
 
+    async fn get_key_keeper_status(&self) -> ProxyAgentDetailStatus {
+        let mut key_latch_status = self
+            .agent_status_shared_state
+            .get_module_status(AgentStatusModule::KeyKeeper)
+            .await;
+        let mut states = HashMap::new();
+        states.insert(
+            "secureChannelState".to_string(),
+            self.key_keeper_shared_state
+                .get_current_secure_channel_state()
+                .await
+                .unwrap_or(UNKNOWN_STATE.to_string()),
+        );
+        if let Ok(Some(key_guid)) = self.key_keeper_shared_state.get_current_key_guid().await {
+            states.insert("keyGuid".to_string(), key_guid);
+        }
+        states.insert(
+            "wireServerRuleId".to_string(),
+            self.key_keeper_shared_state
+                .get_wireserver_rule_id()
+                .await
+                .unwrap_or(UNKNOWN_STATE.to_string()),
+        );
+        states.insert(
+            "imdsRuleId".to_string(),
+            self.key_keeper_shared_state
+                .get_imds_rule_id()
+                .await
+                .unwrap_or(UNKNOWN_STATE.to_string()),
+        );
+        if let Ok(Some(incarnation)) = self
+            .key_keeper_shared_state
+            .get_current_key_incarnation()
+            .await
+        {
+            states.insert("keyIncarnationId".to_string(), incarnation.to_string());
+        }
+        key_latch_status.states = Some(states);
+
+        key_latch_status
+    }
+
     async fn proxy_agent_status_new(&self) -> ProxyAgentStatus {
-        let key_latch_status = self.key_keeper_state.get_status().await;
-        let ebpf_status = redirector::get_status(self.shared_state.clone());
-        let proxy_status = proxy_server::get_status(self.shared_state.clone());
+        let key_latch_status = self.get_key_keeper_status().await;
+        let ebpf_status = self
+            .agent_status_shared_state
+            .get_module_status(AgentStatusModule::Redirector)
+            .await;
+        let proxy_status = self
+            .agent_status_shared_state
+            .get_module_status(AgentStatusModule::ProxyServer)
+            .await;
         let status = if key_latch_status.status != ModuleState::RUNNING
             || ebpf_status.status != ModuleState::RUNNING
             || proxy_status.status != ModuleState::RUNNING
@@ -123,10 +166,18 @@ impl ProxyAgentStatusTask {
             keyLatchStatus: key_latch_status,
             ebpfProgramStatus: ebpf_status,
             proxyListenerStatus: proxy_status,
-            telemetryLoggerStatus: self.telemetry_state.get_telemetry_logger_status().await,
-            proxyConnectionsCount: proxy_listener_wrapper::get_connection_count(
-                self.shared_state.clone(),
-            ),
+            telemetryLoggerStatus: self
+                .agent_status_shared_state
+                .get_module_status(AgentStatusModule::TelemetryLogger)
+                .await,
+            proxyConnectionsCount: match self.agent_status_shared_state.get_connection_count().await
+            {
+                Ok(count) => count,
+                Err(e) => {
+                    logger::write_error(format!("Error getting connection count: {}", e));
+                    0
+                }
+            },
         }
     }
 
@@ -134,14 +185,28 @@ impl ProxyAgentStatusTask {
         GuestProxyAgentAggregateStatus {
             timestamp: misc_helpers::get_date_time_string_with_milliseconds(),
             proxyAgentStatus: self.proxy_agent_status_new().await,
-            proxyConnectionSummary: agent_status_wrapper::get_all_connection_summary(
-                self.shared_state.clone(),
-                false,
-            ),
-            failedAuthenticateSummary: agent_status_wrapper::get_all_connection_summary(
-                self.shared_state.clone(),
-                true,
-            ),
+            proxyConnectionSummary: match self
+                .agent_status_shared_state
+                .get_all_connection_summary()
+                .await
+            {
+                Ok(summary) => summary,
+                Err(e) => {
+                    logger::write_error(format!("Error getting connection summary: {}", e));
+                    vec![]
+                }
+            },
+            failedAuthenticateSummary: match self
+                .agent_status_shared_state
+                .get_all_failed_connection_summary()
+                .await
+            {
+                Ok(summary) => summary,
+                Err(e) => {
+                    logger::write_error(format!("Error getting failed connection summary: {}", e));
+                    vec![]
+                }
+            },
         }
     }
 
@@ -161,7 +226,7 @@ mod tests {
     use crate::{
         proxy_agent_status::ProxyAgentStatusTask,
         shared_state::{
-            key_keeper_wrapper::KeyKeeperState, telemetry_wrapper::TelemetryState, SharedState,
+            agent_status_wrapper::AgentStatusSharedState, key_keeper_wrapper::KeyKeeperSharedState,
         },
     };
     use proxy_agent_shared::{
@@ -177,14 +242,12 @@ mod tests {
         temp_test_path.push("write_aggregate_status_test");
         _ = fs::remove_dir_all(&temp_test_path);
         misc_helpers::try_create_folder(&temp_test_path).unwrap();
-        let shared_state = SharedState::new();
         let task = ProxyAgentStatusTask::new(
             Duration::from_secs(1),
             temp_test_path.clone(),
             CancellationToken::new(),
-            KeyKeeperState::start_new(),
-            TelemetryState::start_new(),
-            shared_state.clone(),
+            KeyKeeperSharedState::start_new(),
+            AgentStatusSharedState::start_new(),
         );
         let aggregate_status = task.guest_proxy_agent_aggregate_status_new().await;
         task.write_aggregate_status_to_file(aggregate_status);

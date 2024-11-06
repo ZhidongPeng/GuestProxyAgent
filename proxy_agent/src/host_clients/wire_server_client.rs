@@ -27,7 +27,7 @@ use crate::{
         hyper_client, logger,
         result::Result,
     },
-    shared_state::key_keeper_wrapper::KeyKeeperState,
+    shared_state::key_keeper_wrapper::KeyKeeperSharedState,
 };
 use http::Method;
 use hyper::Uri;
@@ -36,18 +36,18 @@ use std::collections::HashMap;
 pub struct WireServerClient {
     ip: String,
     port: u16,
-    key_keeper_state: KeyKeeperState,
+    key_keeper_shared_state: KeyKeeperSharedState,
 }
 
 const TELEMETRY_DATA_URI: &str = "machine/?comp=telemetrydata";
 const GOALSTATE_URI: &str = "machine?comp=goalstate";
 
 impl WireServerClient {
-    pub fn new(ip: &str, port: u16, key_keeper_state: KeyKeeperState) -> Self {
+    pub fn new(ip: &str, port: u16, key_keeper_shared_state: KeyKeeperSharedState) -> Self {
         WireServerClient {
             ip: ip.to_string(),
             port,
-            key_keeper_state,
+            key_keeper_shared_state,
         }
     }
 
@@ -113,11 +113,11 @@ impl WireServerClient {
         hyper_client::get(
             &url,
             &headers,
-            self.key_keeper_state
+            self.key_keeper_shared_state
                 .get_current_key_guid()
                 .await
                 .unwrap_or(None),
-            self.key_keeper_state
+            self.key_keeper_shared_state
                 .get_current_key_value()
                 .await
                 .unwrap_or(None),
@@ -137,11 +137,11 @@ impl WireServerClient {
         hyper_client::get(
             &url,
             &headers,
-            self.key_keeper_state
+            self.key_keeper_shared_state
                 .get_current_key_guid()
                 .await
                 .unwrap_or(None),
-            self.key_keeper_state
+            self.key_keeper_shared_state
                 .get_current_key_value()
                 .await
                 .unwrap_or(None),
