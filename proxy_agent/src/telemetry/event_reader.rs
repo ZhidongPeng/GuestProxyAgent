@@ -157,34 +157,46 @@ impl EventReader {
             }
 
             if let Ok(Some(vm_meta_data)) = self.telemetry_shared_state.get_vm_meta_data().await {
-                // vm metadata is updated, process events
-                match misc_helpers::get_files(&self.dir_path) {
-                    Ok(files) => {
-                        let file_count = files.len();
-                        let event_count = self
-                            .process_events_and_clean(files, &wire_server_client, &vm_meta_data)
-                            .await;
-                        let message =
-                            format!("Send {} events from {} files", event_count, file_count);
-                        event_logger::write_event(
-                            event_logger::INFO_LEVEL,
-                            message,
-                            "start",
-                            "event_reader",
-                            logger::AGENT_LOGGER_KEY,
-                        )
-                    }
-                    Err(e) => {
-                        logger::write_warning(format!(
-                            "Event Files not found in directory {}: {}",
-                            self.dir_path.display(),
-                            e
-                        ));
-                    }
-                }
+                let _processed = self
+                    .process_events(&wire_server_client, &vm_meta_data)
+                    .await;
             }
             tokio::time::sleep(interval).await;
         }
+    }
+
+    async fn process_events(
+        &self,
+        wire_server_client: &WireServerClient,
+        vm_meta_data: &VmMetaData,
+    ) -> usize {
+        let event_count: usize;
+        // get all .json event files in the directory
+        match misc_helpers::search_files(&self.dir_path, r"^(.*\.json)$") {
+            Ok(files) => {
+                let file_count = files.len();
+                event_count = self
+                    .process_events_and_clean(files, wire_server_client, vm_meta_data)
+                    .await;
+                let message = format!("Send {} events from {} files", event_count, file_count);
+                event_logger::write_event(
+                    event_logger::INFO_LEVEL,
+                    message,
+                    "start",
+                    "event_reader",
+                    logger::AGENT_LOGGER_KEY,
+                );
+            }
+            Err(e) => {
+                logger::write_warning(format!(
+                    "Event Files not found in directory {}: {}",
+                    self.dir_path.display(),
+                    e
+                ));
+                event_count = 0;
+            }
+        }
+        event_count
     }
 
     async fn stop(&self) {
@@ -436,18 +448,31 @@ mod tests {
 
         // Check the events processed
         let vm_meta_data = event_reader.get_vm_meta_data().await;
-        let files = misc_helpers::get_files(&events_dir).unwrap();
-        let file_count = files.len();
-        logger::write(format!("Get '{}' event files.", file_count));
-        let events_read = event_reader
-            .process_events_and_clean(files, &wire_server_client, &vm_meta_data)
+        let events_processed = event_reader
+            .process_events(&wire_server_client, &vm_meta_data)
             .await;
-        logger::write(format!(
-            "Send {} events from {} files",
-            events_read, file_count
-        ));
+        logger::write(format!("Send {} events from event files", events_processed));
         //Should be 10 events written and read into events Vector
-        assert_eq!(events_read, 10);
+        assert_eq!(events_processed, 10, "Events processed should be 10");
+        let files = misc_helpers::get_files(&events_dir).unwrap();
+        assert!(files.is_empty(), "Events files not cleaned up.");
+
+        // Test not processing the non-json files
+        let mut file_path = events_dir.to_path_buf();
+        file_path.push(format!(
+            "{}.notjson",
+            misc_helpers::get_date_time_unix_nano()
+        ));
+        misc_helpers::json_write_to_file(&events, &file_path).unwrap();
+        let events_processed = event_reader
+            .process_events(&wire_server_client, &vm_meta_data)
+            .await;
+        assert_eq!(0, events_processed, "events_processed must be 0.");
+        let files = misc_helpers::get_files(&events_dir).unwrap();
+        assert!(
+            !files.is_empty(),
+            ".notjson files should not been cleaned up."
+        );
 
         cancellation_token.cancel();
         _ = fs::remove_dir_all(&temp_dir);
