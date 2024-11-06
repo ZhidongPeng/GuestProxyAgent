@@ -32,9 +32,9 @@ impl RedirectorSharedState {
     pub fn start_new() -> Self {
         let (tx, mut rx) = mpsc::channel(100);
         tokio::spawn(async move {
+            let mut local_port: u16 = 0;
+            let mut bpf_object: Option<Arc<Mutex<redirector::BpfObject>>> = None;
             while let Some(action) = rx.recv().await {
-                let mut local_port: u16 = 0;
-                let mut bpf_object: Option<Arc<Mutex<redirector::BpfObject>>> = None;
                 match action {
                     RedirectorAction::SetLocalPort {
                         local_port: new_local_port,

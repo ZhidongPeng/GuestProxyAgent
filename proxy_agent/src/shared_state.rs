@@ -13,9 +13,6 @@ pub mod windows_service_wrapper;
 
 use tokio_util::sync::CancellationToken;
 
-#[cfg(windows)]
-use windows_service::service_control_handler::ServiceStatusHandle;
-
 const UNKNOWN_STATUS_MESSAGE: &str = "Status unknown.";
 
 #[derive(Clone)]
@@ -34,6 +31,10 @@ pub struct SharedState {
     redirector_shared_state: redirector_wrapper::RedirectorSharedState,
     /// The sender for the proxy server module
     proxy_server_shared_state: proxy_server_wrapper::ProxyServerSharedState,
+
+    /// The sender for the Windows service
+    #[cfg(windows)]
+    windows_service_shared_state: windows_service_wrapper::WindowsServiceSharedState,
 }
 
 impl SharedState {
@@ -46,6 +47,9 @@ impl SharedState {
             agent_status_shared_state: agent_status_wrapper::AgentStatusSharedState::start_new(),
             redirector_shared_state: redirector_wrapper::RedirectorSharedState::start_new(),
             proxy_server_shared_state: proxy_server_wrapper::ProxyServerSharedState::start_new(),
+            #[cfg(windows)]
+            windows_service_shared_state:
+                windows_service_wrapper::WindowsServiceSharedState::start_new(),
         }
     }
 
@@ -79,5 +83,12 @@ impl SharedState {
 
     pub fn cancel_cancellation_token(&self) {
         self.cancellation_token.cancel();
+    }
+
+    #[cfg(windows)]
+    pub fn get_windows_service_shared_state(
+        &self,
+    ) -> windows_service_wrapper::WindowsServiceSharedState {
+        self.windows_service_shared_state.clone()
     }
 }
