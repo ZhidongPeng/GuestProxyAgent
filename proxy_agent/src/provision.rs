@@ -355,7 +355,6 @@ async fn write_provision_state(
     agent_status_shared_state: AgentStatusSharedState,
 ) {
     let provision_dir = provision_dir.unwrap_or_else(config::get_keys_dir);
-
     let provisioned_file: PathBuf = provision_dir.join("provisioned.tag");
     if let Err(e) = misc_helpers::try_create_folder(&provision_dir) {
         logger::write_error(format!("Failed to create provision folder with error: {e}"));
@@ -584,7 +583,7 @@ mod tests {
         let dir3 = temp_test_path.to_path_buf();
 
         let handles = vec![
-            tokio::spawn(super::update_provision_state(
+            super::update_provision_state(
                 ProvisionFlags::REDIRECTOR_READY,
                 Some(dir1),
                 cancellation_token.clone(),
@@ -592,8 +591,8 @@ mod tests {
                 telemetry_shared_state.clone(),
                 provision_shared_state.clone(),
                 agent_status_shared_state.clone(),
-            )),
-            tokio::spawn(super::update_provision_state(
+            ),
+            super::update_provision_state(
                 ProvisionFlags::KEY_LATCH_READY,
                 Some(dir2),
                 cancellation_token.clone(),
@@ -601,8 +600,8 @@ mod tests {
                 telemetry_shared_state.clone(),
                 provision_shared_state.clone(),
                 agent_status_shared_state.clone(),
-            )),
-            tokio::spawn(super::update_provision_state(
+            ),
+            super::update_provision_state(
                 ProvisionFlags::LISTENER_READY,
                 Some(dir3),
                 cancellation_token.clone(),
@@ -610,10 +609,10 @@ mod tests {
                 telemetry_shared_state.clone(),
                 provision_shared_state.clone(),
                 agent_status_shared_state.clone(),
-            )),
+            ),
         ];
         for handle in handles {
-            handle.await.unwrap();
+            handle.await;
         }
 
         let provisioned_file = temp_test_path.join("provisioned.tag");

@@ -142,24 +142,42 @@ impl super::Redirector {
             }
         }
 
-        self.redirector_shared_state
+        if let Err(e) = self
+            .redirector_shared_state
             .update_bpf_object(Arc::new(Mutex::new(bpf_object)))
-            .await;
-        self.redirector_shared_state
+            .await
+        {
+            logger::write_error(format!("Failed to update bpf object in shared state: {e}"));
+        }
+        if let Err(e) = self
+            .redirector_shared_state
             .set_local_port(self.local_port)
-            .await;
+            .await
+        {
+            logger::write_error(format!("Failed to set local port in shared state: {e}"));
+        }
         let message = helpers::write_startup_event(
             "Started Redirector with eBPF maps",
             "start",
             "redirector",
             logger::AGENT_LOGGER_KEY,
         );
-        self.agent_status_shared_state
+        if let Err(e) = self
+            .agent_status_shared_state
             .set_module_status_message(message.to_string(), AgentStatusModule::Redirector)
-            .await;
-        self.agent_status_shared_state
+            .await
+        {
+            logger::write_error(format!(
+                "Failed to set module status message in shared state: {e}"
+            ));
+        }
+        if let Err(e) = self
+            .agent_status_shared_state
             .set_module_state(ModuleState::RUNNING, AgentStatusModule::Redirector)
-            .await;
+            .await
+        {
+            logger::write_error(format!("Failed to set module state in shared state: {e}"));
+        }
 
         true
     }

@@ -12,6 +12,10 @@ enum ProvisionAction {
         state: ProvisionFlags,
         response: oneshot::Sender<ProvisionFlags>,
     },
+    ResetState {
+        state: ProvisionFlags,
+        response: oneshot::Sender<ProvisionFlags>,
+    },
     GetState {
         response: oneshot::Sender<ProvisionFlags>,
     },
@@ -46,10 +50,19 @@ impl ProvisionSharedState {
             while let Some(action) = rx.recv().await {
                 match action {
                     ProvisionAction::UpdateState { state, response } => {
-                        provision_state &= state;
+                        provision_state |= state;
                         if let Err(new_state) = response.send(provision_state.clone()) {
                             logger::write_warning(format!(
                                 "Failed to send response to ProvisionAction::UpdateState with new state '{:?}'",
+                                new_state
+                            ));
+                        }
+                    }
+                    ProvisionAction::ResetState { state, response } => {
+                        provision_state &= !state;
+                        if let Err(new_state) = response.send(provision_state.clone()) {
+                            logger::write_warning(format!(
+                                "Failed to send response to ProvisionAction::ResetState with new state '{:?}'",
                                 new_state
                             ));
                         }
@@ -137,16 +150,16 @@ impl ProvisionSharedState {
     pub async fn reset_one_state(&self, state: ProvisionFlags) -> Result<ProvisionFlags> {
         let (tx, rx) = oneshot::channel();
         self.0
-            .send(ProvisionAction::UpdateState {
-                state: !state,
+            .send(ProvisionAction::ResetState {
+                state,
                 response: tx,
             })
             .await
             .map_err(|e| {
-                Error::SendError("ProvisionAction::UpdateState".to_string(), e.to_string())
+                Error::SendError("ProvisionAction::ResetState".to_string(), e.to_string())
             })?;
         rx.await
-            .map_err(|e| Error::RecvError("ProvisionAction::UpdateState".to_string(), e))
+            .map_err(|e| Error::RecvError("ProvisionAction::ResetState".to_string(), e))
     }
 
     pub async fn get_state(&self) -> Result<ProvisionFlags> {

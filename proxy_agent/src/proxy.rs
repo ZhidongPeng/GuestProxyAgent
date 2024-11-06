@@ -253,14 +253,32 @@ impl User {
 
 #[cfg(test)]
 mod tests {
+    use proxy_agent_shared::logger_manager;
+
     use super::Claims;
     use crate::{
-        redirector::AuditEntry, shared_state::proxy_server_wrapper::ProxyServerSharedState,
+        common::logger, redirector::AuditEntry,
+        shared_state::proxy_server_wrapper::ProxyServerSharedState,
     };
-    use std::net::IpAddr;
+    use std::{env, fs, net::IpAddr};
 
     #[tokio::test]
     async fn user_test() {
+        let mut temp_test_path = env::temp_dir();
+        let logger_key = "user_test";
+        temp_test_path.push(logger_key);
+
+        // clean up and ignore the clean up errors
+        _ = fs::remove_dir_all(&temp_test_path);
+
+        logger_manager::init_logger(
+            logger::AGENT_LOGGER_KEY.to_string(), // production code uses 'Agent_Log' to write.
+            temp_test_path.clone(),
+            logger_key.to_string(),
+            10 * 1024 * 1024,
+            20,
+        );
+
         let logon_id;
         let expected_user_name;
         #[cfg(windows)]
@@ -275,10 +293,8 @@ mod tests {
         }
         let proxy_server_shared_state = ProxyServerSharedState::start_new();
 
-        let user = proxy_server_shared_state
-            .get_user(logon_id)
+        let user = super::get_user(logon_id, proxy_server_shared_state.clone())
             .await
-            .unwrap()
             .unwrap();
         println!("UserName: {}", user.user_name);
         println!("UserGroups: {}", user.user_groups.join(", "));

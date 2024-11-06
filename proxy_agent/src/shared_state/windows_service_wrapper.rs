@@ -27,7 +27,7 @@ impl WindowsServiceSharedState {
             while let Some(action) = rx.recv().await {
                 match action {
                     ServiceAction::GetServiceStatusHandle { response } => {
-                        if response.send(service_status_handle.clone()).is_err() {
+                        if response.send(service_status_handle).is_err() {
                             logger::write_warning(
                                 "Failed to send response to GetServiceStatusHandle".to_string(),
                             );
