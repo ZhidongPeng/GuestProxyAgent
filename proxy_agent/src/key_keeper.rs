@@ -128,6 +128,7 @@ impl KeyKeeper {
                 let redirector = Redirector::new(
                     constants::PROXY_AGENT_PORT,
                     self.redirector_shared_state.clone(),
+                    self.key_keeper_shared_state.clone(),
                     agent_status_shared_state.clone(),
                 );
                 async move {

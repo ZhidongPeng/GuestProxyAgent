@@ -19,6 +19,7 @@
 //! tokio::spawn(proxy_server::start(port, shared_state.clone()));
 //! ```
 
+use super::proxy_authorizer::AuthorizeResult;
 use crate::common::{
     config, constants, error::Error, helpers, hyper_client, logger, result::Result,
 };
@@ -30,7 +31,6 @@ use crate::shared_state::provision_wrapper::ProvisionSharedState;
 use crate::shared_state::proxy_server_wrapper::ProxyServerSharedState;
 use crate::shared_state::redirector_wrapper::RedirectorSharedState;
 use crate::shared_state::telemetry_wrapper::TelemetrySharedState;
-use crate::shared_state::{agent_status_wrapper, proxy_listener_wrapper, SharedState};
 use crate::{provision, redirector};
 use http_body_util::Full;
 use http_body_util::{combinators::BoxBody, BodyExt};
@@ -56,10 +56,6 @@ const REQUEST_BODY_LOW_LIMIT_SIZE: usize = 1024 * 100; // 100KB
 const REQUEST_BODY_LARGE_LIMIT_SIZE: usize = 1024 * REQUEST_BODY_LOW_LIMIT_SIZE; // 100MB
 const START_LISTENER_RETRY_COUNT: u16 = 5;
 const START_LISTENER_RETRY_SLEEP_DURATION: Duration = Duration::from_secs(1);
-
-pub fn stop(shared_state: Arc<Mutex<SharedState>>) {
-    proxy_listener_wrapper::set_shutdown(shared_state.clone(), true);
-}
 
 #[derive(Clone)]
 pub struct ProxyServer {
@@ -193,6 +189,9 @@ impl ProxyServer {
             tokio::select! {
                 _ = self.cancellation_token.cancelled() => {
                     logger::write_warning("cancellation token signal received, stop the listener.".to_string());
+                    self.agent_status_shared_state
+                        .set_module_state(ModuleState::STOPPED, AgentStatusModule::ProxyServer)
+                        .await;
                     return;
                 }
                 result = listener.accept() => {
@@ -397,7 +396,8 @@ impl ProxyServer {
         let entry = match entry {
             Some(e) => e,
             None => {
-                self.log_connection_summary(&connection, StatusCode::MISDIRECTED_REQUEST);
+                self.log_connection_summary(&connection, StatusCode::MISDIRECTED_REQUEST, false)
+                    .await;
                 return Ok(Self::empty_response(StatusCode::MISDIRECTED_REQUEST));
             }
         };
@@ -415,7 +415,8 @@ impl ProxyServer {
                     connection_id,
                     format!("Failed to get claims from audit entry: {}", e),
                 );
-                self.log_connection_summary(&connection, StatusCode::MISDIRECTED_REQUEST);
+                self.log_connection_summary(&connection, StatusCode::MISDIRECTED_REQUEST, false)
+                    .await;
                 return Ok(Self::empty_response(StatusCode::MISDIRECTED_REQUEST));
             }
         };
@@ -427,7 +428,8 @@ impl ProxyServer {
                     connection_id,
                     format!("Failed to get claim json string: {}", e),
                 );
-                self.log_connection_summary(&connection, StatusCode::MISDIRECTED_REQUEST);
+                self.log_connection_summary(&connection, StatusCode::MISDIRECTED_REQUEST, false)
+                    .await;
                 return Ok(Self::empty_response(StatusCode::MISDIRECTED_REQUEST));
             }
         };
@@ -443,20 +445,44 @@ impl ProxyServer {
         connection.port = port;
 
         // authenticate the connection
-        if !proxy_authorizer::authorize(
+        let access_control_rules = match proxy_authorizer::get_access_control_rules(
+            ip.to_string(),
+            self.key_keeper_shared_state.clone(),
+        )
+        .await
+        {
+            Ok(rules) => rules,
+            Err(e) => {
+                Connection::write_error(
+                    connection_id,
+                    format!("Failed to get access control rules: {}", e),
+                );
+                self.log_connection_summary(&connection, StatusCode::INTERNAL_SERVER_ERROR, false)
+                    .await;
+                return Ok(Self::empty_response(StatusCode::INTERNAL_SERVER_ERROR));
+            }
+        };
+        let result = proxy_authorizer::authorize(
             ip.to_string(),
             port,
             connection_id,
             request.uri().clone(),
             claims.clone(),
-            self.shared_state.clone(),
-        ) {
-            Connection::write_warning(
-                connection_id,
-                format!("Denied unauthorize request: {}", claim_details),
-            );
-            self.log_connection_summary(&connection, StatusCode::FORBIDDEN);
-            return Ok(Self::empty_response(StatusCode::FORBIDDEN));
+            access_control_rules,
+        );
+        if result != AuthorizeResult::Ok {
+            // log to authorize failed connection summary
+            self.log_connection_summary(&connection, StatusCode::FORBIDDEN, true)
+                .await;
+            if result == AuthorizeResult::Forbidden {
+                Connection::write_warning(
+                    connection_id,
+                    format!("Denied unauthorize request: {}", claim_details),
+                );
+                self.log_connection_summary(&connection, StatusCode::FORBIDDEN, false)
+                    .await;
+                return Ok(Self::empty_response(StatusCode::FORBIDDEN));
+            }
         }
 
         // forward the request to the target server
@@ -539,8 +565,8 @@ impl ProxyServer {
         self.key_keeper_shared_state.notify().await;
 
         let provision_state = provision::get_provision_state(
-            self.key_keeper_shared_state.clone(),
-            self.shared_state.clone(),
+            self.provision_shared_state.clone(),
+            self.agent_status_shared_state.clone(),
         )
         .await;
         match serde_json::to_string(&provision_state) {
@@ -577,7 +603,8 @@ impl ProxyServer {
                     connection_id,
                     format!("Failed to send request to host: {}", e),
                 );
-                self.log_connection_summary(&connection, StatusCode::SERVICE_UNAVAILABLE);
+                self.log_connection_summary(&connection, StatusCode::SERVICE_UNAVAILABLE, false)
+                    .await;
                 return Ok(Self::empty_response(StatusCode::SERVICE_UNAVAILABLE));
             }
         };
@@ -605,11 +632,17 @@ impl ProxyServer {
             HeaderValue::from_static("value"),
         );
 
-        self.log_connection_summary(&connection, response.status());
+        self.log_connection_summary(&connection, response.status(), false)
+            .await;
         Ok(response)
     }
 
-    fn log_connection_summary(&self, connection: &ConnectionContext, response_status: StatusCode) {
+    async fn log_connection_summary(
+        &self,
+        connection: &ConnectionContext,
+        response_status: StatusCode,
+        log_authorize_failed: bool,
+    ) {
         let elapsed_time = connection.now.elapsed();
         let claims = match &connection.claims {
             Some(c) => c.clone(),
@@ -641,7 +674,15 @@ impl ProxyServer {
                 Connection::CONNECTION_LOGGER_KEY,
             );
         };
-        agent_status_wrapper::add_one_connection_summary(self.shared_state.clone(), summary, false);
+        if log_authorize_failed {
+            self.agent_status_shared_state
+                .add_one_failed_connection_summary(summary)
+                .await;
+        } else {
+            self.agent_status_shared_state
+                .add_one_connection_summary(summary)
+                .await;
+        }
     }
 
     // We create some utility functions to make Empty and Full bodies
@@ -759,9 +800,12 @@ mod tests {
     use crate::common::logger;
     use crate::proxy::proxy_connection::Connection;
     use crate::proxy::proxy_server;
-    use crate::shared_state::key_keeper_wrapper;
+    use crate::shared_state::agent_status_wrapper::AgentStatusSharedState;
+    use crate::shared_state::key_keeper_wrapper::KeyKeeperSharedState;
+    use crate::shared_state::provision_wrapper::ProvisionSharedState;
+    use crate::shared_state::proxy_server_wrapper::ProxyServerSharedState;
+    use crate::shared_state::redirector_wrapper::RedirectorSharedState;
     use crate::shared_state::telemetry_wrapper::TelemetrySharedState;
-    use crate::shared_state::SharedState;
     use http::Method;
     use proxy_agent_shared::logger_manager;
     use std::collections::HashMap;
@@ -785,10 +829,9 @@ mod tests {
         Connection::init_logger(temp_test_path.to_path_buf());
 
         // start listener, the port must different from the one used in production code
-        let shared_state = SharedState::new();
         let host = "127.0.0.1";
         let port: u16 = 8091;
-        let key_keeper_shared_state = key_keeper_wrapper::KeyKeeperSharedState::start_new();
+        let key_keeper_shared_state = KeyKeeperSharedState::start_new();
         let telemetry_shared_state = TelemetrySharedState::start_new();
         let cancellation_token = CancellationToken::new();
         let proxy_server = proxy_server::ProxyServer::new(
@@ -796,7 +839,10 @@ mod tests {
             cancellation_token.clone(),
             key_keeper_shared_state.clone(),
             telemetry_shared_state.clone(),
-            shared_state.clone(),
+            ProvisionSharedState::start_new(),
+            AgentStatusSharedState::start_new(),
+            RedirectorSharedState::start_new(),
+            ProxyServerSharedState::start_new(),
         );
 
         tokio::spawn({

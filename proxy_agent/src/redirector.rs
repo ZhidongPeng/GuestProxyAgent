@@ -35,8 +35,12 @@ mod windows;
 #[cfg(not(windows))]
 mod linux;
 
+use crate::common::error::BpfErrorType;
+use crate::common::error::Error;
+use crate::common::result::Result;
 use crate::common::{config, logger};
 use crate::shared_state::agent_status_wrapper::{AgentStatusModule, AgentStatusSharedState};
+use crate::shared_state::key_keeper_wrapper::KeyKeeperSharedState;
 use crate::shared_state::redirector_wrapper::RedirectorSharedState;
 use proxy_agent_shared::misc_helpers;
 use proxy_agent_shared::proxy_agent_aggregate_status::ModuleState;
@@ -83,6 +87,7 @@ impl AuditEntry {
 pub struct Redirector {
     local_port: u16,
     redirector_shared_state: RedirectorSharedState,
+    key_keeper_shared_state: KeyKeeperSharedState,
     agent_status_shared_state: AgentStatusSharedState,
 }
 
@@ -90,11 +95,13 @@ impl Redirector {
     pub fn new(
         local_port: u16,
         redirector_shared_state: RedirectorSharedState,
+        key_keeper_shared_state: KeyKeeperSharedState,
         agent_status_shared_state: AgentStatusSharedState,
     ) -> Self {
         Redirector {
             local_port,
             redirector_shared_state,
+            key_keeper_shared_state,
             agent_status_shared_state,
         }
     }
@@ -121,7 +128,7 @@ impl Redirector {
     async fn start_impl(&self) -> bool {
         #[cfg(windows)]
         {
-            if !windows::initialized_success(shared_state.clone()) {
+            if !self.initialized_success().await {
                 return false;
             }
         }
@@ -136,6 +143,10 @@ impl Redirector {
     }
 
     pub async fn close(&self) {
+        #[cfg(windows)]
+        {
+            self.close_bpf_object().await;
+        }
         // reset ebpf object
         self.agent_status_shared_state
             .set_module_state(ModuleState::STOPPED, AgentStatusModule::Redirector)
@@ -252,10 +263,16 @@ pub fn get_ebpf_file_path() -> PathBuf {
     bpf_file_path
 }
 
-#[cfg(not(windows))]
-pub use linux::lookup_audit;
-#[cfg(windows)]
-pub use windows::lookup_audit;
+pub async fn lookup_audit(
+    source_port: u16,
+    redirector_shared_state: RedirectorSharedState,
+) -> Result<AuditEntry> {
+    if let Ok(Some(bpf_object)) = redirector_shared_state.get_bpf_object().await {
+        bpf_object.lock().unwrap().lookup_audit(source_port)
+    } else {
+        Err(Error::Bpf(BpfErrorType::GetBpfObject))
+    }
+}
 
 #[cfg(not(windows))]
 pub use linux::update_imds_redirect_policy;

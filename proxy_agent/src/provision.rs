@@ -514,6 +514,8 @@ mod tests {
     use crate::shared_state::agent_status_wrapper;
     use crate::shared_state::key_keeper_wrapper::KeyKeeperSharedState;
     use crate::shared_state::provision_wrapper::ProvisionSharedState;
+    use crate::shared_state::proxy_server_wrapper::ProxyServerSharedState;
+    use crate::shared_state::redirector_wrapper::RedirectorSharedState;
     use crate::shared_state::telemetry_wrapper::TelemetrySharedState;
     use proxy_agent_shared::logger_manager;
     use std::env;
@@ -551,7 +553,10 @@ mod tests {
             cancellation_token.clone(),
             key_keeper_shared_state.clone(),
             telemetry_shared_state.clone(),
+            provision_shared_state.clone(),
             agent_status_shared_state.clone(),
+            RedirectorSharedState::start_new(),
+            ProxyServerSharedState::start_new(),
         );
 
         tokio::spawn({

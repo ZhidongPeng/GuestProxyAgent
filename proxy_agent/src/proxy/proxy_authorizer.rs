@@ -20,13 +20,8 @@
 
 use super::authorization_rules::{AuthorizationMode, ComputedAuthorizationItem};
 use super::proxy_connection::Connection;
-use super::proxy_summary::ProxySummary;
-use crate::key_keeper::key::AuthorizationItem;
-use crate::shared_state::agent_status_wrapper::AgentStatusSharedState;
 use crate::shared_state::key_keeper_wrapper::KeyKeeperSharedState;
 use crate::{common::config, common::constants, common::result::Result, proxy::Claims};
-use async_trait::async_trait;
-use http::StatusCode;
 
 #[cfg(windows)]
 mod default {
@@ -89,71 +84,56 @@ mod default {
     }
 }
 
-#[async_trait]
+#[derive(PartialEq)]
+pub enum AuthorizeResult {
+    Ok,
+    OkWithAudit,
+    Forbidden,
+}
+
 pub trait Authorizer {
     // authorize the connection
-    async fn authorize(
+    fn authorize(
         &self,
         connection_id: u128,
         request_url: hyper::Uri,
-        key_keeper_shared_state: KeyKeeperSharedState,
-        agent_status_shred_state: AgentStatusSharedState,
-    ) -> Result<bool>;
+        access_control_rules: Option<ComputedAuthorizationItem>,
+    ) -> AuthorizeResult;
     fn to_string(&self) -> String;
+    fn type_name(&self) -> String {
+        std::any::type_name::<Self>().to_string()
+    }
 }
 
 struct WireServer {
     claims: Claims,
 }
-#[async_trait]
 impl Authorizer for WireServer {
-    async fn authorize(
+    fn authorize(
         &self,
         connection_id: u128,
         request_url: hyper::Uri,
-        key_keeper_shared_state: KeyKeeperSharedState,
-        agent_status_shred_state: AgentStatusSharedState,
-    ) -> Result<bool> {
+        access_control_rules: Option<ComputedAuthorizationItem>,
+    ) -> AuthorizeResult {
         if !self.claims.runAsElevated {
-            return Ok(false);
+            return AuthorizeResult::Forbidden;
         }
 
         if config::get_wire_server_support() == 2 {
-            let wireserver_rules = key_keeper_shared_state.get_wireserver_rules().await?;
-            if let Some(rules) = wireserver_rules {
-                let allowed =
-                    rules.is_allowed(connection_id, request_url.clone(), self.claims.clone());
-                if !allowed {
-                    let summary = ProxySummary {
-                        id: connection_id,
-                        userId: self.claims.userId,
-                        userName: self.claims.userName.to_string(),
-                        userGroups: self.claims.userGroups.clone(),
-                        clientIp: self.claims.clientIp.to_string(),
-                        processFullPath: self.claims.processFullPath.to_string(),
-                        processCmdLine: self.claims.processCmdLine.to_string(),
-                        runAsElevated: self.claims.runAsElevated,
-                        method: String::new(),
-                        url: request_url.to_string(),
-                        ip: constants::WIRE_SERVER_IP.to_string(),
-                        port: constants::WIRE_SERVER_PORT,
-                        responseStatus: StatusCode::FORBIDDEN.to_string(),
-                        elapsedTime: 0,
-                    };
-                    agent_status_shred_state
-                        .add_one_failed_connection_summary(summary)
-                        .await;
-
+            if let Some(rules) = access_control_rules {
+                if rules.is_allowed(connection_id, request_url.clone(), self.claims.clone()) {
+                    return AuthorizeResult::Ok;
+                } else {
                     if rules.mode == AuthorizationMode::Audit {
                         Connection::write_information(connection_id, format!("WireServer request {} denied in audit mode, continue forward the request", request_url));
-                        return Ok(true);
+                        return AuthorizeResult::OkWithAudit;
                     }
+                    return AuthorizeResult::Forbidden;
                 }
-                return Ok(allowed);
             }
         }
 
-        Ok(true)
+        AuthorizeResult::Ok
     }
 
     fn to_string(&self) -> String {
@@ -168,52 +148,28 @@ struct Imds {
     #[allow(dead_code)]
     claims: Claims,
 }
-#[async_trait]
 impl Authorizer for Imds {
-    async fn authorize(
+    fn authorize(
         &self,
         connection_id: u128,
         request_url: hyper::Uri,
-        key_keeper_shared_state: KeyKeeperSharedState,
-        agent_status_shred_state: AgentStatusSharedState,
-    ) -> Result<bool> {
+        access_control_rules: Option<ComputedAuthorizationItem>,
+    ) -> AuthorizeResult {
         if config::get_imds_support() == 2 {
-            let imds_rules = key_keeper_shared_state.get_imds_rules().await?;
-            if let Some(rules) = imds_rules {
-                let allowed =
-                    rules.is_allowed(connection_id, request_url.clone(), self.claims.clone());
-
-                if !allowed {
-                    let summary = ProxySummary {
-                        id: connection_id,
-                        userId: self.claims.userId,
-                        userName: self.claims.userName.to_string(),
-                        userGroups: self.claims.userGroups.clone(),
-                        clientIp: self.claims.clientIp.to_string(),
-                        processFullPath: self.claims.processFullPath.to_string(),
-                        processCmdLine: self.claims.processCmdLine.to_string(),
-                        runAsElevated: self.claims.runAsElevated,
-                        method: String::new(),
-                        url: request_url.to_string(),
-                        ip: constants::IMDS_IP.to_string(),
-                        port: constants::IMDS_PORT,
-                        responseStatus: StatusCode::FORBIDDEN.to_string(),
-                        elapsedTime: 0,
-                    };
-                    agent_status_shred_state
-                        .add_one_failed_connection_summary(summary)
-                        .await;
-
+            if let Some(rules) = access_control_rules {
+                if rules.is_allowed(connection_id, request_url.clone(), self.claims.clone()) {
+                    return AuthorizeResult::Ok;
+                } else {
                     if rules.mode == AuthorizationMode::Audit {
                         Connection::write_information(connection_id, format!("IMDS request {} denied in audit mode, continue forward the request", request_url));
-                        return Ok(true);
+                        return AuthorizeResult::OkWithAudit;
                     }
+                    return AuthorizeResult::Forbidden;
                 }
-                return Ok(allowed);
             }
         }
 
-        Ok(true)
+        AuthorizeResult::Ok
     }
 
     fn to_string(&self) -> String {
@@ -225,24 +181,25 @@ struct GAPlugin {
     claims: Claims,
 }
 
-#[async_trait]
 impl Authorizer for GAPlugin {
-    async fn authorize(
+    fn authorize(
         &self,
         _connection_id: u128,
         _request_url: hyper::Uri,
-        _key_keeper_shared_state: KeyKeeperSharedState,
-        _agent_status_shred_state: AgentStatusSharedState,
-    ) -> Result<bool> {
+        _access_control_rules: Option<ComputedAuthorizationItem>,
+    ) -> AuthorizeResult {
         if !self.claims.runAsElevated {
-            return Ok(false);
+            return AuthorizeResult::Forbidden;
         }
         if config::get_host_gaplugin_support() == 2 {
-            // only allow VMAgent and VMApp extension talks to GAPlugin
-            return Ok(default::is_platform_process(&self.claims));
+            // only allow VMAgent and patlform vm extensions talk to GAPlugin
+            if default::is_platform_process(&self.claims) {
+                return AuthorizeResult::Ok;
+            } else {
+                return AuthorizeResult::Forbidden;
+            }
         }
-
-        Ok(true)
+        return AuthorizeResult::Ok;
     }
 
     fn to_string(&self) -> String {
@@ -254,17 +211,15 @@ impl Authorizer for GAPlugin {
 }
 
 struct ProxyAgent {}
-#[async_trait]
 impl Authorizer for ProxyAgent {
-    async fn authorize(
+    fn authorize(
         &self,
         _connection_id: u128,
         _request_url: hyper::Uri,
-        _key_keeper_shared_state: KeyKeeperSharedState,
-        _agent_status_shred_state: AgentStatusSharedState,
-    ) -> Result<bool> {
+        _access_control_rules: Option<ComputedAuthorizationItem>,
+    ) -> AuthorizeResult {
         // Forbid the request send to this listener directly
-        Ok(false)
+        AuthorizeResult::Forbidden
     }
 
     fn to_string(&self) -> String {
@@ -273,16 +228,14 @@ impl Authorizer for ProxyAgent {
 }
 
 struct Default {}
-#[async_trait]
 impl Authorizer for Default {
-    async fn authorize(
+    fn authorize(
         &self,
         _connection_id: u128,
         _request_url: hyper::Uri,
-        _key_keeper_shared_state: KeyKeeperSharedState,
-        _agent_status_shred_state: AgentStatusSharedState,
-    ) -> Result<bool> {
-        Ok(true)
+        _access_control_rules: Option<ComputedAuthorizationItem>,
+    ) -> AuthorizeResult {
+        AuthorizeResult::Ok
     }
 
     fn to_string(&self) -> String {
@@ -304,39 +257,40 @@ pub fn get_authorizer(ip: String, port: u16, claims: Claims) -> Box<dyn Authoriz
     }
 }
 
-pub async fn authorize(
+pub async fn get_access_control_rules(
+    ip: String,
+    key_keeper_shared_state: KeyKeeperSharedState,
+) -> Result<Option<ComputedAuthorizationItem>> {
+    match ip.as_str() {
+        constants::WIRE_SERVER_IP => key_keeper_shared_state.get_wireserver_rules().await,
+        constants::IMDS_IP => key_keeper_shared_state.get_imds_rules().await,
+        _ => Ok(None),
+    }
+}
+
+pub fn authorize(
     ip: String,
     port: u16,
     connection_id: u128,
     request_uri: hyper::Uri,
     claims: Claims,
-    key_keeper_shared_state: KeyKeeperSharedState,
-    agent_status_shred_state: AgentStatusSharedState,
-) -> Result<bool> {
+    access_control_rules: Option<ComputedAuthorizationItem>,
+) -> AuthorizeResult {
     let auth = get_authorizer(ip, port, claims);
     Connection::write(connection_id, format!("Got auth: {}", auth.to_string()));
-    auth.authorize(
-        connection_id,
-        request_uri,
-        key_keeper_shared_state,
-        agent_status_shred_state,
-    )
-    .await
+    auth.authorize(connection_id, request_uri, access_control_rules)
 }
 
 #[cfg(test)]
 mod tests {
     use crate::{
-        key_keeper::key::{self, AuthorizationItem},
-        shared_state::{
-            self, agent_status_wrapper::AgentStatusSharedState,
-            key_keeper_wrapper::KeyKeeperSharedState,
-        },
+        key_keeper::key::AuthorizationItem, proxy::proxy_authorizer::AuthorizeResult,
+        shared_state::key_keeper_wrapper::KeyKeeperSharedState,
     };
     use std::str::FromStr;
 
-    #[tokio::test]
-    async fn get_authenticate_test() {
+    #[test]
+    fn get_authenticate_test() {
         let claims = crate::proxy::Claims {
             userId: 0,
             userName: "test".to_string(),
@@ -348,8 +302,6 @@ mod tests {
             runAsElevated: true,
             clientIp: "127.0.0.1".to_string(),
         };
-        let key_keeper_shared_state = KeyKeeperSharedState::start_new();
-        let agent_status_shared_state = AgentStatusSharedState::start_new();
         let auth: Box<dyn super::Authorizer> = super::get_authorizer(
             crate::common::constants::WIRE_SERVER_IP.to_string(),
             crate::common::constants::WIRE_SERVER_PORT,
@@ -361,15 +313,8 @@ mod tests {
             "WireServer { runAsElevated: true, processName: test }"
         );
         assert!(
-            auth.authorize(
-                1,
-                test_uri.clone(),
-                key_keeper_shared_state.clone(),
-                agent_status_shared_state.clone()
-            )
-            .await
-            .unwrap(),
-            "WireServer authentication must be true"
+            AuthorizeResult::Ok == auth.authorize(1, test_uri.clone(), None),
+            "WireServer authentication must be Ok"
         );
 
         let auth = super::get_authorizer(
@@ -381,15 +326,12 @@ mod tests {
             auth.to_string(),
             "GAPlugin { runAsElevated: true, processName: test }"
         );
-        assert!(
+        assert!(AuthorizeResult::Ok==
             auth.authorize(
                 1,
                 test_uri.clone(),
-                key_keeper_shared_state.clone(),
-                agent_status_shared_state.clone()
-            )
-            .await
-            .unwrap(),            "GAPlugin authentication must be true since it has not enabled for builtin processes in the config yet"
+                None
+            ),          "GAPlugin authentication must be Ok since it has not enabled for builtin processes in the config yet"
         );
 
         let auth = super::get_authorizer(
@@ -399,15 +341,8 @@ mod tests {
         );
         assert_eq!(auth.to_string(), "IMDS");
         assert!(
-            auth.authorize(
-                1,
-                test_uri.clone(),
-                key_keeper_shared_state.clone(),
-                agent_status_shared_state.clone()
-            )
-            .await
-            .unwrap(),
-            "IMDS authentication must be true"
+            AuthorizeResult::Ok == auth.authorize(1, test_uri.clone(), None),
+            "IMDS authentication must be Ok"
         );
 
         let auth = super::get_authorizer(
@@ -417,16 +352,8 @@ mod tests {
         );
         assert_eq!(auth.to_string(), "ProxyAgent");
         assert!(
-            !auth
-                .authorize(
-                    1,
-                    test_uri.clone(),
-                    key_keeper_shared_state.clone(),
-                    agent_status_shared_state.clone()
-                )
-                .await
-                .unwrap(),
-            "ProxyAgent authentication must be false"
+            AuthorizeResult::Forbidden == auth.authorize(1, test_uri.clone(), None),
+            "ProxyAgent authentication must be Forbidden"
         );
 
         let auth = super::get_authorizer(
@@ -457,7 +384,6 @@ mod tests {
         );
         let url = hyper::Uri::from_str("http://localhost/test?").unwrap();
         let key_keeper_shared_state = KeyKeeperSharedState::start_new();
-        let agent_status_shared_state = AgentStatusSharedState::start_new();
 
         // validate disabled rules
         let disabled_rules = AuthorizationItem {
@@ -470,16 +396,13 @@ mod tests {
             .set_wireserver_rules(Some(disabled_rules))
             .await
             .unwrap();
-        assert!(
-            auth.authorize(
-                1,
-                url.clone(),
-                key_keeper_shared_state.clone(),
-                agent_status_shared_state.clone()
-            )
+        let access_control_rules = key_keeper_shared_state
+            .get_wireserver_rules()
             .await
-            .unwrap(),
-            "WireServer authentication must be true with disabled rules"
+            .unwrap();
+        assert!(
+            auth.authorize(1, url.clone(), access_control_rules) == AuthorizeResult::Ok,
+            "WireServer authentication must be Ok with disabled rules"
         );
 
         // validate audit rules
@@ -499,31 +422,25 @@ mod tests {
             .set_wireserver_rules(Some(audit_allow_rules))
             .await
             .unwrap();
-        assert!(
-            auth.authorize(
-                1,
-                url.clone(),
-                key_keeper_shared_state.clone(),
-                agent_status_shared_state.clone()
-            )
+        let access_control_rules = key_keeper_shared_state
+            .get_wireserver_rules()
             .await
-            .unwrap(),
-            "WireServer authentication must be true with audit allow rules"
+            .unwrap();
+        assert!(
+            auth.authorize(1, url.clone(), access_control_rules) == AuthorizeResult::Ok,
+            "WireServer authentication must be Ok with audit allow rules"
         );
         key_keeper_shared_state
             .set_wireserver_rules(Some(audit_deny_rules))
             .await
             .unwrap();
-        assert!(
-            auth.authorize(
-                1,
-                url.clone(),
-                key_keeper_shared_state.clone(),
-                agent_status_shared_state.clone()
-            )
+        let access_control_rules = key_keeper_shared_state
+            .get_wireserver_rules()
             .await
-            .unwrap(),
-            "WireServer authentication must be true with audit deny rules"
+            .unwrap();
+        assert!(
+            auth.authorize(1, url.clone(), access_control_rules) == AuthorizeResult::OkWithAudit,
+            "WireServer authentication must be OkWithAudit with audit deny rules"
         );
 
         // validate enforce rules
@@ -543,32 +460,25 @@ mod tests {
             .set_wireserver_rules(Some(enforce_allow_rules))
             .await
             .unwrap();
-        assert!(
-            auth.authorize(
-                1,
-                url.clone(),
-                key_keeper_shared_state.clone(),
-                agent_status_shared_state.clone()
-            )
+        let access_control_rules = key_keeper_shared_state
+            .get_wireserver_rules()
             .await
-            .unwrap(),
-            "WireServer authentication must be true with enforce allow rules"
+            .unwrap();
+        assert!(
+            auth.authorize(1, url.clone(), access_control_rules) == AuthorizeResult::Ok,
+            "WireServer authentication must be Ok with enforce allow rules"
         );
         key_keeper_shared_state
             .set_wireserver_rules(Some(enforce_deny_rules))
             .await
             .unwrap();
+        let access_control_rules = key_keeper_shared_state
+            .get_wireserver_rules()
+            .await
+            .unwrap();
         assert!(
-            !auth
-                .authorize(
-                    1,
-                    url.clone(),
-                    key_keeper_shared_state.clone(),
-                    agent_status_shared_state.clone()
-                )
-                .await
-                .unwrap(),
-            "WireServer authentication must be false with enforce deny rules"
+            auth.authorize(1, url.clone(), access_control_rules) == AuthorizeResult::Forbidden,
+            "WireServer authentication must be Forbidden with enforce deny rules"
         );
     }
 
@@ -592,7 +502,6 @@ mod tests {
         );
         let url = hyper::Uri::from_str("http://localhost/test?").unwrap();
         let key_keeper_shared_state = KeyKeeperSharedState::start_new();
-        let agent_status_shared_state = AgentStatusSharedState::start_new();
 
         // validate disabled rules
         let disabled_rules = AuthorizationItem {
@@ -605,17 +514,10 @@ mod tests {
             .set_imds_rules(Some(disabled_rules))
             .await
             .unwrap();
+        let access_control_rules = key_keeper_shared_state.get_imds_rules().await.unwrap();
         assert!(
-            !auth
-                .authorize(
-                    1,
-                    url.clone(),
-                    key_keeper_shared_state.clone(),
-                    agent_status_shared_state.clone()
-                )
-                .await
-                .unwrap(),
-            "IMDS authentication must be true with disabled rules"
+            auth.authorize(1, url.clone(), access_control_rules,) == AuthorizeResult::Ok,
+            "IMDS authentication must be Ok with disabled rules"
         );
 
         // validate audit rules
@@ -631,15 +533,23 @@ mod tests {
             id: "id".to_string(),
             rules: None,
         };
-        super::set_imds_rules(shared_state.clone(), Some(audit_allow_rules));
+        key_keeper_shared_state
+            .set_imds_rules(Some(audit_allow_rules))
+            .await
+            .unwrap();
+        let access_control_rules = key_keeper_shared_state.get_imds_rules().await.unwrap();
         assert!(
-            auth.authorize(1, url.clone(), shared_state.clone()),
-            "IMDS authentication must be true with audit allow rules"
+            auth.authorize(1, url.clone(), access_control_rules,) == AuthorizeResult::Ok,
+            "IMDS authentication must be Ok with audit allow rules"
         );
-        super::set_imds_rules(shared_state.clone(), Some(audit_deny_rules));
+        key_keeper_shared_state
+            .set_imds_rules(Some(audit_deny_rules))
+            .await
+            .unwrap();
+        let access_control_rules = key_keeper_shared_state.get_imds_rules().await.unwrap();
         assert!(
-            auth.authorize(1, url.clone(), shared_state.clone()),
-            "IMDS authentication must be true with audit deny rules"
+            auth.authorize(1, url.clone(), access_control_rules,) == AuthorizeResult::OkWithAudit,
+            "IMDS authentication must be OkWithAudit with audit deny rules"
         );
 
         // validate enforce rules
@@ -655,15 +565,23 @@ mod tests {
             id: "id".to_string(),
             rules: None,
         };
-        super::set_imds_rules(shared_state.clone(), Some(enforce_allow_rules));
+        key_keeper_shared_state
+            .set_imds_rules(Some(enforce_allow_rules))
+            .await
+            .unwrap();
+        let access_control_rules = key_keeper_shared_state.get_imds_rules().await.unwrap();
         assert!(
-            auth.authorize(1, url.clone(), shared_state.clone()),
-            "IMDS authentication must be true with enforce allow rules"
+            auth.authorize(1, url.clone(), access_control_rules,) == AuthorizeResult::Ok,
+            "IMDS authentication must be Ok with enforce allow rules"
         );
-        super::set_imds_rules(shared_state.clone(), Some(enforce_deny_rules));
+        key_keeper_shared_state
+            .set_imds_rules(Some(enforce_deny_rules))
+            .await
+            .unwrap();
+        let access_control_rules = key_keeper_shared_state.get_imds_rules().await.unwrap();
         assert!(
-            !auth.authorize(1, url.clone(), shared_state.clone()),
-            "IMDS authentication must be false with enforce deny rules"
+            auth.authorize(1, url.clone(), access_control_rules,) == AuthorizeResult::Forbidden,
+            "IMDS authentication must be Forbidden with enforce deny rules"
         );
     }
 

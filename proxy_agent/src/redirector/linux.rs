@@ -479,20 +479,7 @@ impl super::Redirector {
             .set_module_state(ModuleState::RUNNING, AgentStatusModule::Redirector)
             .await;
 
-        //provision::redirector_ready(shared_state).await;
-
         true
-    }
-}
-
-pub async fn lookup_audit(
-    source_port: u16,
-    redirector_shared_state: RedirectorSharedState,
-) -> Result<AuditEntry> {
-    if let Ok(Some(bpf_object)) = redirector_shared_state.get_bpf_object().await {
-        bpf_object.lock().unwrap().lookup_audit(source_port)
-    } else {
-        Err(Error::Bpf(BpfErrorType::GetBpfObject))
     }
 }
 
