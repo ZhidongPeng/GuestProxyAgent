@@ -29,6 +29,8 @@ use super::telemetry_event::TelemetryEvent;
 use crate::common::{constants, logger, result::Result};
 use crate::host_clients::imds_client::ImdsClient;
 use crate::host_clients::wire_server_client::WireServerClient;
+use crate::shared_state::agent_status_wrapper::AgentStatusModule;
+use crate::shared_state::agent_status_wrapper::AgentStatusSharedState;
 use crate::shared_state::key_keeper_wrapper::KeyKeeperSharedState;
 use crate::shared_state::telemetry_wrapper::TelemetrySharedState;
 use proxy_agent_shared::misc_helpers;
@@ -78,6 +80,7 @@ pub struct EventReader {
     cancellation_token: CancellationToken,
     key_keeper_shared_state: KeyKeeperSharedState,
     telemetry_shared_state: TelemetrySharedState,
+    agent_status_shared_state: AgentStatusSharedState,
 }
 
 impl EventReader {
@@ -87,6 +90,7 @@ impl EventReader {
         cancellation_token: CancellationToken,
         key_keeper_shared_state: KeyKeeperSharedState,
         telemetry_shared_state: TelemetrySharedState,
+        agent_status_shared_state: AgentStatusSharedState,
     ) -> EventReader {
         EventReader {
             dir_path,
@@ -94,6 +98,7 @@ impl EventReader {
             cancellation_token,
             key_keeper_shared_state,
             telemetry_shared_state,
+            agent_status_shared_state,
         }
     }
 
@@ -201,8 +206,8 @@ impl EventReader {
 
     async fn stop(&self) {
         let _ = self
-            .telemetry_shared_state
-            .set_reader_state(ModuleState::STOPPED)
+            .agent_status_shared_state
+            .set_module_state(ModuleState::STOPPED, AgentStatusModule::TelemetryReader)
             .await;
     }
 
@@ -401,6 +406,7 @@ mod tests {
             key_keeper_shared_state: key_keeper_shared_state.clone(),
             telemetry_shared_state: TelemetrySharedState::start_new(),
             cancellation_token: cancellation_token.clone(),
+            agent_status_shared_state: AgentStatusSharedState::start_new(),
         };
         let wire_server_client = WireServerClient::new(ip, port, key_keeper_shared_state.clone());
         let imds_client = ImdsClient::new(ip, port, key_keeper_shared_state.clone());

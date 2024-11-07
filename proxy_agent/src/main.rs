@@ -38,7 +38,7 @@ define_windows_service!(ffi_service_main, proxy_agent_windows_service_main);
 // also it does not allow to pass tokio runtime or handle as arguments to the function.
 // we have to use the global variable to set the tokio runtime handle.
 #[cfg(windows)]
-pub(crate) static ASYNC_RUNTIME_HANDLE: tokio::sync::OnceCell<tokio::runtime::Handle> =
+static ASYNC_RUNTIME_HANDLE: tokio::sync::OnceCell<tokio::runtime::Handle> =
     tokio::sync::OnceCell::const_new();
 
 /// azure-proxy-agent console - launch a long run process of GPA in console mode.

@@ -290,17 +290,17 @@ pub async fn start_event_threads(
         }
     }
 
-    let cloned_telemetry_state = telemetry_shared_state.clone();
+    let cloned_agent_status_shared_state = agent_status_shared_state.clone();
     event_logger::start_async(
         config::get_events_dir(),
         Duration::default(),
         config::get_max_event_file_count(),
         logger::AGENT_LOGGER_KEY,
         move |status: String| {
-            let cloned_telemetry_state = cloned_telemetry_state.clone();
+            let cloned_agent_status_shared_state = cloned_agent_status_shared_state.clone();
             async move {
-                let _ = cloned_telemetry_state
-                    .set_logger_status_message(status)
+                let _ = cloned_agent_status_shared_state
+                    .set_module_status_message(status, AgentStatusModule::TelemetryLogger)
                     .await;
             }
         },
@@ -312,6 +312,7 @@ pub async fn start_event_threads(
             cancellation_token.clone(),
             key_keeper_shared_state.clone(),
             telemetry_shared_state.clone(),
+            agent_status_shared_state.clone(),
         );
         async move {
             event_reader
@@ -456,14 +457,17 @@ pub async fn get_provision_state(
     }
 }
 
+/// Provision query
+/// It is used to query the provision status from GPA service via http request
+/// This struct is designed for GPA command line, serves for --status [--wait seconds] option
 pub struct ProvisionQuery {
     port: u16,
-    duration: Option<Duration>,
+    wait_duration: Option<Duration>,
 }
 
 impl ProvisionQuery {
-    pub fn new(port: u16, duration: Option<Duration>) -> ProvisionQuery {
-        ProvisionQuery { port, duration }
+    pub fn new(port: u16, wait_duration: Option<Duration>) -> ProvisionQuery {
+        ProvisionQuery { port, wait_duration }
     }
 
     /// Get current GPA service provision status and wait until the GPA service provision finished or timeout
@@ -484,7 +488,7 @@ impl ProvisionQuery {
                 return (finished, message);
             }
 
-            if let Some(d) = self.duration {
+            if let Some(d) = self.wait_duration {
                 if d.as_millis() >= helpers::get_elapsed_time_in_millisec() {
                     tokio::time::sleep(Duration::from_millis(100)).await;
                     continue;
