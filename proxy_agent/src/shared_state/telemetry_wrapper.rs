@@ -4,7 +4,6 @@
 use crate::common::result::Result;
 use crate::common::{error::Error, logger};
 use crate::telemetry::event_reader::VmMetaData;
-use proxy_agent_shared::proxy_agent_aggregate_status::{ModuleState, ProxyAgentDetailStatus};
 use tokio::sync::{mpsc, oneshot};
 
 enum TelemetryAction {
@@ -85,5 +84,4 @@ impl TelemetrySharedState {
             .await
             .map_err(|e| Error::RecvError("TelemetryAction::GetVmMetaData".to_string(), e))
     }
-
 }

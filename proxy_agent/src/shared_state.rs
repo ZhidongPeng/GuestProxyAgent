@@ -74,5 +74,4 @@ impl SharedState {
     pub fn cancel_cancellation_token(&self) {
         self.cancellation_token.cancel();
     }
-
 }

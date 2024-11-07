@@ -467,7 +467,10 @@ pub struct ProvisionQuery {
 
 impl ProvisionQuery {
     pub fn new(port: u16, wait_duration: Option<Duration>) -> ProvisionQuery {
-        ProvisionQuery { port, wait_duration }
+        ProvisionQuery {
+            port,
+            wait_duration,
+        }
     }
 
     /// Get current GPA service provision status and wait until the GPA service provision finished or timeout
