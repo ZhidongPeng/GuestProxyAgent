@@ -121,7 +121,7 @@ async fn main() {
         println!("Press Enter to end it.");
         let mut temp = String::new();
         let _read = std::io::stdin().read_line(&mut temp);
-        service::stop_service(shared_state.clone()).await;
+        service::stop_service(shared_state.clone());
     } else {
         // no argument provided, start the GPA as an OS service
         #[cfg(windows)]

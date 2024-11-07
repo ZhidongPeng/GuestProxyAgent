@@ -756,11 +756,11 @@ impl ProxyServer {
         // Add header x-ms-azure-host-authorization
         if let (Some(key), Some(key_guid)) = (
             self.key_keeper_shared_state
-                .get_current_key_guid()
+                .get_current_key_value()
                 .await
                 .unwrap_or(None),
             self.key_keeper_shared_state
-                .get_current_key_value()
+                .get_current_key_guid()
                 .await
                 .unwrap_or(None),
         ) {

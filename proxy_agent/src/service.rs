@@ -90,17 +90,23 @@ pub async fn start_service_wait() {
 /// let shared_state = SharedState::new();
 /// service::stop_service(shared_state);
 /// ```
-pub async fn stop_service(shared_state: SharedState) {
+pub fn stop_service(shared_state: SharedState) {
     logger::write_information(format!(
         "============== GuestProxyAgent is stopping, elapsed: {}",
         helpers::get_elapsed_time_in_millisec()
     ));
     shared_state.cancel_cancellation_token();
 
-    redirector::close(
-        shared_state.get_redirector_shared_state(),
-        shared_state.get_agent_status_shared_state(),
-    )
-    .await;
+    tokio::spawn({
+        let shared_state = shared_state.clone();
+        async move {
+            redirector::close(
+                shared_state.get_redirector_shared_state(),
+                shared_state.get_agent_status_shared_state(),
+            )
+            .await;
+        }
+    });
+
     event_logger::stop();
 }
