@@ -265,8 +265,7 @@ impl EventReader {
             match misc_helpers::json_read_from_file::<Vec<Event>>(&file) {
                 Ok(events) => {
                     num_events_logged += events.len();
-                    self.send_events(events, wire_server_client, vm_meta_data)
-                        .await;
+                    Self::send_events(events, wire_server_client, vm_meta_data).await;
                     Self::clean_files(file);
                 }
                 Err(e) => {
@@ -284,7 +283,6 @@ impl EventReader {
 
     const MAX_MESSAGE_SIZE: usize = 1024 * 64;
     async fn send_events(
-        &self,
         mut events: Vec<Event>,
         wire_server_client: &WireServerClient,
         vm_meta_data: &VmMetaData,
