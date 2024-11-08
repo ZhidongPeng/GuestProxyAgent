@@ -8,34 +8,73 @@
 //! Example for GPA service:
 //! ```rust
 //! use proxy_agent::provision;
-//! use std::sync::{Arc, Mutex};
+//! use proxy_agent::shared_state::agent_status_wrapper::AgentStatusModule;
+//! use proxy_agent::shared_state::agent_status_wrapper::AgentStatusSharedState;
+//! use proxy_agent::shared_state::key_keeper_wrapper::KeyKeeperSharedState;
+//! use proxy_agent::shared_state::provision_wrapper::ProvisionSharedState;
+//! use proxy_agent::shared_state::SharedState;
+//! use proxy_agent::shared_state::telemetry_wrapper::TelemetrySharedState;
+//!
 //! use std::time::Duration;
 //!
-//! let shared_state = Arc::new(Mutex::new(SharedState::new()));
-//! let provision_state = provision::get_provision_state(shared_state.clone());
+//! let shared_state = SharedState::start_all();
+//! let cancellation_token = shared_state.get_cancellation_token();
+//! let key_keeper_shared_state = shared_state.get_key_keeper_shared_state();
+//! let telemetry_shared_state = shared_state.get_telemetry_shared_state();
+//! let provision_shared_state = shared_state.get_provision_shared_state();
+//! let agent_status_shared_state = shared_state.get_agent_status_shared_state();
+//!
+//! let provision_state = provision::get_provision_state(
+//!     provision_shared_state.clone(),
+//!     agent_status_shared_state.clone(),
+//! ).await;
 //! assert_eq!(false, provision_state.finished);
 //! assert_eq!(0, provision_state.errorMessage.len());
 //!
 //! // update provision state when each provision finished
-//! provision::redirector_ready(shared_state.clone());
-//! provision::key_latched(shared_state.clone());
-//! provision::listener_started(shared_state.clone());
+//! provision::redirector_ready(
+//!     cancellation_token.clone(),
+//!     key_keeper_shared_state.clone(),
+//!     telemetry_shared_state.clone(),
+//!     provision_shared_state.clone(),
+//!     agent_status_shared_state.clone(),
+//! ).await;
+//! provision::key_latched(
+//!     cancellation_token.clone(),
+//!     key_keeper_shared_state.clone(),
+//!     telemetry_shared_state.clone(),
+//!     provision_shared_state.clone(),
+//!     agent_status_shared_state.clone(),
+//! ).await;
+//! provision::listener_started(
+//!     cancellation_token.clone(),
+//!     key_keeper_shared_state.clone(),
+//!     telemetry_shared_state.clone(),
+//!     provision_shared_state.clone(),
+//!     agent_status_shared_state.clone(),
+//! ).await;
 //!
-//! let provision_state = provision::get_provision_state(shared_state.clone());
+//! let provision_state = provision::get_provision_state(
+//!     provision_shared_state.clone(),
+//!     agent_status_shared_state.clone(),
+//! ).await;
 //! assert_eq!(true, provision_state.finished);
 //! assert_eq!(0, provision_state.errorMessage.len());
 //! ```
 //!
 //! Example for GPA command line option --status [--wait seconds]:
 //! ```rust
-//! use proxy_agent::provision;
+//! use proxy_agent::provision::ProvisionQuery;
 //! use std::time::Duration;
 //!
-//! let provision_not_finished_state = provision::get_provision_status_wait(8092, None).await;
+//! let proxy_server_port = 8092;
+//! let provision_query = ProvisionQuery::new(proxy_server_port, None);
+//! let provision_not_finished_state = provision_query.get_provision_status_wait().await;
 //! assert_eq!(false, provision_state.0);
 //! assert_eq!(0, provision_state.1.len());
 //!
-//! let provision_finished_state = provision::get_provision_status_wait(8092, Some(Duration::from_millis(5))).await;
+//! let provision_query = ProvisionQuery::new(proxy_server_port, Some(Duration::from_millis(5)));
+//! let provision_finished_state = provision_query.get_provision_status_wait().await;
 //! assert_eq!(true, provision_state.0);
 //! assert_eq!(0, provision_state.1.len());
 //! ```

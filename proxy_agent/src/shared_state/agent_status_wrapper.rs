@@ -1,6 +1,60 @@
 // Copyright (c) Microsoft Corporation
 // SPDX-License-Identifier: MIT
 
+//! This module contains the logic to interact with the proxy agent status.
+//! The proxy agent status contains the 'state' and 'status message' of the key keeper, telemetry reader, telemetry logger, redirector, and proxy server modules.
+//! The proxy agent status contains the 'connection summary' of the proxy server.
+//! The proxy agent status contains the 'failed connection summary' of the proxy server.
+//! The proxy agent status contains the 'connection count' of the proxy server.
+//! Example
+//! ```rust
+//! use proxy_agent::shared_state::agent_status_wrapper::{AgentStatusModule, AgentStatusSharedState};
+//! use proxy_agent_shared::proxy_agent_aggregate_status::ModuleState;
+//! use proxy_agent_shared::telemetry::event_logger;
+//! use std::collections::HashMap;
+//! use std::time::Duration;
+//! use tokio::time;
+//!
+//! #[tokio::main]
+//! async fn main() {
+//!    let agent_status_shared_state = AgentStatusSharedState::start_new();
+//!
+//!    let module = AgentStatusModule::KeyKeeper;
+//!    let state = ModuleState::RUNNING;
+//!    let status_message = "KeyKeeper is running".to_string();
+//!    agent_status_shared_state.set_module_state(state.clone(), module.clone()).await.unwrap();
+//!    agent_status_shared_state.set_module_status_message(status_message.clone(), module.clone()).await.unwrap();
+//!    let get_state = agent_status_shared_state.get_module_state(module.clone()).await.unwrap();
+//!    let get_status_message = agent_status_shared_state.get_module_status_message(module.clone()).await.unwrap();
+//!    assert_eq!(state, get_state);
+//!    assert_eq!(status_message, get_status_message);
+//!    let connection_summary = ProxyConnectionSummary {
+//!       count: 1,
+//!       key: "key".to_string(),
+//!    };
+//!    agent_status_shared_state.add_one_connection_summary(connection_summary.clone()).await.unwrap();
+//!    let get_all_connection_summary = agent_status_shared_state.get_all_connection_summary().await.unwrap();
+//!    assert_eq!(1, get_all_connection_summary.len());
+//!    assert_eq!(connection_summary, get_all_connection_summary[0]);
+//!
+//!    let failed_connection_summary = ProxyConnectionSummary {
+//!       count: 1,
+//!       key: "key".to_string(),
+//!    };
+//!    agent_status_shared_state.add_one_failed_connection_summary(failed_connection_summary.clone()).await.unwrap();
+//!    let get_all_failed_connection_summary = agent_status_shared_state.get_all_failed_connection_summary().await.unwrap();
+//!    assert_eq!(1, get_all_failed_connection_summary.len());
+//!    assert_eq!(failed_connection_summary, get_all_failed_connection_summary[0]);
+//!    agent_status_shared_state.clear_all_summary().await.unwrap();
+//!
+//!    let get_connection_count = agent_status_shared_state.get_connection_count().await.unwrap();
+//!    assert_eq!(0, get_connection_count);
+//!    agent_status_shared_state.increase_connection_count().await.unwrap();
+//!    let get_connection_count = agent_status_shared_state.get_connection_count().await.unwrap();
+//!    assert_eq!(1, get_connection_count);
+//! }
+//! ```
+
 use crate::common::logger;
 use crate::common::result::Result;
 use crate::{common::error::Error, proxy::proxy_summary::ProxySummary};

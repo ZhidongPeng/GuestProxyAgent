@@ -9,13 +9,14 @@
 //! ```rust
 //! use proxy_agent::common::constants;
 //! use proxy_agent::host_clients::imds_client;
-//! use proxy_agent::shared_state::SharedState;
-//! use std::sync::{Arc, Mutex};
-//!
-//! let shared_state = SharedState::new();
-//!
-//! let imds_client = imds_client::ImdsClient::new(constants::IMDS_IP.to_string(), 80, shared_state);
-//! let instance_info = imds_client.get_imds_instance_info().await;
+//! use proxy_agent::shared_state::key_keeper_wrapper::KeyKeeperSharedState;
+//! let key_keeper_shared_state = KeyKeeperSharedState::new();
+//! let imds_client = imds_client::ImdsClient::new(
+//!    constants::IMDS_IP,
+//!    constants::IMDS_PORT,
+//!   key_keeper_shared_state,
+//! );
+//! let instance_info = imds_client.get_imds_instance_info().await.unwrap();
 //!
 //! ```
 

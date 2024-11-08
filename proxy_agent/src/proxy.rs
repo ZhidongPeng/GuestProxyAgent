@@ -9,13 +9,12 @@
 //! Example
 //! ```rust
 //! use proxy_agent::proxy;
-//! use proxy_agent::shared_state::SharedState;
-//! use std::sync::{Arc, Mutex};
+//! use proxy_agent::shared_state::proxy_server_wrapper::ProxyServerSharedState;
 //!
 //! // Get the user details
 //! let logon_id = 999u64;
-//! let shared_state = SharedState::new();
-//! let user = proxy::get_user(logon_id, shared_state.clone()).unwrap();
+//! let proxy_server_shared_state = ProxyServerSharedState::start_new();
+//! let user = proxy::get_user(logon_id, proxy_server_shared_state.clone()).unwrap();
 //!
 //! // Get the process details
 //! let pid = std::process::id();
@@ -28,7 +27,7 @@
 //! entry.destination_ipv4 = 0x10813FA8;
 //! entry.destination_port = 80;
 //! entry.is_admin = 1;
-//! let claims = proxy::Claims::from_audit_entry(&entry, "127.0.0.1".parse().unwrap(), shared_state.clone()).unwrap();
+//! let claims = proxy::Claims::from_audit_entry(&entry, "127.0.0.1".parse().unwrap(), proxy_server_shared_state.clone()).unwrap();
 //! println!("{}", serde_json::to_string(&claims).unwrap());
 //! ```
 

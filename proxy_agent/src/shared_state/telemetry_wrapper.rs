@@ -1,6 +1,19 @@
 // Copyright (c) Microsoft Corporation
 // SPDX-License-Identifier: MIT
 
+//! This module contains the logic to interact with the telemetry module.
+//! Example
+//! ```rust
+//! use proxy_agent::shared_state::telemetry_wrapper::TelemetrySharedState;
+//! use proxy_agent::telemetry::event_reader::VmMetaData;
+//!
+//! let telemetry_shared_state = TelemetrySharedState::start_new();
+//! let vm_meta_data = VmMetaData::new("vm_id".to_string(), "vm_name".to_string());
+//! telemetry_shared_state.set_vm_meta_data(Some(vm_meta_data.clone())).await.unwrap();
+//! let meta_data = telemetry_shared_state.get_vm_meta_data().await.unwrap().unwrap();
+//! assert_eq!(meta_data, vm_meta_data);
+//! ```
+
 use crate::common::result::Result;
 use crate::common::{error::Error, logger};
 use crate::telemetry::event_reader::VmMetaData;

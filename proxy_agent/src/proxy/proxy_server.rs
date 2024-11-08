@@ -14,9 +14,10 @@
 //! use crate::proxy::proxy_server;
 //! use crate::shared_state::SharedState;
 //!
-//! let shared_state = Arc::new(Mutex::new(SharedState::new()));
+//! let shared_state = SharedState::start_all();
 //! let port = config::get_proxy_port();
-//! tokio::spawn(proxy_server::start(port, shared_state.clone()));
+//! let proxy_server = proxy_server::ProxyServer::new(port, &shared_state);
+//! tokio::spawn(proxy_server.start());
 //! ```
 
 use super::proxy_authorizer::AuthorizeResult;

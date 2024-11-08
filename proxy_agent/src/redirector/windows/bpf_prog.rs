@@ -24,6 +24,7 @@ const EBPF_FIND_MAP_ERROR: i32 = 2027;
 const EBPF_UPDATE_MAP_ERROR: i32 = 2028;
 const EBPF_DELETE_MAP_ERROR: i32 = 2029;
 
+// This module contains the logic to interact with the windows eBPF program & maps.
 impl BpfObject {
     fn is_null(&self) -> bool {
         self.0.is_null()

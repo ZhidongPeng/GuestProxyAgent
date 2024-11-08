@@ -28,6 +28,7 @@ use std::sync::{Arc, Mutex};
 
 pub struct BpfObject(Bpf);
 
+// BpfObject is a wrapper around Bpf object to interact with Linux eBPF programs and maps
 impl BpfObject {
     pub fn new(bpf: Bpf) -> Self {
         BpfObject(bpf)
@@ -363,6 +364,7 @@ impl BpfObject {
     }
 }
 
+// Redirector implementation for Linux platform
 impl super::Redirector {
     pub async fn start_internal(&self) -> bool {
         let mut bpf_object = match BpfObject::from_ebpf_file(&super::get_ebpf_file_path()) {

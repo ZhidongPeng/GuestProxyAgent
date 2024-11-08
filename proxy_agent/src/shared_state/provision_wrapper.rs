@@ -1,6 +1,33 @@
 // Copyright (c) Microsoft Corporation
 // SPDX-License-Identifier: MIT
 
+//! This module contains the logic to interact with the provision state of the GPA service.
+//! The provision state is a bit field, which is used to store the provision state of the GPA service.
+//! It contains the provision state, event log threads initialized, and provision finished.
+//!
+//! Example
+//! ```rust
+//! use proxy_agent::shared_state::provision_wrapper::ProvisionSharedState;
+//! use proxy_agent::provision::ProvisionFlags;
+//!
+//! let provision_shared_state = ProvisionSharedState::start_new();
+//! let state = ProvisionFlags::REDIRECTOR_READY|ProvisionFlags::PROXY_SERVER_READY;
+//! let updated_state = provision_shared_state.update_one_state(state).await.unwrap();
+//! assert_eq!(updated_state, state);
+//! let reset_state = provision_shared_state.reset_one_state(ProvisionFlags::REDIRECTOR_READY).await.unwrap();
+//! assert_eq!(reset_state, ProvisionFlags::PROXY_SERVER_READY);
+//! let get_state = provision_shared_state.get_state().await.unwrap();
+//! let set_event_log_threads_initialized = provision_shared_state.set_event_log_threads_initialized().await.unwrap();
+//! let get_event_log_threads_initialized = provision_shared_state.get_event_log_threads_initialized().await.unwrap();
+//! assert_eq!(get_event_log_threads_initialized, true);
+//! let set_provision_finished = provision_shared_state.set_provision_finished(true).await.unwrap();
+//! let get_provision_finished = provision_shared_state.get_provision_finished().await.unwrap();
+//! assert_eq!(get_provision_finished, true);
+//! let _= provision_shared_state.set_provision_finished(false).await.unwrap();
+//! let get_provision_finished = provision_shared_state.get_provision_finished().await.unwrap();
+//! assert_eq!(get_provision_finished, false);
+//! ```
+
 use crate::common::error::Error;
 use crate::common::logger;
 use crate::common::result::Result;
@@ -140,7 +167,6 @@ impl ProvisionSharedState {
 
     /// Reset the provision state
     /// # Arguments
-    /// * `shared_state` - Arc<Mutex<SharedState>>
     /// * `state` - ProvisionFlags to reset/remove from the provision state
     /// # Returns
     /// * `ProvisionFlags` - the updated provision state

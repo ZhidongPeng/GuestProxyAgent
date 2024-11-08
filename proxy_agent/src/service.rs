@@ -19,9 +19,8 @@ use std::time::Duration;
 /// ```rust
 /// use proxy_agent::service;
 /// use proxy_agent::shared_state::SharedState;
-/// use std::sync::{Arc, Mutex};
 ///
-/// let shared_state = SharedState::new();
+/// let shared_state = SharedState::start_all();
 /// service::start_service(shared_state);
 /// ```
 pub fn start_service(shared_state: SharedState) {

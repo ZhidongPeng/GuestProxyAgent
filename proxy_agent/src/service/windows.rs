@@ -15,9 +15,9 @@ use windows_service::service_control_handler::{
     self, ServiceControlHandlerResult, ServiceStatusHandle,
 };
 
-// The global variable to store the windows service status handle.
+// The private global variable to store the windows service status handle.
 // It is used to set the windows service status to Running and Stopped.
-// Its event handler does not support async+await, which it is not allow to get it via async mpsc.
+// Its event handler does not support async + await, which it is not allow to get it via async mpsc.
 static SERVICE_STATUS_HANDLE: tokio::sync::OnceCell<ServiceStatusHandle> =
     tokio::sync::OnceCell::const_new();
 

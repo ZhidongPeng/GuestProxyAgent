@@ -8,14 +8,15 @@
 //! ```rust
 //! use proxy_agent::proxy_authorizer;
 //! use proxy_agent::proxy::Claims;
-//! use proxy_agent::shared_state::SharedState;
-//! use std::sync::{Arc, Mutex};
+//! use proxy_agent::shared_state::key_keeper_wrapper::KeyKeeperSharedState;
+//! use proxy_agent::common::constants;
+//! use std::str::FromStr;
 //!
-//! let shared_state = SharedState::new();
-//!
-//! let authorize = proxy_authorizer::get_authorizer(constants::WIRE_SERVER_IP, constants::WIRE_SERVER_PORT, claims);
+//! let key_keeper_shared_state = KeyKeeperSharedState::start_new();
+//! let vm_metadata = proxy_authorizer::get_access_control_rules(constants::WIRE_SERVER_IP.to_string(), key_keeper_shared_state.clone()).await.unwrap();
+//! let authorizer = proxy_authorizer::get_authorizer(constants::WIRE_SERVER_IP, constants::WIRE_SERVER_PORT, claims);
 //! let url = hyper::Uri::from_str("http://localhost/test?").unwrap();
-//! authorize.authorize(1, url, shared_state.clone());
+//! authorizer.authorize(1, url, vm_metadata);
 //!  
 
 use super::authorization_rules::{AuthorizationMode, ComputedAuthorizationItem};

@@ -33,6 +33,7 @@ impl Default for BpfObject {
     }
 }
 
+// Redirector implementation for Windows platform
 impl super::Redirector {
     pub async fn initialized_success(&self) -> bool {
         if !bpf_api::ebpf_api_is_loaded() {

@@ -6,22 +6,37 @@
 //! Example
 //! ```rust
 //! use proxy_agent::telemetry::event_reader;
-//! use proxy_agent::shared_state::SharedState;
-//! use std::sync::{Arc, Mutex};
+//! use proxy_agent::shared_state::agent_status::wrapper::AgentStatusSharedState;
+//! use proxy_agent::shared_state::key_keeper::wrapper::KeyKeeperSharedState;
+//! use proxy_agent::shared_state::telemetry::wrapper::TelemetrySharedState;
 //! use std::path::PathBuf;
 //! use std::time::Duration;
+//! use tokio_util::sync::CancellationToken;
 //!
 //! // start the telemetry event reader with the shared state
-//! let shared_state = SharedState::new();
+//! let agent_status_shared_state = AgentStatusSharedState::start_new();
+//! let key_keeper_shared_state = KeyKeeperSharedState::start_new();
+//! let telemetry_shared_state = TelemetrySharedState::start_new();
+//! let cancellation_token = CancellationToken::new();
+//!
 //! let dir_path = PathBuf::from("/tmp");
 //! let interval = Some(Duration::from_secs(300));
 //! let delay_start = false;
 //! let server_ip = None;
 //! let server_port = None;
-//! tokio::spawn(event_reader::start(dir_path, interval, delay_start, server_ip, server_port, shared_state.clone()));
+//! let event_reader = event_reader::EventReader::new(
+//!    dir_path,
+//!    delay_start,
+//!    cancellation_token,
+//!    key_keeper_shared_state,
+//!    telemetry_shared_state,
+//!    agent_status_shared_state,
+//! );
+//!
+//! tokio::spawn(event_reader.start(interval, server_ip, server_port));
 //!
 //! // stop the telemetry event reader
-//! event_reader::stop(shared_state.clone());
+//! cancellation_token.cancel();
 //! ```
 
 use super::telemetry_event::TelemetryData;

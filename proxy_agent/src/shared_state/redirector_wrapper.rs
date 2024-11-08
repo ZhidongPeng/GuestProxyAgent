@@ -1,6 +1,24 @@
 // Copyright (c) Microsoft Corporation
 // SPDX-License-Identifier: MIT
 
+//! This module contains the logic to interact with the eBPF/redirector.
+//! The redirector is used to redirect the traffic to the proxy server.
+//! The eBPF is used to filter the traffic and redirect the traffic to the proxy server.
+//! The redirector is used to set the local port, get the local port, set the eBPF object, get the eBPF object.
+//! Example
+//! ```rust
+//! use proxy_agent::shared_state::redirector_wrapper::RedirectorSharedState;
+//! use proxy_agent::redirector::BpfObject;
+//! use std::sync::{Arc, Mutex};
+//!
+//! let redirector_shared_state = RedirectorSharedState::start_new();
+//! let local_port = redirector_shared_state.get_local_port().await.unwrap();
+//! redirector_shared_state.set_local_port(80).await.unwrap();
+//! let bpf_object = Arc::new(Mutex::new(BpfObject::new()));
+//! redirector_shared_state.update_bpf_object(bpf_object.clone()).await.unwrap();
+//! let bpf_object = redirector_shared_state.get_bpf_object().await.unwrap().unwrap();
+//! ```
+
 use crate::common::error::Error;
 use crate::common::logger;
 use crate::common::result::Result;

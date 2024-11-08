@@ -10,23 +10,33 @@
 //! Example
 //! ```rust
 //! use proxy_agent::redirector;
-//! use proxy_agent::shared_state::SharedState;
-//! use std::sync::{Arc, Mutex};
+//! use proxy_agent::shared_state::redirector_wrapper::RedirectorSharedState;
+//! use proxy_agent::shared_state::key_keeper_wrapper::KeyKeeperSharedState;
+//! use proxy_agent::shared_state::agent_status_wrapper::AgentStatusSharedState;
+//!
 //!
 //! // start the redirector with the shared state
-//! let shared_state = SharedState::new();
+//! let redirector_shared_state = RedirectorSharedState::new();
+//! let key_keeper_shared_state = KeyKeeperSharedState::new();
+//! let agent_status_shared_state = AgentStatusSharedState::new();
 //! let local_port = 8080;
-//! tokio::spawn(redirector::start(local_port, shared_state));
+//! let redirector = redirector::Redirector::new(
+//!    local_port,
+//!    redirector_shared_state.clone(),
+//!    key_keeper_shared_state.clone(),
+//!    agent_status_shared_state.clone(),
+//! );
+//! tokio::spawn(redirector.start());
 //!
 //! // Update the redirect policy for the traffics
-//! redirector::update_wire_server_redirect_policy(true, shared_state.clone());
-//! redirector::update_imds_redirect_policy(false, shared_state.clone());
+//! redirector::update_wire_server_redirect_policy(true, redirector_shared_state.clone());
+//! redirector::update_imds_redirect_policy(false, redirector_shared_state.clone());
 //!
 //! // Get the status of the redirector
-//! let status = redirector::get_status(shared_state.clone());
+//! let status = agent_status_shared_state.get_status(AgentStatusModule::Redirector).await;
 //!
 //! // Close the redirector to offload the eBPF program
-//! redirector::close(shared_state);
+//! redirector::close(redirector_shared_state.clone(), agent_status_shared_state.clone()).await;
 //! ```
 
 #[cfg(windows)]

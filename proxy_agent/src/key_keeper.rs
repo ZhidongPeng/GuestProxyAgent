@@ -14,12 +14,13 @@
 //! use std::path::PathBuf;
 //! use std::time::Duration;
 //!
-//! let shared_state = SharedState::new();
+//! let shared_state = SharedState::start_all();
 //! let base_url = "http://127:0.0.1:8081/";
 //! let key_dir = PathBuf::from("path");
 //! let interval = Duration::from_secs(10);
 //! let config_start_redirector = false;
-//! tokio::spawn(key_keeper::poll_secure_channel_status(base_url.parse().unwrap(), key_dir, interval, config_start_redirector, shared_state));
+//! let key_keeper = key_keeper::KeyKeeper::new(base_url.parse().unwrap(), key_dir, interval, config_start_redirector, &shared_state);
+//! tokio::spawn(key_keeper.poll_secure_channel_status());
 //! ```
 
 pub mod key;

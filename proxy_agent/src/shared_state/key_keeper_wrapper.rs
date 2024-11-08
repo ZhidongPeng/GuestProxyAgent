@@ -294,7 +294,6 @@ impl KeyKeeperSharedState {
 
     /// Update the current secure channel state
     /// # Arguments
-    /// * `shared_state` - Arc<Mutex<SharedState>>
     /// * `state` - String
     /// # Returns
     /// * `bool` - true if the state is update successfully
@@ -344,7 +343,6 @@ impl KeyKeeperSharedState {
 
     /// Update the WireServer rule ID
     /// # Arguments
-    /// * `shared_state` - Arc<Mutex<SharedState>>
     /// * `rule_id` - String
     /// # Returns
     /// * `bool` - true if the rule ID is update successfully
@@ -421,7 +419,6 @@ impl KeyKeeperSharedState {
 
     /// Update the IMDS rule ID
     /// # Arguments
-    /// * `shared_state` - Arc<Mutex<SharedState>>
     /// * `rule_id` - String
     /// # Returns
     /// * `bool` - true if the rule ID is update successfully

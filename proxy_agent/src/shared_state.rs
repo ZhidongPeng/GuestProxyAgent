@@ -12,6 +12,24 @@ use tokio_util::sync::CancellationToken;
 
 const UNKNOWN_STATUS_MESSAGE: &str = "Status unknown.";
 
+/// The shared state is used to share the state between different modules.
+/// It contains the cancellation token, which is used to cancel the agent when the agent is stopped.
+/// It also contains the senders for the key keeper, telemetry event, provision, agent status, redirector, and proxy server modules.
+/// The shared state is used to start the modules and get the senders for the modules.
+/// The shared state is used to get the cancellation token and cancel the cancellation token.
+/// Example:
+/// ```rust
+/// use proxy_agent::shared_state::SharedState;
+/// let shared_state = SharedState::start_all();
+/// let key_keeper_shared_state = shared_state.get_key_keeper_shared_state();
+/// let telemetry_shared_state = shared_state.get_telemetry_shared_state();
+/// let provision_shared_state = shared_state.get_provision_shared_state();
+/// let agent_status_shared_state = shared_state.get_agent_status_shared_state();
+/// let redirector_shared_state = shared_state.get_redirector_shared_state();
+/// let proxy_server_shared_state = shared_state.get_proxy_server_shared_state();
+/// let cancellation_token = shared_state.get_cancellation_token();
+/// shared_state.cancel_cancellation_token();
+/// ```
 #[derive(Clone)]
 pub struct SharedState {
     /// The cancellation token is used to cancel the agent when the agent is stopped

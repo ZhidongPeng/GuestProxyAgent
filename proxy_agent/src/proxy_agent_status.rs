@@ -9,13 +9,23 @@
 //! Example
 //! ```rust
 //! use proxy_agent::proxy_agent_status;
-//! use proxy_agent::shared_state::SharedState;
-//! use std::sync::{Arc, Mutex};
+//! use proxy_agent::shared_state::key_keeper_wrapper::KeyKeeperSharedState;
+//! use proxy_agent::shared_state::agent_status_wrapper::AgentStatusSharedState;
 //! use std::time::Duration;
+//! use tokio_util::sync::CancellationToken;
 //!
-//! let shared_state = SharedState::new();
+//! let key_keeper_shared_state = KeyKeeperSharedState::start_new();
+//! let agent_status_shared_state = AgentStatusSharedState::start_new();
+//! let cancellation_token = CancellationToken::new();
 //! let interval = Duration::from_secs(60);
-//! tokio::spawn(proxy_agent_status::start(interval, shared_state));
+//! let proxy_agent_status_task = proxy_agent_status::ProxyAgentStatusTask::new(
+//!    interval,
+//!    std::path::PathBuf::from("logs_dir"),
+//!    cancellation_token,
+//!    key_keeper_shared_state,
+//!    agent_status_shared_state,
+//! );
+//! tokio::spawn(proxy_agent_status_task.start());
 //! ```
 
 use crate::common::logger;

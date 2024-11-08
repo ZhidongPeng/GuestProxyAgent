@@ -6,16 +6,15 @@
 //! ```rust
 //! use proxy_agent::common::constants;
 //! use proxy_agent::host_clients::wire_server_client;
-//! use proxy_agent::shared_state::SharedState;
-//! use std::sync::{Arc, Mutex};
+//! use proxy_agent::shared_state::key_keeper_wrapper::KeyKeeperSharedState;
 //!
-//! let shared_state = SharedState::new();
+//! let key_keeper_shared_state = KeyKeeperSharedState::new();
 //!
-//! let wire_server_client = wire_server_client::WireServerClient::new(constants::WIRE_SERVER_IP.to_string(), 80, shared_state);
+//! let wire_server_client = wire_server_client::WireServerClient::new(constants::WIRE_SERVER_IP.to_string(), 80, key_keeper_shared_state);
 //! let goal_state = wire_server_client.get_goalstate().await;
 //! let shared_config = wire_server_client.get_shared_config(goal_state.get_shared_config_uri()).await;
 //!
-//! let telemetry_data = "xml telemetry data".to_string();
+//! let telemetry_data = "[xml telemetry data]".to_string();
 //! wire_server_client.send_telemetry_data(telemetry_data).await;
 //!
 //! ```

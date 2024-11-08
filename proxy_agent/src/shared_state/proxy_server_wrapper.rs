@@ -1,6 +1,21 @@
 // Copyright (c) Microsoft Corporation
 // SPDX-License-Identifier: MIT
 
+//! This module contains the logic to interact with the proxy server.
+//! The proxy server is used to store the users information.
+//!
+//! Example
+//! ```rust
+//! use proxy_agent::shared_state::proxy_server_wrapper::ProxyServerSharedState;
+//! use proxy_agent::proxy::User;
+//!
+//! let proxy_server_shared_state = ProxyServerSharedState::start_new();
+//! let user = User::new(1, "user1".to_string());
+//! proxy_server_shared_state.add_user(user).await.unwrap();
+//! let user = proxy_server_shared_state.get_user(1).await.unwrap().unwrap();
+//! assert_eq!(user.user_name, "user1");
+//! ```
+
 use crate::common::error::Error;
 use crate::common::logger;
 use crate::common::result::Result;
