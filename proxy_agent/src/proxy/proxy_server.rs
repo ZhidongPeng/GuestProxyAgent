@@ -369,10 +369,35 @@ impl ProxyServer {
         let client_source_port = connection.client_addr.port();
 
         let mut entry = None;
-        match redirector::lookup_audit(client_source_port, self.redirector_shared_state.clone())
-            .await
-        {
-            Ok(data) => entry = Some(data),
+        match redirector::lookup_audit(client_source_port, &self.redirector_shared_state).await {
+            Ok(data) => {
+                Connection::write_information(
+                    connection_id,
+                    format!(
+                        "Found audit entry with client_source_port '{0}' successfully",
+                        client_source_port
+                    ),
+                );
+                match redirector::remove_audit(client_source_port, &self.redirector_shared_state)
+                    .await
+                {
+                    Ok(_) => Connection::write_information(
+                        connection_id,
+                        format!(
+                            "Removed audit entry with client_source_port '{0}' successfully",
+                            client_source_port
+                        ),
+                    ),
+                    Err(e) => {
+                        Connection::write_warning(
+                            connection_id,
+                            format!("Failed to remove audit entry: {}", e),
+                        );
+                    }
+                }
+
+                entry = Some(data)
+            }
             Err(e) => {
                 let err = format!("Failed to get lookup_audit: {}", e);
                 event_logger::write_event(
