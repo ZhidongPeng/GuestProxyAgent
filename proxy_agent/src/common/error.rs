@@ -109,6 +109,9 @@ pub enum BpfErrorType {
     #[error("Failed to lookup element '{0}' in BPF map 'audit_map'. {1}")]
     MapLookupElem(String, String),
 
+    #[error("Failed to delete element '{0}' in BPF map 'audit_map'. {1}")]
+    MapDeleteElem(String, String),
+
     #[error("Failed to retrieve file descriptor of the BPF map 'audit_map' with error: {0}")]
     MapFileDescriptor(String),
 
