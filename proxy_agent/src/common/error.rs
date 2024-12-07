@@ -45,6 +45,9 @@ pub enum Error {
 
     #[error("Failed to receive '{0}' action response with error {1}")]
     RecvError(String, tokio::sync::oneshot::error::RecvError),
+
+    #[error("{0}")]
+    FindAuditEntryError(String),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -164,8 +167,8 @@ pub enum WindowsApiErrorType {
     #[error("LsaGetLogonSessionData {0}")]
     LsaGetLogonSessionData(String),
 
-    #[error("WinSock::WSAIoctl - SIO_QUERY_WFP_CONNECTION_REDIRECT_CONTEXT: {0}")]
-    WSAIoctl(i32),
+    #[error("WinSock::WSAIoctl - {0}")]
+    WSAIoctl(String),
 
     #[error("GlobalMemoryStatusEx failed: {0}")]
     GlobalMemoryStatusEx(std::io::Error),
