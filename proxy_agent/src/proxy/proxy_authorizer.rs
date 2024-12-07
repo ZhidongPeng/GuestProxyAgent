@@ -312,7 +312,7 @@ mod tests {
             clientPort: 0, // doesn't matter for this test
         };
         let test_logger = ConnectionLogger {
-            tcp_connetion_id: 1,
+            tcp_connection_id: 1,
             http_connection_id: 1,
         };
         let auth: Box<dyn super::Authorizer> = super::get_authorizer(
@@ -393,7 +393,7 @@ mod tests {
             clientPort: 0, // doesn't matter for this test
         };
         let test_logger = ConnectionLogger {
-            tcp_connetion_id: 1,
+            tcp_connection_id: 1,
             http_connection_id: 1,
         };
         let auth = super::get_authorizer(
@@ -509,7 +509,7 @@ mod tests {
     #[tokio::test]
     async fn imds_authenticate_test() {
         let test_logger = ConnectionLogger {
-            tcp_connetion_id: 1,
+            tcp_connection_id: 1,
             http_connection_id: 1,
         };
         let claims = crate::proxy::Claims {

@@ -357,7 +357,7 @@ mod tests {
         temp_test_path.push(logger_key);
         ConnectionLogger::init_logger(temp_test_path.to_path_buf()).await;
         let test_logger = ConnectionLogger {
-            tcp_connetion_id: 0,
+            tcp_connection_id: 0,
             http_connection_id: 0,
         };
 

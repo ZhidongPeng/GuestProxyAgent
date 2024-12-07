@@ -36,7 +36,7 @@ impl TcpConnectionContext {
         let client_source_ip = client_addr.ip();
         let client_source_port = client_addr.port();
         let logger = ConnectionLogger {
-            tcp_connetion_id: id,
+            tcp_connection_id: id,
             http_connection_id: 0,
         };
 
@@ -206,7 +206,7 @@ impl HttpConnectionContext {
 
 #[derive(Clone)]
 pub struct ConnectionLogger {
-    pub tcp_connetion_id: u128,
+    pub tcp_connection_id: u128,
     pub http_connection_id: u128,
 }
 impl ConnectionLogger {
@@ -228,7 +228,7 @@ impl ConnectionLogger {
             logger_level,
             format!(
                 "Connection:{}_{} - {}",
-                self.tcp_connetion_id, self.http_connection_id, message
+                self.tcp_connection_id, self.http_connection_id, message
             ),
         )
     }

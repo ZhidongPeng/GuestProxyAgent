@@ -1163,7 +1163,7 @@ mod tests {
         temp_test_path.push(logger_key);
         ConnectionLogger::init_logger(temp_test_path.to_path_buf()).await;
         let logger = ConnectionLogger {
-            tcp_connetion_id: 1,
+            tcp_connection_id: 1,
             http_connection_id: 1,
         };
 
@@ -1239,7 +1239,7 @@ mod tests {
         temp_test_path.push(logger_key);
         ConnectionLogger::init_logger(temp_test_path.to_path_buf()).await;
         let logger = ConnectionLogger {
-            tcp_connetion_id: 1,
+            tcp_connection_id: 1,
             http_connection_id: 1,
         };
 

@@ -217,7 +217,7 @@ impl ProxyServer {
         stream: TcpStream,
         client_addr: std::net::SocketAddr,
     ) {
-        let tcp_connetion_id = match self
+        let tcp_connection_id = match self
             .agent_status_shared_state
             .increase_tcp_connection_count()
             .await
@@ -225,7 +225,7 @@ impl ProxyServer {
             Ok(id) => id,
             Err(e) => {
                 ConnectionLogger {
-                    tcp_connetion_id: 0,
+                    tcp_connection_id: 0,
                     http_connection_id: 0,
                 }
                 .write(
@@ -236,7 +236,7 @@ impl ProxyServer {
             }
         };
         let tcp_connection_logger = ConnectionLogger {
-            tcp_connetion_id,
+            tcp_connection_id,
             http_connection_id: 0,
         };
         tcp_connection_logger.write(
@@ -247,7 +247,7 @@ impl ProxyServer {
         tokio::spawn({
             let cloned_proxy_server = self.clone();
             async move {
-                let (stream, cloned_std_stream) =
+                let (stream, _cloned_std_stream) =
                     match Self::set_stream_read_time_out(stream, tcp_connection_logger.clone()) {
                         Ok((stream, cloned_std_stream)) => (stream, cloned_std_stream),
                         Err(e) => {
@@ -259,12 +259,12 @@ impl ProxyServer {
                         }
                     };
                 let tcp_connection_context = TcpConnectionContext::new(
-                    tcp_connetion_id,
+                    tcp_connection_id,
                     client_addr,
                     cloned_proxy_server.redirector_shared_state.clone(),
                     cloned_proxy_server.proxy_server_shared_state.clone(),
                     #[cfg(windows)]
-                    ProxyServer::get_stream_rocket_id(&cloned_std_stream),
+                    ProxyServer::get_stream_rocket_id(&_cloned_std_stream),
                 )
                 .await;
 
@@ -386,7 +386,7 @@ impl ProxyServer {
             method: request.method().clone(),
             tcp_connection_context: tcp_connection_context.clone(),
             logger: ConnectionLogger {
-                tcp_connetion_id: tcp_connection_context.id,
+                tcp_connection_id: tcp_connection_context.id,
                 http_connection_id: connection_id,
             },
         };
