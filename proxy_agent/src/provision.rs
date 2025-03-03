@@ -794,7 +794,7 @@ mod tests {
         let provision_status = provision_query.get_provision_status_wait().await;
         assert!(
             provision_status.finished,
-            "provision_status.finished must be true as provision finished time tichs refreshed"
+            "provision_status.finished must be true as provision finished_time_tick refreshed"
         );
         assert_eq!(
             0,
