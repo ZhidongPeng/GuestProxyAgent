@@ -565,6 +565,11 @@ pub mod provision_query {
             }
         }
 
+        #[cfg(test)]
+        pub fn get_query_timetick(&self) -> i128 {
+            self.query_timetick
+        }
+
         /// Get current GPA service provision status and wait until the GPA service provision finished or timeout
         /// This function is designed for GPA command line, serves for --status [--wait seconds] option
         pub async fn get_provision_status_wait(&self) -> ProvisionState {
@@ -717,6 +722,9 @@ mod tests {
         for handle in handles {
             handle.await;
         }
+        _ = key_keeper_shared_state
+            .update_current_secure_channel_state(super::DISABLE_STATE.to_string())
+            .await;
 
         let provisioned_file = temp_test_path.join("provisioned.tag");
         assert!(provisioned_file.exists());
@@ -730,8 +738,23 @@ mod tests {
         );
 
         let provision_query = ProvisionQuery::new(port, Some(Duration::from_millis(5)));
+        let provision_state_internal = super::get_provision_state_internal(
+            provision_shared_state.clone(),
+            agent_status_shared_state.clone(),
+            key_keeper_shared_state.clone(),
+        )
+        .await;
+        assert!(
+            provision_state_internal.finished_timetick > 0,
+            "finished_timetick must great than 0"
+        );
+        assert!(!provision_state_internal.is_secure_channel_latched());
+        assert!(
+            provision_state_internal.finished_timetick < provision_query.get_query_timetick(),
+            "finished_timetick must older than the query timetick"
+        );
         let provision_status = provision_query.get_provision_status_wait().await;
-        assert!(provision_status.finished, "provision_status.0 must be true");
+        assert!(!provision_status.finished, "provision_status.0 must be false as secured channel is disabled and provision finished ");
         assert_eq!(
             0,
             provision_status.errorMessage.len(),
@@ -744,10 +767,55 @@ mod tests {
             .unwrap();
         assert!(event_threads_initialized);
 
+        // update provision finish time ticks
+        super::key_latched(
+            cancellation_token.clone(),
+            key_keeper_shared_state.clone(),
+            telemetry_shared_state.clone(),
+            provision_shared_state.clone(),
+            agent_status_shared_state.clone(),
+        )
+        .await;
+        let provision_state_internal = super::get_provision_state_internal(
+            provision_shared_state.clone(),
+            agent_status_shared_state.clone(),
+            key_keeper_shared_state.clone(),
+        )
+        .await;
+        assert!(
+            provision_state_internal.finished_timetick > 0,
+            "finished_timetick must great than 0"
+        );
+        assert!(!provision_state_internal.is_secure_channel_latched());
+        assert!(
+            provision_state_internal.finished_timetick > provision_query.get_query_timetick(),
+            "finished_timetick must later than the query timetick"
+        );
+        let provision_status = provision_query.get_provision_status_wait().await;
+        assert!(
+            provision_status.finished,
+            "provision_status.finished must be true as provision finished time tichs refreshed"
+        );
+        assert_eq!(
+            0,
+            provision_status.errorMessage.len(),
+            "provision_status.1 must be empty"
+        );
+
         // test reset key latch provision state
         super::key_latch_ready_state_reset(provision_shared_state.clone()).await;
         let provision_state = provision_shared_state.get_state().await.unwrap();
         assert!(!provision_state.contains(ProvisionFlags::KEY_LATCH_READY));
+        let provision_state_internal = super::get_provision_state_internal(
+            provision_shared_state.clone(),
+            agent_status_shared_state.clone(),
+            key_keeper_shared_state.clone(),
+        )
+        .await;
+        assert!(
+            provision_state_internal.finished_timetick == 0,
+            "finished_timetick must be 0 as key latch provision state reset"
+        );
         let provision_status = provision_query.get_provision_status_wait().await;
         assert!(
             !provision_status.finished,
