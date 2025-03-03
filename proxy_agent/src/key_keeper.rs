@@ -271,7 +271,7 @@ impl KeyKeeper {
                                 provision_timeup = false;
                             }
                         } else {
-                            // report key latched ready to try update the provision finished timetick
+                            // report key latched ready to try update the provision finished time_tick
                             provision::key_latched(
                                 self.cancellation_token.clone(),
                                 self.key_keeper_shared_state.clone(),

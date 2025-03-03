@@ -615,23 +615,23 @@ impl ProxyServer {
             );
             return Ok(Self::empty_response(StatusCode::BAD_REQUEST));
         }
-        // Get the query timetick
-        let query_timetick = match request.headers().get(constants::TIME_TICK_HEADER) {
-            Some(timetick) => timetick.to_str().unwrap_or("0"),
+        // Get the query time_tick
+        let query_time_tick = match request.headers().get(constants::TIME_TICK_HEADER) {
+            Some(time_tick) => time_tick.to_str().unwrap_or("0"),
             None => {
                 logger.write(
                     LoggerLevel::Warn,
-                    "No 'x-ms-azure-timetick' header found in the request, use '0'.".to_string(),
+                    "No 'x-ms-azure-time_tick' header found in the request, use '0'.".to_string(),
                 );
                 "0"
             }
         };
-        let query_timetick = match query_timetick.parse::<i128>() {
-            Ok(timetick) => timetick,
+        let query_time_tick = match query_time_tick.parse::<i128>() {
+            Ok(time_tick) => time_tick,
             Err(e) => {
                 logger.write(
                     LoggerLevel::Warn,
-                    format!("Failed to parse TimeTick header: {}", e),
+                    format!("Failed to parse time_tick header: {}", e),
                 );
                 0
             }
@@ -644,9 +644,10 @@ impl ProxyServer {
         )
         .await;
 
-        // check if the provision is finished with the given query_timetick or
-        // the secure channel is latched before
-        let report_provision_finished = provision_state.finished_timetick >= query_timetick
+        // report as provision finished state
+        // true only if the finished_time_tick is greater than or equal to the query_time_tick
+        //          or the secure channel is latched already
+        let report_provision_finished = provision_state.finished_time_tick >= query_time_tick
             || provision_state.is_secure_channel_latched();
 
         let find_notify_header = request.headers().get(constants::NOTIFY_HEADER).is_some();
@@ -664,8 +665,6 @@ impl ProxyServer {
         }
 
         let provision_state = provision::provision_query::ProvisionState::new(
-            // report as provision finished state
-            // only if the finished_timetick is greater than or equal to the query_timetick
             report_provision_finished,
             provision_state.error_message,
         );

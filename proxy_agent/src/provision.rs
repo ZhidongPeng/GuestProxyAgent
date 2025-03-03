@@ -132,12 +132,12 @@ bitflags::bitflags! {
 
 /// Provision internal state
 /// It is used to represent the provision state within GPA service
-/// finished_timetick - provision finished or timedout time tick, 0 means provision still in progress
+/// finished_time_tick - provision finished or timedout time tick, 0 means provision still in progress
 /// error_message - provision error message
 /// key_keeper_secure_channel_state - key keeper secure_channel state
 #[derive(Clone, Debug)]
 pub struct ProvisionStateInternal {
-    pub finished_timetick: i128,
+    pub finished_time_tick: i128,
     pub error_message: String,
     pub key_keeper_secure_channel_state: String,
 }
@@ -500,7 +500,7 @@ pub async fn get_provision_state_internal(
     key_keeper_shared_state: KeyKeeperSharedState,
 ) -> ProvisionStateInternal {
     ProvisionStateInternal {
-        finished_timetick: provision_shared_state
+        finished_time_tick: provision_shared_state
             .get_provision_finished()
             .await
             .unwrap_or(0),
@@ -553,7 +553,7 @@ pub mod provision_query {
     pub struct ProvisionQuery {
         port: u16,
         wait_duration: Option<Duration>,
-        query_timetick: i128,
+        query_time_tick: i128,
     }
 
     impl ProvisionQuery {
@@ -561,13 +561,13 @@ pub mod provision_query {
             ProvisionQuery {
                 port,
                 wait_duration,
-                query_timetick: misc_helpers::get_date_time_unix_nano(),
+                query_time_tick: misc_helpers::get_date_time_unix_nano(),
             }
         }
 
         #[cfg(test)]
-        pub fn get_query_timetick(&self) -> i128 {
-            self.query_timetick
+        pub fn get_query_time_tick(&self) -> i128 {
+            self.query_time_tick
         }
 
         /// Get current GPA service provision status and wait until the GPA service provision finished or timeout
@@ -624,7 +624,7 @@ pub mod provision_query {
             headers.insert(constants::METADATA_HEADER.to_string(), "true".to_string());
             headers.insert(
                 constants::TIME_TICK_HEADER.to_string(),
-                self.query_timetick.to_string(),
+                self.query_time_tick.to_string(),
             );
             if notify {
                 headers.insert(constants::NOTIFY_HEADER.to_string(), "true".to_string());
@@ -745,13 +745,13 @@ mod tests {
         )
         .await;
         assert!(
-            provision_state_internal.finished_timetick > 0,
-            "finished_timetick must great than 0"
+            provision_state_internal.finished_time_tick > 0,
+            "finished_time_tick must great than 0"
         );
         assert!(!provision_state_internal.is_secure_channel_latched());
         assert!(
-            provision_state_internal.finished_timetick < provision_query.get_query_timetick(),
-            "finished_timetick must older than the query timetick"
+            provision_state_internal.finished_time_tick < provision_query.get_query_time_tick(),
+            "finished_time_tick must older than the query time_tick"
         );
         let provision_status = provision_query.get_provision_status_wait().await;
         assert!(!provision_status.finished, "provision_status.0 must be false as secured channel is disabled and provision finished ");
@@ -767,7 +767,7 @@ mod tests {
             .unwrap();
         assert!(event_threads_initialized);
 
-        // update provision finish time ticks
+        // update provision finish time_tick
         super::key_latched(
             cancellation_token.clone(),
             key_keeper_shared_state.clone(),
@@ -783,13 +783,13 @@ mod tests {
         )
         .await;
         assert!(
-            provision_state_internal.finished_timetick > 0,
-            "finished_timetick must great than 0"
+            provision_state_internal.finished_time_tick > 0,
+            "finished_time_tick must great than 0"
         );
         assert!(!provision_state_internal.is_secure_channel_latched());
         assert!(
-            provision_state_internal.finished_timetick > provision_query.get_query_timetick(),
-            "finished_timetick must later than the query timetick"
+            provision_state_internal.finished_time_tick > provision_query.get_query_time_tick(),
+            "finished_time_tick must later than the query time_tick"
         );
         let provision_status = provision_query.get_provision_status_wait().await;
         assert!(
@@ -813,8 +813,8 @@ mod tests {
         )
         .await;
         assert!(
-            provision_state_internal.finished_timetick == 0,
-            "finished_timetick must be 0 as key latch provision state reset"
+            provision_state_internal.finished_time_tick == 0,
+            "finished_time_tick must be 0 as key latch provision state reset"
         );
         let provision_status = provision_query.get_provision_status_wait().await;
         assert!(
