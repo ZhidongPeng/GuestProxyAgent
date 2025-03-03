@@ -421,7 +421,7 @@ impl ProxyServer {
             return Ok(Self::empty_response(StatusCode::NOT_FOUND));
         }
 
-        if http_connection_context.url == provision::PROVISION_URL_PATH {
+        if http_connection_context.url == provision::provision_query::PROVISION_URL_PATH {
             return self
                 .handle_provision_state_check_request(http_connection_context.get_logger(), request)
                 .await;
@@ -615,20 +615,60 @@ impl ProxyServer {
             );
             return Ok(Self::empty_response(StatusCode::BAD_REQUEST));
         }
+        // Get the query timetick
+        let query_timetick = match request.headers().get(constants::TIME_TICK_HEADER) {
+            Some(timetick) => timetick.to_str().unwrap_or("0"),
+            None => {
+                logger.write(
+                    LoggerLevel::Warn,
+                    "No 'x-ms-azure-timetick' header found in the request, use '0'.".to_string(),
+                );
+                "0"
+            }
+        };
+        let query_timetick = match query_timetick.parse::<i128>() {
+            Ok(timetick) => timetick,
+            Err(e) => {
+                logger.write(
+                    LoggerLevel::Warn,
+                    format!("Failed to parse TimeTick header: {}", e),
+                );
+                0
+            }
+        };
 
-        // notify key_keeper to poll the status
-        if let Err(e) = self.key_keeper_shared_state.notify().await {
-            logger.write(
-                LoggerLevel::Warn,
-                format!("Failed to notify key_keeper: {}", e),
-            );
-        }
-
-        let provision_state = provision::get_provision_state(
+        let provision_state = provision::get_provision_state_internal(
             self.provision_shared_state.clone(),
             self.agent_status_shared_state.clone(),
+            self.key_keeper_shared_state.clone(),
         )
         .await;
+
+        // check if the provision is finished with the given query_timetick or
+        // the secure channel is latched before
+        let report_provision_finished = provision_state.finished_timetick >= query_timetick
+            || provision_state.is_secure_channel_latched();
+
+        let find_notify_header = request.headers().get(constants::NOTIFY_HEADER).is_some();
+        if find_notify_header && !report_provision_finished {
+            logger.write(
+                LoggerLevel::Warn,
+                "Provision is not finished yet, notify key_keeper to pull the status.".to_string(),
+            );
+            if let Err(e) = self.key_keeper_shared_state.notify().await {
+                logger.write(
+                    LoggerLevel::Warn,
+                    format!("Failed to notify key_keeper: {}", e),
+                );
+            }
+        }
+
+        let provision_state = provision::provision_query::ProvisionState::new(
+            // report as provision finished state
+            // only if the finished_timetick is greater than or equal to the query_timetick
+            report_provision_finished,
+            provision_state.error_message,
+        );
         match serde_json::to_string(&provision_state) {
             Ok(json) => {
                 logger.write(LoggerLevel::Info, format!("Provision state: {}", json));
