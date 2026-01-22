@@ -17,6 +17,7 @@ pub const MAX_MESSAGE_LENGTH: usize = 1024 * 4; // 4KB
 static EVENT_QUEUE: Lazy<ConcurrentQueue<Event>> =
     Lazy::new(|| ConcurrentQueue::<Event>::bounded(1000));
 static SHUT_DOWN: Lazy<Arc<AtomicBool>> = Lazy::new(|| Arc::new(AtomicBool::new(false)));
+static EVENT_DIR: tokio::sync::OnceCell<PathBuf> = tokio::sync::OnceCell::const_new();
 
 pub async fn start<F, Fut>(
     event_dir: PathBuf,
@@ -35,6 +36,12 @@ pub async fn start<F, Fut>(
     if let Err(e) = misc_helpers::try_create_folder(&event_dir) {
         let message = format!("Failed to create event folder with error: {e}");
         set_status_fn(message.to_string());
+    }
+
+    if EVENT_DIR.set(event_dir.clone()).is_err() {
+        let message = "Event directory is already set, cannot set it again.";
+        set_status_fn(message.to_string());
+        logger_manager::write_log(Level::Warn, message.to_string());
     }
 
     let shutdown = SHUT_DOWN.clone();
@@ -72,7 +79,10 @@ pub async fn start<F, Fut>(
 
         // Check the event file counts,
         // if it exceeds the max file number, drop the new events
-        match misc_helpers::get_files(&event_dir) {
+        match misc_helpers::search_files(
+            &event_dir,
+            crate::telemetry::GENERIC_EVENT_FILE_SEARCH_PATTERN,
+        ) {
             Ok(files) => {
                 if files.len() >= max_event_file_count {
                     logger_manager::write_log(Level::Warn, format!(
@@ -90,8 +100,7 @@ pub async fn start<F, Fut>(
         }
 
         let mut file_path = event_dir.to_path_buf();
-
-        file_path.push(format!("{}.json", misc_helpers::get_date_time_unix_nano()));
+        file_path.push(crate::telemetry::new_generic_event_file_name());
         match misc_helpers::json_write_to_file(&events, &file_path) {
             Ok(()) => {
                 logger_manager::write_log(
@@ -155,6 +164,58 @@ pub fn write_event_only(level: Level, message: String, method_name: &str, module
     };
 }
 
+pub fn report_extension_status_event(
+    extension: crate::telemetry::Extension,
+    operation_status: crate::telemetry::OperationStatus,
+) {
+    let event_dir = match EVENT_DIR.get() {
+        Some(dir) => dir.clone(),
+        None => {
+            logger_manager::write_log(
+                Level::Warn,
+                "Event directory is not set, cannot report extension status event.".to_string(),
+            );
+            return;
+        }
+    };
+
+    // Check the event file counts,
+    // if it exceeds the max file number, drop the new events
+    match misc_helpers::search_files(
+        &event_dir,
+        crate::telemetry::EXTENSION_EVENT_FILE_SEARCH_PATTERN,
+    ) {
+        Ok(files) => {
+            if files.len() >= crate::telemetry::MAX_EXTENSION_EVENT_FILE_COUNT {
+                logger_manager::write_log(Level::Warn, format!(
+                        "Event files exceed the max file count {}, drop and skip the write to disk.",
+                        crate::telemetry::MAX_EXTENSION_EVENT_FILE_COUNT
+                    ));
+                return;
+            }
+        }
+        Err(e) => {
+            logger_manager::write_log(
+                Level::Warn,
+                format!("Failed to get event files with error: {e}"),
+            );
+        }
+    }
+
+    let event = crate::telemetry::ExtensionStatusEvent::new(extension, operation_status);
+    let mut file_path = event_dir.to_path_buf();
+    file_path.push(crate::telemetry::new_extension_event_file_name());
+    if let Err(e) = misc_helpers::json_write_to_file(&event, &file_path) {
+        logger_manager::write_log(
+            Level::Warn,
+            format!(
+                "Failed to write extension status event to the file {} with error: {}",
+                file_path.display(),
+                e
+            ),
+        );
+    }
+}
 #[cfg(test)]
 mod tests {
     use crate::misc_helpers;
