@@ -253,24 +253,20 @@ impl ProxyServer {
         tokio::spawn({
             let cloned_proxy_server = self.clone();
             async move {
-                let (stream, _cloned_std_stream) =
-                    match Self::set_stream_read_time_out(stream, &mut tcp_connection_logger) {
-                        Ok((stream, cloned_std_stream)) => (stream, cloned_std_stream),
-                        Err(e) => {
-                            tcp_connection_logger.write(
-                                LoggerLevel::Error,
-                                format!("Failed to set stream read timeout: {e}"),
-                            );
-                            return;
-                        }
-                    };
+                // Get raw socket ID before any conversion (Windows only)
+                #[cfg(windows)]
+                let raw_socket_id = Self::get_stream_raw_socket_id(&stream);
+
+                // Set read timeout directly on the socket without conversion
+                Self::set_stream_read_time_out(&stream, &mut tcp_connection_logger);
+
                 let tcp_connection_context = TcpConnectionContext::new(
                     tcp_connection_id,
                     client_addr,
                     cloned_proxy_server.redirector_shared_state.clone(),
                     cloned_proxy_server.proxy_server_shared_state.clone(),
                     #[cfg(windows)]
-                    ProxyServer::get_stream_rocket_id(&_cloned_std_stream),
+                    raw_socket_id,
                 )
                 .await;
 
@@ -324,46 +320,30 @@ impl ProxyServer {
     }
 
     #[cfg(windows)]
-    fn get_stream_rocket_id(stream: &std::net::TcpStream) -> usize {
+    fn get_stream_raw_socket_id(stream: &TcpStream) -> usize {
         use std::os::windows::io::AsRawSocket;
         stream.as_raw_socket() as usize
     }
 
-    // Set the read timeout for the stream
-    fn set_stream_read_time_out(
-        stream: TcpStream,
-        connection_logger: &mut ConnectionLogger,
-    ) -> Result<(TcpStream, std::net::TcpStream)> {
-        // Convert the stream to a std stream
-        let std_stream = stream.into_std().map_err(|e| {
-            Error::Io(
-                "Failed to convert Tokio stream into std equivalent".to_string(),
-                e,
-            )
-        })?;
+    #[cfg(not(windows))]
+    fn get_stream_raw_socket_id(stream: &TcpStream) -> usize {
+        use std::os::unix::io::AsRawFd;
+        stream.as_raw_fd() as usize
+    }
 
-        // Set the read timeout
-        if let Err(e) = std_stream.set_read_timeout(Some(std::time::Duration::from_secs(10))) {
+    // Set the read timeout for the stream without converting to std
+    // socket2 crate alreasdy used by tokio internally
+    // Uses socket2::SockRef to set socket options directly on the tokio stream
+    fn set_stream_read_time_out(stream: &TcpStream, connection_logger: &mut ConnectionLogger) {
+        use socket2::SockRef;
+
+        let sock_ref = SockRef::from(stream);
+        if let Err(e) = sock_ref.set_read_timeout(Some(std::time::Duration::from_secs(10))) {
             connection_logger.write(
                 LoggerLevel::Warn,
                 format!("Failed to set read timeout: {e}"),
             );
         }
-
-        // Clone the stream for the service_fn
-        let cloned_std_stream = std_stream
-            .try_clone()
-            .map_err(|e| Error::Io("Failed to clone TCP stream".to_string(), e))?;
-
-        // Convert the std stream back
-        let tokio_tcp_stream = TcpStream::from_std(std_stream).map_err(|e| {
-            Error::Io(
-                "Failed to convert std stream into Tokio equivalent".to_string(),
-                e,
-            )
-        })?;
-
-        Ok((tokio_tcp_stream, cloned_std_stream))
     }
 
     async fn handle_new_http_request(
@@ -1071,10 +1051,10 @@ mod tests {
         let sleep_duration = Duration::from_millis(100);
         tokio::time::sleep(sleep_duration).await;
 
-        let url: hyper::Uri = format!("http://{}:{}/", host, port).parse().unwrap();
+        let endpoint = hyper_client::HostEndpoint::new(host, port, "/");
         let request = hyper_client::build_request(
             Method::GET,
-            &url,
+            &endpoint,
             &HashMap::new(),
             None,
             key_keeper_shared_state
@@ -1111,12 +1091,10 @@ mod tests {
         );
 
         // test with traversal characters
-        let url: hyper::Uri = format!("http://{}:{}/test/../", host, port)
-            .parse()
-            .unwrap();
+        let endpoint = hyper_client::HostEndpoint::new(host, port, "/test/../");
         let request = hyper_client::build_request(
             Method::GET,
-            &url,
+            &endpoint,
             &HashMap::new(),
             None,
             key_keeper_shared_state
@@ -1142,7 +1120,7 @@ mod tests {
         let body = vec![88u8; super::REQUEST_BODY_LOW_LIMIT_SIZE + 1];
         let request = hyper_client::build_request(
             Method::POST,
-            &url,
+            &endpoint,
             &HashMap::new(),
             Some(body.as_slice()),
             key_keeper_shared_state

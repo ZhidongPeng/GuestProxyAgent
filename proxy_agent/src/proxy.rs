@@ -90,9 +90,8 @@ async fn get_user(
         Ok(user)
     } else {
         let user = User::from_logon_id(logon_id)?;
-        if let Err(e) = proxy_server_shared_state.add_user(user.clone()).await {
-            println!("Failed to add user: {e} to cache");
-        }
+        // Ignore cache add failures - non-critical
+        let _ = proxy_server_shared_state.add_user(user.clone()).await;
         Ok(user)
     }
 }
@@ -170,26 +169,19 @@ impl Process {
             };
 
             let options = PROCESS_QUERY_INFORMATION | PROCESS_VM_READ;
-            let handler = proxy_agent_shared::windows::get_process_handler(pid, options)
-                .unwrap_or_else(|e| {
-                    println!("Failed to get process handler: {e}");
-                    0
-                });
-            let base_info = windows::query_basic_process_info(handler);
-            match base_info {
-                Ok(_) => {
-                    process_full_path = windows::get_process_full_name(handler).unwrap_or_default();
-                    cmd = windows::get_process_cmd(handler).unwrap_or(UNDEFINED.to_string());
-                }
-                Err(e) => {
-                    process_full_path = PathBuf::default();
-                    cmd = UNDEFINED.to_string();
-                    println!("Failed to query basic process info: {e}");
-                }
-            }
-            // close the handle
-            if let Err(e) = proxy_agent_shared::windows::close_handler(handler) {
-                println!("Failed to close process handler: {e}");
+            let handler =
+                proxy_agent_shared::windows::get_process_handler(pid, options).unwrap_or(0);
+
+            if handler != 0 {
+                // Get process info directly - if either fails, the process may have exited
+                process_full_path = windows::get_process_full_name(handler).unwrap_or_default();
+                cmd = windows::get_process_cmd(handler).unwrap_or(UNDEFINED.to_string());
+                // close the handle - ignore errors as handle may be invalid
+                let _ = proxy_agent_shared::windows::close_handler(handler);
+            } else {
+                // Process may have exited or be inaccessible - this is expected
+                process_full_path = PathBuf::default();
+                cmd = UNDEFINED.to_string();
             }
         }
         #[cfg(not(windows))]
@@ -200,7 +192,7 @@ impl Process {
         }
 
         // redact the secrets in the command line
-        let cmd = proxy_agent_shared::secrets_redactor::redact_secrets(cmd);
+        let cmd = proxy_agent_shared::secrets_redactor::redact_secrets_string(cmd);
 
         let process_name = process_full_path
             .file_name()
