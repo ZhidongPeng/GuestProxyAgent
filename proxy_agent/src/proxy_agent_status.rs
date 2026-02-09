@@ -155,7 +155,8 @@ impl ProxyAgentStatusTask {
                         message: status,
                         duration: status_report_time.elapsed().as_millis() as i64,
                     },
-                );
+                )
+                .await;
                 status_report_time = Instant::now();
             }
             // write the aggregate status to status.json file
