@@ -325,12 +325,6 @@ impl ProxyServer {
         stream.as_raw_socket() as usize
     }
 
-    #[cfg(not(windows))]
-    fn get_stream_raw_socket_id(stream: &TcpStream) -> usize {
-        use std::os::unix::io::AsRawFd;
-        stream.as_raw_fd() as usize
-    }
-
     // Set the read timeout for the stream without converting to std
     // socket2 crate alreasdy used by tokio internally
     // Uses socket2::SockRef to set socket options directly on the tokio stream
