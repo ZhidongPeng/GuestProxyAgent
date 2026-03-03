@@ -32,3 +32,4 @@
 
 # Visual Studio cache/options directory
 .vs/
+log_analyer/src/guestproxy_analyzer/__pycache__/*

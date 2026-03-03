@@ -1,0 +1,5 @@
+pandas>=1.5
+azure-kusto-data>=0.0.41
+azure-identity>=1.13
+pytest>=7.0
+python-dateutil>=2.8
