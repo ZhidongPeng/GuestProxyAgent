@@ -24,6 +24,7 @@ python -m guestproxy_analyzer.cli `
   --kusto-start-time "2026-03-02" `
   --kusto-end-time "2026-03-03" `
   --kusto-chunk-minutes 10 `
+  --kusto-max-rows 2000 `
   --use-managed-identity
 ```
 
