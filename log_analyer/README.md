@@ -4,13 +4,19 @@ Auto-detect potential bugs in [GuestProxyAgent](https://github.com/Azure/GuestPr
 
 ## Quick Start
 
-### Local JSONL Testing
+### Setup
 
 ```powershell
+cd .\log_analyer
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 pytest -v
+```
+
+### Local JSONL Testing
+
+```powershell
 cd .\src
 python -m guestproxy_analyzer.cli tests/sample_logs.jsonl
 ```
@@ -20,6 +26,7 @@ python -m guestproxy_analyzer.cli tests/sample_logs.jsonl
 #### Option A: Managed Identity (Azure VM / App Service)
 ```powershell
 cd .\log_analyer\src
+az login
 python -m guestproxy_analyzer.cli `
   --kusto-start-time "2026-03-02" `
   --kusto-end-time "2026-03-03" `
@@ -30,14 +37,15 @@ python -m guestproxy_analyzer.cli `
 
 #### Option B: Service Principal (Local Dev)
 ```powershell
-$env:KUSTO_CLIENT_ID = "<your-app-id>"
-$env:KUSTO_CLIENT_SECRET = "<your-app-secret>"
-$env:KUSTO_TENANT_ID = "<your-tenant-id>"
+az login
 cd .\log_analyer\src
 
 python -m guestproxy_analyzer.cli `
-  --kusto-cluster https://mycluster.westus.kusto.windows.net `
-  --kusto-db GuestProxyAgentMetrics
+  --kusto-start-time "2026-03-02" `
+  --kusto-end-time "2026-03-03" `
+  --kusto-chunk-minutes 10 `
+  --kusto-max-rows 2000 `
+
 ```
 
 ## Detectors

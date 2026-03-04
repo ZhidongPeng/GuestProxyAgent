@@ -22,7 +22,7 @@ Examples:
   
   # Analyze Kusto cluster (using managed identity)
   python -m guestproxy_analyzer.cli \
-    --kusto-cluster https://mycluster.westus.kusto.windows.net \
+    --kusto-cluster https://azcore.centralus.kusto.windows.net \
     --kusto-db Fa \
     --use-managed-identity
     
@@ -31,7 +31,7 @@ Examples:
   export KUSTO_CLIENT_SECRET=<secret>
   export KUSTO_TENANT_ID=<tenant-id>
   python -m guestproxy_analyzer.cli \
-    --kusto-cluster https://mycluster.westus.kusto.windows.net \
+    --kusto-cluster https://azcore.centralus.kusto.windows.net \
     --kusto-db Fa
 """
     )

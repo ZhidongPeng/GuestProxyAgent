@@ -1,4 +1,5 @@
 import json
+import time
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any
 
@@ -197,39 +198,81 @@ def fetch_kusto_logs(
     kcsb = KustoConnectionStringBuilder.with_azure_token_credential(cluster, credential)
     client = KustoClient(kcsb)
 
-    # Execute query
-    try:
-        response = client.execute(database, query)
-        rows = []
-        for table in response.primary_results:
-            column_names = [col.column_name for col in table.columns]
-            for row in table:
-                if hasattr(row, "to_dict"):
-                    rows.append(row.to_dict())
-                elif isinstance(row, dict):
-                    rows.append(row)
-                else:
-                    rows.append({name: row[idx] for idx, name in enumerate(column_names)})
-        return rows
-    except Exception as e:
-        message = str(e)
-        if "DefaultAzureCredential failed" in message or "KustoAuthenticationError" in message:
+    # Retry transient failures (cross-cluster timeouts, connection resets, etc.)
+    max_retries = 3
+    last_error = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            response = client.execute(database, query)
+            rows = []
+            for table in response.primary_results:
+                column_names = [col.column_name for col in table.columns]
+                for row in table:
+                    if hasattr(row, "to_dict"):
+                        rows.append(row.to_dict())
+                    elif isinstance(row, dict):
+                        rows.append(row)
+                    else:
+                        rows.append({name: row[idx] for idx, name in enumerate(column_names)})
+            return rows
+        except KeyError as e:
+            # The Kusto SDK raises KeyError('FrameType') when the server returns
+            # an error response (e.g. table not found, permission denied) instead
+            # of a normal V2 data frame.  Surface the real server message.
             raise RuntimeError(
-                "Kusto authentication failed. For local runs, use one of these options:\n"
-                "1) PowerShell login: Connect-AzAccount\n"
-                "2) Azure CLI login: az login\n"
-                "3) Service principal: set KUSTO_CLIENT_ID, KUSTO_CLIENT_SECRET, KUSTO_TENANT_ID\n"
-                "Then rerun the analyzer.\n\n"
-                f"Original error: {e}"
-            )
-        if "E_LOW_MEMORY_CONDITION" in message or "lacks memory resources" in message:
-            raise RuntimeError(
-                "Kusto query hit low-memory limits. Retry with a smaller scan window and fewer rows, for example:\n"
-                "--kusto-hours 1 --kusto-max-rows 500\n"
-                "You can also filter by --version to reduce scanned data.\n\n"
-                f"Original error: {e}"
-            )
-        raise RuntimeError(f"Kusto query failed: {e}")
+                f"Kusto query failed – the server returned an unexpected response "
+                f"(KeyError: {e}).  This usually means the query hit a server-side "
+                f"error such as:\n"
+                f"  • The table or database does not exist\n"
+                f"  • Insufficient permissions on the cluster/database\n"
+                f"  • A KQL syntax error\n\n"
+                f"Query (first 300 chars): {query[:300]}\n"
+                f"Cluster: {cluster}  Database: {database}"
+            ) from e
+        except Exception as e:
+            message = str(e)
+            if "DefaultAzureCredential failed" in message or "KustoAuthenticationError" in message:
+                raise RuntimeError(
+                    "Kusto authentication failed. For local runs, use one of these options:\n"
+                    "1) PowerShell login: Connect-AzAccount\n"
+                    "2) Azure CLI login: az login\n"
+                    "3) Service principal: set KUSTO_CLIENT_ID, KUSTO_CLIENT_SECRET, KUSTO_TENANT_ID\n"
+                    "Then rerun the analyzer.\n\n"
+                    f"Original error: {e}"
+                )
+            if "E_LOW_MEMORY_CONDITION" in message or "lacks memory resources" in message:
+                raise RuntimeError(
+                    "Kusto query hit low-memory limits. Retry with a smaller scan window and fewer rows, for example:\n"
+                    "--kusto-hours 1 --kusto-max-rows 500\n"
+                    "You can also filter by --version to reduce scanned data.\n\n"
+                    f"Original error: {e}"
+                )
+            if _is_transient_error(message) and attempt < max_retries:
+                wait = 2 ** attempt  # 2s, 4s
+                print(f"[!] Transient Kusto error (attempt {attempt}/{max_retries}), retrying in {wait}s...")
+                last_error = e
+                time.sleep(wait)
+                continue
+            raise RuntimeError(f"Kusto query failed: {e}")
+
+    # Should not be reached, but just in case
+    raise RuntimeError(f"Kusto query failed after {max_retries} retries: {last_error}")
+
+
+def _is_transient_error(message: str) -> bool:
+    """Return True if the Kusto error message indicates a transient/retryable failure."""
+    transient_markers = [
+        "forcibly closed by the remote host",
+        "Cross-cluster query failure",
+        "Unable to read data from the transport connection",
+        "Partial query failure",
+        "ServerBusy",
+        "ServiceUnavailable",
+        "request timed out",
+        "A connection attempt failed",
+        "TooManyRequests",
+    ]
+    return any(marker in message for marker in transient_markers)
 
 
 def fetch_logs_from_file(path: str) -> List[Dict[str, Any]]:

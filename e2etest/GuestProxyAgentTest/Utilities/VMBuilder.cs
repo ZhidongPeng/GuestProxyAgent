@@ -57,6 +57,18 @@ namespace GuestProxyAgentTest.Utilities
         /// <returns></returns>
         public async Task<VirtualMachineResource> Build(bool enableProxyAgent, CancellationToken cancellationToken)
         {
+            return await Build(enableProxyAgent, vmSizeOverride: null, cancellationToken);
+        }
+
+        /// <summary>
+        /// Build and return the VirtualMachine based on the setting, with an optional VM size override
+        /// </summary>
+        /// <param name="enableProxyAgent"></param>
+        /// <param name="vmSizeOverride">If not null, overrides the default VM size from TestSetting</param>
+        /// <param name="cancellationToken"></param>
+        /// <returns></returns>
+        public async Task<VirtualMachineResource> Build(bool enableProxyAgent, string? vmSizeOverride, CancellationToken cancellationToken)
+        {
             PreCheck();
             ArmClient client = new(new GuestProxyAgentE2ETokenCredential(), defaultSubscriptionId: TestSetting.Instance.subscriptionId);
 
@@ -74,7 +86,7 @@ namespace GuestProxyAgentTest.Utilities
 
             VirtualMachineCollection vmCollection = rgr.GetVirtualMachines();
             Console.WriteLine("Creating virtual machine...");
-            var vmr = (await vmCollection.CreateOrUpdateAsync(WaitUntil.Completed, this.vmName, await DoCreateVMData(rgr, enableProxyAgent), cancellationToken: cancellationToken)).Value;
+            var vmr = (await vmCollection.CreateOrUpdateAsync(WaitUntil.Completed, this.vmName, await DoCreateVMData(rgr, enableProxyAgent, vmSizeOverride), null, null, cancellationToken: cancellationToken)).Value;
             Console.WriteLine("Virtual machine created, with id: " + vmr.Id);
             return vmr;
         }
@@ -87,13 +99,14 @@ namespace GuestProxyAgentTest.Utilities
             return sub.GetResourceGroups().Get(this.rgName).Value.GetVirtualMachine(this.vmName);
         }
 
-        private async Task<VirtualMachineData> DoCreateVMData(ResourceGroupResource rgr, bool enableProxyAgent)
+        private async Task<VirtualMachineData> DoCreateVMData(ResourceGroupResource rgr, bool enableProxyAgent, string? vmSizeOverride = null)
         {
+            var vmSize = vmSizeOverride ?? TestSetting.Instance.vmSize;
             var vmData = new VirtualMachineData(TestSetting.Instance.location)
             {
                 HardwareProfile = new VirtualMachineHardwareProfile()
                 {
-                    VmSize = new VirtualMachineSizeType(TestSetting.Instance.vmSize),
+                    VmSize = new VirtualMachineSizeType(vmSize),
                 },
                 StorageProfile = new VirtualMachineStorageProfile()
                 {
