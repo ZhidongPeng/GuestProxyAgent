@@ -58,6 +58,26 @@ ul, ol { padding-left:22px; } ul li, ol li { margin:4px 0; }
 footer { color:var(--muted); font-size:12px; margin-top:50px; border-top:1px solid var(--border); padding-top:16px; }
 .ascii { white-space: pre; font-family: ui-monospace, monospace; background:var(--code-bg);
   border:1px solid var(--border); border-radius:8px; padding:14px; overflow-x:auto; font-size:12.5px; }
+aside.prereqs {
+  border:1px solid var(--border); border-left:3px solid var(--accent-2);
+  background:var(--panel-2); border-radius:8px;
+  padding:10px 14px; margin:0 0 22px;
+  font-size:13.5px; color:var(--text);
+}
+aside.prereqs .label {
+  display:inline-block; font-size:11px; text-transform:uppercase; letter-spacing:.08em;
+  color:var(--accent-2); margin-right:8px; font-weight:600;
+}
+aside.prereqs .none { color:var(--muted); font-style:italic; }
+aside.prereqs a { margin-right:6px; }
+aside.prereqs a + a::before {
+  content: "\00B7";
+  color: var(--muted);
+  margin-right: 6px;
+  display: inline-block;     /* break out of link's text-decoration */
+  text-decoration: none;
+  pointer-events: none;      /* dot isn't part of the click target */
+}
 @media (max-width:900px) {
   .layout { grid-template-columns:1fr; }
   nav.toc { position:static; height:auto; border-right:0; border-bottom:1px solid var(--border); }

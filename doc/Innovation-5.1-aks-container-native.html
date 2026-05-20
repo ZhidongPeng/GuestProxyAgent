@@ -73,9 +73,12 @@
 <header class="hero">
   <div><span class="pill">GPA</span><span class="pill">Direction 5.1</span><span class="pill">AKS</span></div>
   <h1>Detailed Design — Kubernetes / AKS-native Mode</h1>
-  <p>Run GPA per node as a DaemonSet; map cgroup id (already captured by eBPF audit) to Kubernetes pod identity. Issue pod-scoped tokens via Azure Workload Identity instead of handing back the node-MI token — closes the "pod steals node MI" class of attack.</p>
+  <p>Run GPA per node as a DaemonSet; map the eBPF-captured <code>cgroup_id</code> for each connect to a Kubernetes pod identity. Issue pod-scoped tokens via Azure Workload Identity instead of handing back the node-MI token — closes the "pod steals node MI" class of attack.</p>
+  <p><strong>Prerequisite eBPF change:</strong> the audit map entry must include <code>cgroup_id</code> (see <a href="Innovation-4.2-core-unify-ebpf.html">4.2 Core eBPF unification</a>). Today's <code>sock_addr_audit_entry</code> only carries <code>process_id</code> — see <a href="../linux-ebpf/socket.h">linux-ebpf/socket.h</a>.</p>
   <p><strong>Files affected:</strong> new <code>proxy_agent/src/k8s/</code> module, deployment manifests, integrates with PoP (1.1).</p>
 </header>
+
+<aside class="prereqs"><span class="label">Prerequisites</span><a href="Innovation-4.2-core-unify-ebpf.html">4.2 Core eBPF unification</a><a href="Innovation-1.4-capability-scopes.html">1.4 Capability scopes</a><a href="Innovation-1.1-pop-tokens.html">1.1 PoP tokens</a></aside>
 
 <section id="overview">
 <h2><span class="num">1</span>Overview &amp; Goals</h2>
@@ -100,8 +103,9 @@
 
 <section id="identity">
 <h2><span class="num">3</span>Pod Identity Resolution</h2>
+<div class="callout warn"><strong>Prerequisite (not yet implemented):</strong> step&nbsp;1 below requires extending the eBPF <code>sock_addr_audit_entry</code> to carry <code>cgroup_id</code> populated via <code>bpf_get_current_cgroup_id()</code>. Today the struct in <a href="../linux-ebpf/socket.h">linux-ebpf/socket.h</a> (and the Windows counterpart in <a href="../ebpf/socket.h">ebpf/socket.h</a>) only stores <code>process_id</code>. The field is proposed in the unified schema of <a href="Innovation-4.2-core-unify-ebpf.html">4.2 Core eBPF unification</a>. Until then, the agent must derive cgroup from <code>/proc/&lt;pid&gt;/cgroup</code> via the audit entry's <code>process_id</code> (slower, racy for short-lived PIDs).</div>
 <ol>
-  <li>eBPF audit map already gives <code>cgroup_id</code> for each connect.</li>
+  <li>eBPF audit map provides <code>cgroup_id</code> for each connect <em>(post-4.2)</em>; pre-4.2 fallback uses <code>process_id</code> + <code>/proc/&lt;pid&gt;/cgroup</code>.</li>
   <li>Agent reads <code>/proc/&lt;pid&gt;/cgroup</code> + CRI socket (<code>containerd</code> / <code>cri-o</code>) to map cgroup → container ID → pod.</li>
   <li>Pod metadata (namespace, name, ServiceAccount, labels) is cached from the local kubelet pod-resources API and the <code>--pod-manifest-path</code> watch.</li>
   <li>Cache invalidated when pod sandbox is recreated; cached entries hold for ≤ 60 s after pod deletion to handle in-flight requests.</li>
