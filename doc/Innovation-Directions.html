@@ -161,7 +161,7 @@ every authorized request. Identity is taken from cgroup + <code>processFullPath<
 Four sub-initiatives raise the floor.</p>
 
 <h3 id="d1-tokens">1.1 Short-lived Proof-of-Possession (PoP) tokens</h3>
-<a class="detail-link" href="innovation-1.1-pop-tokens.html">Detailed design</a>
+<a class="detail-link" href="Innovation-1.1-pop-tokens.html">Detailed design</a>
 
 <h4>Goal</h4>
 <ul>
@@ -210,7 +210,7 @@ Four sub-initiatives raise the floor.</p>
 </ul>
 
 <h3 id="d1-vtpm">1.2 vTPM / Confidential-VM attestation binding</h3>
-<a class="detail-link" href="innovation-1.2-vtpm-sealing.html">Detailed design</a>
+<a class="detail-link" href="Innovation-1.2-vtpm-sealing.html">Detailed design</a>
 
 <h4>Goal</h4>
 <p>Make a stolen key file useless on another VM, and make key rollback (<code>E5</code>) cryptographically infeasible.</p>
@@ -246,7 +246,7 @@ Four sub-initiatives raise the floor.</p>
 </ul>
 
 <h3 id="d1-identity">1.3 Measured caller identity (replace path-string matching)</h3>
-<a class="detail-link" href="innovation-1.3-measured-identity.html">Detailed design</a>
+<a class="detail-link" href="Innovation-1.3-measured-identity.html">Detailed design</a>
 
 <h4>Goal</h4>
 <p>Defeat pentest scenarios <code>C3</code> (bind-mount over <code>/proc/self/exe</code>) and <code>D2</code> (symlink to allowed binary) by matching on <em>what the code is</em>, not <em>where it lives</em>.</p>
@@ -273,7 +273,7 @@ Four sub-initiatives raise the floor.</p>
 </ol>
 
 <h3 id="d1-cap">1.4 Capability-style scoped grants</h3>
-<a class="detail-link" href="innovation-1.4-capability-scopes.html">Detailed design</a>
+<a class="detail-link" href="Innovation-1.4-capability-scopes.html">Detailed design</a>
 
 <h4>Goal</h4>
 <p>Move from "this path is allowed for this identity" to verifiable scopes
@@ -310,7 +310,7 @@ Four sub-initiatives raise the floor.</p>
 AuthZ bypass surface.</p>
 
 <h3>2.1 Canonical request model</h3>
-<a class="detail-link" href="innovation-2.1-canonical-request.html">Detailed design</a>
+<a class="detail-link" href="Innovation-2.1-canonical-request.html">Detailed design</a>
 <ul>
   <li>Build a single <code>CanonicalRequest</code> type produced by <em>one</em> normalizer:
     percent-decode → collapse <code>.</code>/<code>..</code> → strip <code>;params</code> → lowercase host → resolve numeric IP forms
@@ -320,7 +320,7 @@ AuthZ bypass surface.</p>
 </ul>
 
 <h3>2.2 Typed policy language</h3>
-<a class="detail-link" href="innovation-2.2-typed-policy-cedar.html">Detailed design</a>
+<a class="detail-link" href="Innovation-2.2-typed-policy-cedar.html">Detailed design</a>
 <ul>
   <li>Pick one: <strong>Cedar</strong> (Rust-native, fast, analyzable) or <strong>OPA/Rego</strong> (familiar).
     Recommendation: <strong>Cedar</strong> — has a verified evaluator and supports static analysis.</li>
@@ -336,7 +336,7 @@ impl CompiledPolicy {
 }</code></pre>
 
 <h3>2.3 Versioned snapshots (TOCTOU fix — pentest D5)</h3>
-<a class="detail-link" href="innovation-2.3-versioned-snapshots.html">Detailed design</a>
+<a class="detail-link" href="Innovation-2.3-versioned-snapshots.html">Detailed design</a>
 <ul>
   <li>Wrap the active policy in <code>arc_swap::ArcSwap&lt;CompiledPolicy&gt;</code>.</li>
   <li>Each request captures <code>(arc, epoch)</code> at accept time and uses it for the whole forwarding decision.</li>
@@ -344,7 +344,7 @@ impl CompiledPolicy {
 </ul>
 
 <h3>2.4 Differential / property testing</h3>
-<a class="detail-link" href="innovation-2.4-differential-testing.html">Detailed design</a>
+<a class="detail-link" href="Innovation-2.4-differential-testing.html">Detailed design</a>
 <ul>
   <li>For each rule loaded, auto-generate "evil twins":
     case toggles, percent-encoded slashes, trailing-slash variants, IPv6 forms, Unicode confusables.</li>
@@ -381,7 +381,7 @@ impl CompiledPolicy {
 </div>
 
 <h3>3.1 Hash-chained, append-only audit log</h3>
-<a class="detail-link" href="innovation-3.1-hash-chained-log.html">Detailed design</a>
+<a class="detail-link" href="Innovation-3.1-hash-chained-log.html">Detailed design</a>
 <ul>
   <li>Wrap the existing connection log with a Merkle chain:
     <code>entry_n.hash = SHA256(entry_n.payload || entry_{n-1}.hash)</code>.</li>
@@ -390,7 +390,7 @@ impl CompiledPolicy {
 </ul>
 
 <h3>3.2 OpenTelemetry export</h3>
-<a class="detail-link" href="innovation-3.2-otel-export.html">Detailed design</a>
+<a class="detail-link" href="Innovation-3.2-otel-export.html">Detailed design</a>
 <ul>
   <li>Emit metrics: allow/deny counts by rule id, signer latency, eBPF map occupancy, restart count.</li>
   <li>Emit traces for the proxy hop (accept → authz → upstream → response) with W3C trace context.</li>
@@ -398,7 +398,7 @@ impl CompiledPolicy {
 </ul>
 
 <h3>3.3 Self-attestation endpoint</h3>
-<a class="detail-link" href="innovation-3.3-self-attestation.html">Detailed design</a>
+<a class="detail-link" href="Innovation-3.3-self-attestation.html">Detailed design</a>
 <ul>
   <li>New read-only endpoint on the local listener: <code>GET /.well-known/gpa/attestation</code>.</li>
   <li>Returns: agent version, binary measurement, loaded eBPF prog ids and bytecode hash, attached cgroup,
@@ -407,7 +407,7 @@ impl CompiledPolicy {
 </ul>
 
 <h3>3.4 Supply chain</h3>
-<a class="detail-link" href="innovation-3.4-supply-chain.html">Detailed design</a>
+<a class="detail-link" href="Innovation-3.4-supply-chain.html">Detailed design</a>
 <ul>
   <li><strong>SBOM</strong>: generate CycloneDX during the cargo build (<code>cargo-cyclonedx</code>).</li>
   <li><strong>Reproducible builds</strong>: pin <code>rust-toolchain.toml</code>, vendor deps,
@@ -437,7 +437,7 @@ impl CompiledPolicy {
 </div>
 
 <h3>4.1 Move from cgroup/<code>connect4</code> to <code>bpf_lsm</code> + <code>sk_lookup</code></h3>
-<a class="detail-link" href="innovation-4.1-sk-lookup-bpf-lsm.html">Detailed design</a>
+<a class="detail-link" href="Innovation-4.1-sk-lookup-bpf-lsm.html">Detailed design</a>
 <ul>
   <li><code>sk_lookup</code> redirects on the listening side; the original destination IP is preserved
     (no SNAT-to-localhost), so we can match on real destination after netns shenanigans (pentest <code>C5</code>, <code>C6</code>).</li>
@@ -447,7 +447,7 @@ impl CompiledPolicy {
 </ul>
 
 <h3>4.2 Unify Linux + Windows eBPF on CO-RE</h3>
-<a class="detail-link" href="innovation-4.2-core-unify-ebpf.html">Detailed design</a>
+<a class="detail-link" href="Innovation-4.2-core-unify-ebpf.html">Detailed design</a>
 <ul>
   <li>Today: separate sources in <code>ebpf/</code> (Windows) and <code>linux-ebpf/</code> (Linux).</li>
   <li>Adopt libbpf-rs with CO-RE relocations; share the audit-event struct via a common header.</li>
@@ -455,7 +455,7 @@ impl CompiledPolicy {
 </ul>
 
 <h3>4.3 IPv6 / dual-stack</h3>
-<a class="detail-link" href="innovation-4.3-ipv6-dual-stack.html">Detailed design</a>
+<a class="detail-link" href="Innovation-4.3-ipv6-dual-stack.html">Detailed design</a>
 <ul>
   <li>Add v6 redirect for IMDS/WireServer link-local equivalents.</li>
   <li>Normalize address family at the audit-event boundary so the rule engine sees a unified
@@ -463,7 +463,7 @@ impl CompiledPolicy {
 </ul>
 
 <h3>4.4 Kernel-side throttling and audit-map LRU</h3>
-<a class="detail-link" href="innovation-4.4-ebpf-throttling-lru.html">Detailed design</a>
+<a class="detail-link" href="Innovation-4.4-ebpf-throttling-lru.html">Detailed design</a>
 <ul>
   <li>Replace the audit hash map with <code>BPF_MAP_TYPE_LRU_HASH</code> sized by cgroup count (pentest <code>G3</code>).</li>
   <li>Add a token bucket per cgroup in BPF; over-rate connections get an early reject before reaching user space
@@ -501,7 +501,7 @@ impl CompiledPolicy {
 </div>
 
 <h3>5.1 Container-native / AKS mode</h3>
-<a class="detail-link" href="innovation-5.1-aks-container-native.html">Detailed design</a>
+<a class="detail-link" href="Innovation-5.1-aks-container-native.html">Detailed design</a>
 
 <h4>Problem</h4>
 <p>On AKS nodes, any pod with hostNetwork or a permissive NetworkPolicy can reach node IMDS and steal the node managed identity.
@@ -525,7 +525,7 @@ This is the well-known "pod-steals-node-credentials" class. GPA already runs as 
 </ol>
 
 <h3>5.2 Gate other cloud endpoints</h3>
-<a class="detail-link" href="innovation-5.2-gate-more-endpoints.html">Detailed design</a>
+<a class="detail-link" href="Innovation-5.2-gate-more-endpoints.html">Detailed design</a>
 <ul>
   <li>Generalize destination handling so KeyVault MSI, ARM token endpoint, and Storage MI flows can be authorized through the
     same rule engine.</li>
@@ -534,7 +534,7 @@ This is the well-known "pod-steals-node-credentials" class. GPA already runs as 
 </ul>
 
 <h3>5.3 Cross-cloud port</h3>
-<a class="detail-link" href="innovation-5.3-cross-cloud-port.html">Detailed design</a>
+<a class="detail-link" href="Innovation-5.3-cross-cloud-port.html">Detailed design</a>
 <ul>
   <li>Architecture (cgroup eBPF + identity-aware proxy) is cloud-neutral. The signer and destination set are Azure-specific.</li>
   <li>Factor <code>signer</code> and <code>destinations</code> into traits; ship community drivers for AWS IMDSv2 and GCP metadata.</li>
@@ -555,7 +555,7 @@ This is the well-known "pod-steals-node-credentials" class. GPA already runs as 
 </div>
 
 <h3>6.1 Policy simulator / dry-run</h3>
-<a class="detail-link" href="innovation-6.1-policy-simulator.html">Detailed design</a>
+<a class="detail-link" href="Innovation-6.1-policy-simulator.html">Detailed design</a>
 <ul>
   <li>CLI: <code>gpa policy simulate --rules rules.json --request 'GET http://169.254.169.254/metadata/identity?api-version=2021-08-01' --caller pid=1234</code></li>
   <li>Output: decision, which rule matched, canonicalization steps applied, divergence vs current production rules.</li>
@@ -563,7 +563,7 @@ This is the well-known "pod-steals-node-credentials" class. GPA already runs as 
 </ul>
 
 <h3>6.2 <code>gpa-doctor</code></h3>
-<a class="detail-link" href="innovation-6.2-gpa-doctor.html">Detailed design</a>
+<a class="detail-link" href="Innovation-6.2-gpa-doctor.html">Detailed design</a>
 <ul>
   <li>One command runs hardening checks derived from <code>pentest/linux/</code>:
     port exposure (A1), file modes (E1), restart safety (E4), orphan eBPF programs (G4), rule loader sanity (D4).</li>
@@ -571,7 +571,7 @@ This is the well-known "pod-steals-node-credentials" class. GPA already runs as 
 </ul>
 
 <h3>6.3 Rule authoring UX</h3>
-<a class="detail-link" href="innovation-6.3-rule-authoring-ux.html">Detailed design</a>
+<a class="detail-link" href="Innovation-6.3-rule-authoring-ux.html">Detailed design</a>
 <ul>
   <li>JSON Schema for the rules file; ship in repo.</li>
   <li>VS Code extension providing schema-driven autocomplete, live validation, and a "rule diff" view for
@@ -580,7 +580,7 @@ This is the well-known "pod-steals-node-credentials" class. GPA already runs as 
 </ul>
 
 <h3>6.4 WASM rule sandbox (optional)</h3>
-<a class="detail-link" href="innovation-6.4-wasm-rule-sandbox.html">Detailed design</a>
+<a class="detail-link" href="Innovation-6.4-wasm-rule-sandbox.html">Detailed design</a>
 <ul>
   <li>Allow customer-supplied AuthZ in WebAssembly with a tightly scoped host ABI (read normalized request, read claims,
     return decision; no syscalls, no clocks).</li>
@@ -602,14 +602,14 @@ This is the well-known "pod-steals-node-credentials" class. GPA already runs as 
 </div>
 
 <h3>7.1 io_uring hot path</h3>
-<a class="detail-link" href="innovation-7.1-io-uring-hot-path.html">Detailed design</a>
+<a class="detail-link" href="Innovation-7.1-io-uring-hot-path.html">Detailed design</a>
 <ul>
   <li>Behind feature flag, replace tokio-default reactor for the listener with <code>tokio-uring</code> or <code>monoio</code>.</li>
   <li>Targets the IMDS read path (the most frequent request shape).</li>
 </ul>
 
 <h3>7.2 Zero-copy forwarding</h3>
-<a class="detail-link" href="innovation-7.2-zero-copy-splice.html">Detailed design</a>
+<a class="detail-link" href="Innovation-7.2-zero-copy-splice.html">Detailed design</a>
 <ul>
   <li>After AuthN/AuthZ pass, splice the body between accept socket and upstream socket using <code>splice(2)</code>
     when the request has no body transformation.</li>
@@ -617,7 +617,7 @@ This is the well-known "pod-steals-node-credentials" class. GPA already runs as 
 </ul>
 
 <h3>7.3 Crate consolidation</h3>
-<a class="detail-link" href="innovation-7.3-crate-consolidation.html">Detailed design</a>
+<a class="detail-link" href="Innovation-7.3-crate-consolidation.html">Detailed design</a>
 <ul>
   <li>Today: <code>proxy_agent</code>, <code>proxy_agent_extension</code>, <code>proxy_agent_setup</code>, <code>proxy_agent_shared</code>.</li>
   <li>Move duplicated helpers (logging, config loading, version probing) into <code>proxy_agent_shared</code>.</li>
