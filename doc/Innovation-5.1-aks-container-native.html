@@ -1,7 +1,57 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>5.1 AKS / Container-native Mode</title>
-<link rel="stylesheet" href="innovation.css"></head>
+<link rel="stylesheet" href="innovation.css">
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: 'base',
+    securityLevel: 'loose',
+    themeVariables: {
+      // Sequence-diagram message labels (arrow text) — force white on dark
+      messageTextColor: '#ffffff',
+      messageFontWeight: '600',
+      noteTextColor: '#ffffff',
+      noteBkgColor: '#1f2937',
+      noteBorderColor: '#374151',
+      actorTextColor: '#ffffff',
+      actorBkg: '#1f2937',
+      actorBorder: '#60a5fa',
+      actorLineColor: '#9ca3af',
+      labelBoxBkgColor: '#1f2937',
+      labelBoxBorderColor: '#60a5fa',
+      labelTextColor: '#ffffff',
+      loopTextColor: '#ffffff',
+      activationBkgColor: '#374151',
+      activationBorderColor: '#60a5fa',
+      sequenceNumberColor: '#0b1220',
+      signalColor: '#e5e7eb',
+      signalTextColor: '#ffffff'
+    }
+  });
+</script>
+<style>
+  /* Force white, legible text on Mermaid sequence diagrams regardless of page bg */
+  .mermaid .messageText,
+  .mermaid text.messageText,
+  .mermaid .loopText,
+  .mermaid .loopText tspan,
+  .mermaid .labelText,
+  .mermaid .labelText tspan,
+  .mermaid .noteText,
+  .mermaid .noteText tspan,
+  .mermaid .actor > tspan,
+  .mermaid text.actor > tspan {
+    fill: #ffffff !important;
+    stroke: #000000 !important;
+    stroke-width: 0.6px !important;
+    paint-order: stroke fill;
+    font-weight: 600;
+  }
+  /* Sequence number bubbles: keep dark text on light bubble */
+  .mermaid .sequenceNumber { fill: #0b1220 !important; }
+</style></head>
 <body><div class="layout">
 <nav class="toc">
 <a class="back" href="Innovation-Directions.html">← Back to all directions</a>
@@ -9,13 +59,14 @@
 <li><a href="#overview">1. Overview</a></li>
 <li><a href="#problem">2. Problem</a></li>
 <li><a href="#identity">3. Pod identity</a></li>
-<li><a href="#tokens">4. Token issuance</a></li>
-<li><a href="#deploy">5. Deployment</a></li>
-<li><a href="#rules">6. Rule shape</a></li>
-<li><a href="#integration">7. Integration</a></li>
-<li><a href="#tests">8. Tests</a></li>
-<li><a href="#risks">9. Risks</a></li>
-<li><a href="#milestones">10. Milestones</a></li>
+<li><a href="#workload-identity">4. Azure Workload Identity primer</a></li>
+<li><a href="#tokens">5. Token issuance</a></li>
+<li><a href="#deploy">6. Deployment</a></li>
+<li><a href="#rules">7. Rule shape</a></li>
+<li><a href="#integration">8. Integration</a></li>
+<li><a href="#tests">9. Tests</a></li>
+<li><a href="#risks">10. Risks</a></li>
+<li><a href="#milestones">11. Milestones</a></li>
 </ol></nav>
 <main>
 
@@ -57,8 +108,96 @@
 </ol>
 </section>
 
+<section id="workload-identity">
+<h2><span class="num">4</span>Azure Workload Identity — Primer</h2>
+<p>Azure Workload Identity (AWI) is the upstream Kubernetes-native way for pods to authenticate to Entra ID (Azure AD) <strong>without storing secrets</strong>. GPA's AKS mode consumes AWI as the identity source — the projected ServiceAccount token (or the resulting AAD token) becomes the caller identity bound to a pod, replacing host-level IMDS interception as the trust anchor.</p>
+
+<h3>4.1 How it works</h3>
+<ol>
+  <li>The AKS cluster publishes a public OIDC discovery document (<code>/.well-known/openid-configuration</code> + JWKS).</li>
+  <li>Each pod gets a <strong>projected ServiceAccount JWT</strong> mounted by kubelet, signed by the cluster issuer.</li>
+  <li>The pod (via Azure SDK <code>DefaultAzureCredential</code> / <code>WorkloadIdentityCredential</code>) exchanges that JWT at Entra ID's <code>/oauth2/v2.0/token</code> endpoint using the <em>federated credential</em> flow (<code>client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer</code>).</li>
+  <li>Entra ID validates <code>iss</code> (cluster issuer URL) and <code>sub</code> (<code>system:serviceaccount:&lt;ns&gt;:&lt;sa&gt;</code>) against a <strong>Federated Identity Credential</strong> configured on the target App Registration / User-Assigned Managed Identity, and returns an AAD access token scoped to that workload.</li>
+</ol>
+
+<p>End-to-end token exchange (baseline AWI, no GPA in the path):</p>
+<div class="mermaid">
+sequenceDiagram
+    autonumber
+    participant Pod as Pod (Azure SDK)
+    participant Kubelet
+    participant Entra as Entra ID (AAD)
+    participant Azure as Azure Resource<br/>(Key Vault / Storage / ARM)
+    Kubelet->>Pod: Mount projected SA JWT<br/>(iss = cluster OIDC, sub = system:serviceaccount:ns:sa)
+    Pod->>Pod: Read AZURE_FEDERATED_TOKEN_FILE +<br/>AZURE_CLIENT_ID / TENANT_ID (injected env)
+    Pod->>Entra: POST /oauth2/v2.0/token<br/>grant_type=client_credentials<br/>client_assertion_type=jwt-bearer<br/>client_assertion=&lt;SA JWT&gt;
+    Entra->>Entra: Validate iss + sub against<br/>Federated Identity Credential
+    Entra-->>Pod: AAD access token (pod-scoped)
+    Pod->>Azure: API call with Bearer &lt;AAD token&gt;
+    Azure-->>Pod: 200 OK
+</div>
+
+<p>With GPA in AKS-mode (§5) synthesizing the IMDS response for legacy callers:</p>
+<div class="mermaid">
+sequenceDiagram
+    autonumber
+    participant App as Legacy Pod<br/>(curl 169.254.169.254)
+    participant eBPF as eBPF redirect<br/>(on node)
+    participant GPA as GPA DaemonSet<br/>(node-local)
+    participant CRI as containerd / CRI
+    participant Entra as Entra ID (AAD)
+    App->>eBPF: GET /metadata/identity/oauth2/token
+    eBPF->>GPA: Redirect + cgroup_id, pid
+    GPA->>CRI: Resolve cgroup -> container -> pod
+    CRI-->>GPA: namespace, ServiceAccount, labels
+    GPA->>GPA: Policy check (§7 grants)<br/>match k8s_pod principal
+    alt allowed
+        GPA->>GPA: Read pod's projected SA JWT<br/>from kubelet token volume
+        GPA->>Entra: jwt-bearer exchange<br/>(SA JWT -> AAD token)
+        Entra-->>GPA: Pod-scoped AAD token
+        GPA-->>App: IMDS-shaped JSON<br/>{access_token, expires_in, ...}
+    else denied
+        GPA-->>App: 403 + structured audit event
+    end
+</div>
+
+<h3>4.2 Key pieces</h3>
+<table>
+  <thead><tr><th>Component</th><th>Role</th></tr></thead>
+  <tbody>
+    <tr><td><strong>AKS OIDC issuer</strong></td><td>Cluster publishes JWKS that Entra ID trusts.</td></tr>
+    <tr><td><strong>ServiceAccount annotation</strong></td><td><code>azure.workload.identity/client-id: &lt;app-id&gt;</code> links SA → Entra app/UAMI.</td></tr>
+    <tr><td><strong>Federated Identity Credential</strong></td><td>On the Entra app/UAMI: trusts tokens where <code>iss=&lt;cluster issuer&gt;</code> and <code>sub=system:serviceaccount:&lt;ns&gt;:&lt;sa&gt;</code>.</td></tr>
+    <tr><td><strong>Mutating webhook</strong></td><td>Injects <code>AZURE_*</code> env vars (<code>AZURE_CLIENT_ID</code>, <code>AZURE_TENANT_ID</code>, <code>AZURE_FEDERATED_TOKEN_FILE</code>, <code>AZURE_AUTHORITY_HOST</code>) and the projected token volume into pods labeled <code>azure.workload.identity/use: "true"</code>.</td></tr>
+    <tr><td><strong>Azure SDK credential</strong></td><td>Performs the JWT-bearer exchange transparently.</td></tr>
+  </tbody>
+</table>
+
+<h3>4.3 Why it matters (vs. predecessors)</h3>
+<ul>
+  <li><strong>No secrets</strong> — replaces client-secret-based service principals.</li>
+  <li><strong>Supersedes AAD Pod Identity v1</strong> (deprecated May 2024), which used the NMI/MIC DaemonSets to intercept IMDS — brittle, racy at pod startup, and the very pattern this innovation hardens.</li>
+  <li><strong>Per-pod identity</strong> — each ServiceAccount maps to a distinct Entra identity, enabling least privilege.</li>
+  <li><strong>Cloud-agnostic shape</strong> — same OIDC federation model used by GitHub Actions, GKE, EKS.</li>
+</ul>
+
+<h3>4.4 Relevance to GPA</h3>
+<ul>
+  <li>GPA <em>does not replace</em> AWI — it complements it: pods that already use the AWI SDK keep working unchanged, and GPA additionally enforces a node-side policy so that <strong>even compromised or misconfigured pods cannot fall back to the node MI</strong> via raw IMDS.</li>
+  <li>For pods that bypass the SDK and hit <code>169.254.169.254</code> directly, GPA can synthesize an IMDS-shaped response backed by the pod's AWI-derived AAD token (see §5) — making AWI the default, transparently.</li>
+  <li>The <code>sub</code> claim from the projected SA JWT (<code>system:serviceaccount:&lt;ns&gt;:&lt;sa&gt;</code>) is the same string GPA's rule engine matches in §7 grants — one identity model end-to-end.</li>
+</ul>
+
+<h3>4.5 References</h3>
+<ul>
+  <li><a href="https://learn.microsoft.com/azure/aks/workload-identity-overview">AKS Workload Identity overview</a></li>
+  <li><a href="https://azure.github.io/azure-workload-identity/">azure-workload-identity project site</a></li>
+  <li><a href="https://learn.microsoft.com/entra/workload-id/workload-identity-federation">Entra ID workload identity federation</a></li>
+</ul>
+</section>
+
 <section id="tokens">
-<h2><span class="num">4</span>Token Issuance</h2>
+<h2><span class="num">5</span>Token Issuance</h2>
 <ul>
   <li>Pod's projected ServiceAccount token (OIDC, signed by cluster) is sent to AAD's federated credential endpoint; AAD returns a pod-scoped access token.</li>
   <li>The IMDS-shaped response is synthesized by GPA from this token: same JSON contract as IMDS <code>/identity/oauth2/token</code>.</li>
@@ -67,7 +206,7 @@
 </section>
 
 <section id="deploy">
-<h2><span class="num">5</span>Deployment</h2>
+<h2><span class="num">6</span>Deployment</h2>
 <ul>
   <li><strong>DaemonSet</strong>: one privileged GPA pod per node; mounts host paths for cgroup, kubelet sockets, and the BPF FS.</li>
   <li><strong>NetworkPolicy</strong> shipped as a sample: blocks all egress to 169.254/16 and 168.63/29 except from the GPA pod's host network.</li>
@@ -76,7 +215,7 @@
 </section>
 
 <section id="rules">
-<h2><span class="num">6</span>Rule Shape</h2>
+<h2><span class="num">7</span>Rule Shape</h2>
 <pre><code>{
   "version": 2,
   "grants": [
@@ -100,7 +239,7 @@
 </section>
 
 <section id="integration">
-<h2><span class="num">7</span>Integration</h2>
+<h2><span class="num">8</span>Integration</h2>
 <ul>
   <li><code>proxy_agent/src/k8s/identity_resolver.rs</code> — cgroup → pod mapping with caching.</li>
   <li><code>proxy_agent/src/k8s/token_issuer.rs</code> — exchanges projected SA token for AAD access token.</li>
@@ -110,7 +249,7 @@
 </section>
 
 <section id="tests">
-<h2><span class="num">8</span>Tests</h2>
+<h2><span class="num">9</span>Tests</h2>
 <ul>
   <li>Two pods in different namespaces — each gets only its own scoped token.</li>
   <li>Pod with no matching grant → deny + structured audit event.</li>
@@ -120,7 +259,7 @@
 </section>
 
 <section id="risks">
-<h2><span class="num">9</span>Risks</h2>
+<h2><span class="num">10</span>Risks</h2>
 <ul>
   <li><strong>CRI sockets vary</strong> across runtimes. Mitigation: pluggable resolver, support containerd + cri-o.</li>
   <li><strong>Race between connect and pod-metadata cache fill</strong>. Mitigation: brief synchronous lookup on cache miss; bounded by timeout.</li>
@@ -129,7 +268,7 @@
 </section>
 
 <section id="milestones">
-<h2><span class="num">10</span>Milestones</h2>
+<h2><span class="num">11</span>Milestones</h2>
 <table>
   <thead><tr><th>M</th><th>Deliverable</th><th>Exit</th></tr></thead>
   <tbody>
