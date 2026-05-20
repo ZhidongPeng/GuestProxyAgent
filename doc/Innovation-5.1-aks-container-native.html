@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>5.1 AKS / Container-native Mode</title>
+<link rel="stylesheet" href="innovation.css"></head>
+<body><div class="layout">
+<nav class="toc">
+<a class="back" href="innovation-directions.html">← Back to all directions</a>
+<h2>Sections</h2><ol>
+<li><a href="#overview">1. Overview</a></li>
+<li><a href="#problem">2. Problem</a></li>
+<li><a href="#identity">3. Pod identity</a></li>
+<li><a href="#tokens">4. Token issuance</a></li>
+<li><a href="#deploy">5. Deployment</a></li>
+<li><a href="#rules">6. Rule shape</a></li>
+<li><a href="#integration">7. Integration</a></li>
+<li><a href="#tests">8. Tests</a></li>
+<li><a href="#risks">9. Risks</a></li>
+<li><a href="#milestones">10. Milestones</a></li>
+</ol></nav>
+<main>
+
+<header class="hero">
+  <div><span class="pill">GPA</span><span class="pill">Direction 5.1</span><span class="pill">AKS</span></div>
+  <h1>Detailed Design — Kubernetes / AKS-native Mode</h1>
+  <p>Run GPA per node as a DaemonSet; map cgroup id (already captured by eBPF audit) to Kubernetes pod identity. Issue pod-scoped tokens via Azure Workload Identity instead of handing back the node-MI token — closes the "pod steals node MI" class of attack.</p>
+  <p><strong>Files affected:</strong> new <code>proxy_agent/src/k8s/</code> module, deployment manifests, integrates with PoP (1.1).</p>
+</header>
+
+<section id="overview">
+<h2><span class="num">1</span>Overview &amp; Goals</h2>
+<div class="meta">
+  <div class="cell"><div class="label">Impact</div><div class="value"><span class="badge high">High</span> new surface, big market</div></div>
+  <div class="cell"><div class="label">Effort</div><div class="value"><span class="badge med">Large</span></div></div>
+  <div class="cell"><div class="label">Risk</div><div class="value"><span class="badge med">Coordination with AKS</span></div></div>
+  <div class="cell"><div class="label">Scope</div><div class="value"><span class="badge scope">agent + ecosystem</span></div></div>
+</div>
+<h3>Goals</h3>
+<ul>
+  <li>A pod that calls IMDS gets a token scoped to <em>its</em> ServiceAccount, not the node identity.</li>
+  <li>Operators write rules using familiar K8s identifiers (namespace, ServiceAccount, label selectors).</li>
+  <li>Zero application code change for pods that already use Azure Workload Identity SDKs.</li>
+</ul>
+</section>
+
+<section id="problem">
+<h2><span class="num">2</span>Problem</h2>
+<p>On an AKS node, any pod with hostNetwork or a permissive NetworkPolicy can <code>curl 169.254.169.254/metadata/identity/oauth2/token</code> and obtain the node managed identity. This is documented as the most common cluster-credential escalation. Existing mitigations are network-policy and Workload Identity but they are easily misconfigured.</p>
+</section>
+
+<section id="identity">
+<h2><span class="num">3</span>Pod Identity Resolution</h2>
+<ol>
+  <li>eBPF audit map already gives <code>cgroup_id</code> for each connect.</li>
+  <li>Agent reads <code>/proc/&lt;pid&gt;/cgroup</code> + CRI socket (<code>containerd</code> / <code>cri-o</code>) to map cgroup → container ID → pod.</li>
+  <li>Pod metadata (namespace, name, ServiceAccount, labels) is cached from the local kubelet pod-resources API and the <code>--pod-manifest-path</code> watch.</li>
+  <li>Cache invalidated when pod sandbox is recreated; cached entries hold for ≤ 60 s after pod deletion to handle in-flight requests.</li>
+</ol>
+</section>
+
+<section id="tokens">
+<h2><span class="num">4</span>Token Issuance</h2>
+<ul>
+  <li>Pod's projected ServiceAccount token (OIDC, signed by cluster) is sent to AAD's federated credential endpoint; AAD returns a pod-scoped access token.</li>
+  <li>The IMDS-shaped response is synthesized by GPA from this token: same JSON contract as IMDS <code>/identity/oauth2/token</code>.</li>
+  <li>For non-Workload-Identity pods, behavior is policy-driven: <em>deny</em> (default), <em>node identity</em> (explicit opt-in), or a fixed allow-list.</li>
+</ul>
+</section>
+
+<section id="deploy">
+<h2><span class="num">5</span>Deployment</h2>
+<ul>
+  <li><strong>DaemonSet</strong>: one privileged GPA pod per node; mounts host paths for cgroup, kubelet sockets, and the BPF FS.</li>
+  <li><strong>NetworkPolicy</strong> shipped as a sample: blocks all egress to 169.254/16 and 168.63/29 except from the GPA pod's host network.</li>
+  <li><strong>Helm chart</strong> + reference Azure Policy that pins the configuration.</li>
+</ul>
+</section>
+
+<section id="rules">
+<h2><span class="num">6</span>Rule Shape</h2>
+<pre><code>{
+  "version": 2,
+  "grants": [
+    {
+      "principal": { "kind": "k8s_pod",
+                     "namespace": "billing",
+                     "serviceAccount": "frontend" },
+      "scopes": ["imds:identity:read"]
+    },
+    {
+      "principal": { "kind": "k8s_pod",
+                     "namespace": "*",
+                     "labelSelector": "tier=batch" },
+      "scopes": ["imds:instance:read"]
+    }
+  ]
+}</code></pre>
+<ul>
+  <li>Builds on direction 1.4 capability scopes; principal types are pluggable.</li>
+</ul>
+</section>
+
+<section id="integration">
+<h2><span class="num">7</span>Integration</h2>
+<ul>
+  <li><code>proxy_agent/src/k8s/identity_resolver.rs</code> — cgroup → pod mapping with caching.</li>
+  <li><code>proxy_agent/src/k8s/token_issuer.rs</code> — exchanges projected SA token for AAD access token.</li>
+  <li>Hooks into the authorizer after canonicalization to enrich <code>Claims</code> with pod identity.</li>
+  <li>Telemetry: per-pod allow/deny counters with namespace+SA labels (bounded cardinality).</li>
+</ul>
+</section>
+
+<section id="tests">
+<h2><span class="num">8</span>Tests</h2>
+<ul>
+  <li>Two pods in different namespaces — each gets only its own scoped token.</li>
+  <li>Pod with no matching grant → deny + structured audit event.</li>
+  <li>Pod sandbox restart → cache reflects new pod identity within a bounded window.</li>
+  <li>NetworkPolicy fail-open test: even if NP misconfigured, GPA still authoritatively decides.</li>
+</ul>
+</section>
+
+<section id="risks">
+<h2><span class="num">9</span>Risks</h2>
+<ul>
+  <li><strong>CRI sockets vary</strong> across runtimes. Mitigation: pluggable resolver, support containerd + cri-o.</li>
+  <li><strong>Race between connect and pod-metadata cache fill</strong>. Mitigation: brief synchronous lookup on cache miss; bounded by timeout.</li>
+  <li><strong>AKS coordination</strong> on default install and policy library.</li>
+</ul>
+</section>
+
+<section id="milestones">
+<h2><span class="num">10</span>Milestones</h2>
+<table>
+  <thead><tr><th>M</th><th>Deliverable</th><th>Exit</th></tr></thead>
+  <tbody>
+    <tr><td>M1</td><td>Identity resolver (cgroup → pod) + tests</td><td>Demo: per-pod identity in audit log</td></tr>
+    <tr><td>M2</td><td>Token issuer + IMDS contract</td><td>Workload Identity SDK passes integration tests</td></tr>
+    <tr><td>M3</td><td>Helm + NetworkPolicy + Azure Policy</td><td>Pilot on internal cluster</td></tr>
+    <tr><td>M4</td><td>GA in AKS as opt-in</td><td>SLA met for 1 month</td></tr>
+  </tbody>
+</table>
+</section>
+
+<footer>Detail design for direction 5.1. Parent: <a href="innovation-directions.html">innovation-directions.html</a>.</footer>
+
+</main></div></body></html>

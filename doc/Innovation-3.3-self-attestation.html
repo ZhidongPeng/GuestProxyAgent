@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>3.3 Self-Attestation Endpoint</title>
+<link rel="stylesheet" href="innovation.css"></head>
+<body><div class="layout">
+<nav class="toc">
+<a class="back" href="innovation-directions.html">← Back to all directions</a>
+<h2>Sections</h2><ol>
+<li><a href="#overview">1. Overview</a></li>
+<li><a href="#endpoint">2. Endpoint</a></li>
+<li><a href="#payload">3. Payload</a></li>
+<li><a href="#access">4. Access control</a></li>
+<li><a href="#sign">5. Signing</a></li>
+<li><a href="#integration">6. Integration</a></li>
+<li><a href="#tests">7. Tests</a></li>
+<li><a href="#risks">8. Risks</a></li>
+<li><a href="#milestones">9. Milestones</a></li>
+</ol></nav>
+<main>
+
+<header class="hero">
+  <div><span class="pill">GPA</span><span class="pill">Direction 3.3</span><span class="pill">Attestation</span></div>
+  <h1>Detailed Design — Self-Attestation Endpoint</h1>
+  <p>Expose a read-only endpoint that returns GPA's own measurements: binary hash, loaded eBPF program ids and bytecode hashes, attached cgroup, active policy epoch, sealed-key id, attestation backend. Consumable by Defender for Cloud, Azure Policy, and operator tooling.</p>
+  <p><strong>Files affected:</strong> <code>proxy_agent/src/proxy/proxy_server.rs</code> (new route), new <code>proxy_agent/src/attestation/</code>.</p>
+</header>
+
+<section id="overview">
+<h2><span class="num">1</span>Overview &amp; Goals</h2>
+<div class="meta">
+  <div class="cell"><div class="label">Impact</div><div class="value"><span class="badge med">Medium</span> compliance + drift detection</div></div>
+  <div class="cell"><div class="label">Effort</div><div class="value"><span class="badge low">Small</span></div></div>
+  <div class="cell"><div class="label">Risk</div><div class="value"><span class="badge low">Low</span></div></div>
+  <div class="cell"><div class="label">Scope</div><div class="value"><span class="badge scope">agent</span></div></div>
+</div>
+<h3>Goals</h3>
+<ul>
+  <li>Externally verifiable proof of which GPA is running, with which policy, and which kernel-side components are attached.</li>
+  <li>Cheap probe with no secrets in the payload.</li>
+</ul>
+</section>
+
+<section id="endpoint">
+<h2><span class="num">2</span>Endpoint</h2>
+<ul>
+  <li>HTTP GET <code>/.well-known/gpa/attestation</code> on the local listener (<code>127.0.0.1:3080</code>).</li>
+  <li>Optional <code>?nonce=BASE64URL(32 bytes)</code> for freshness.</li>
+  <li>Response: <code>application/json</code> with a signed <code>jws</code> field when an attestation backend is present.</li>
+</ul>
+</section>
+
+<section id="payload">
+<h2><span class="num">3</span>Payload Shape</h2>
+<pre><code>{
+  "version": 1,
+  "service": {
+    "name": "gpa",
+    "version": "1.X.Y",
+    "binary_hash": "sha256:...",
+    "uptime_s": 12345
+  },
+  "policy": {
+    "epoch": 175201,
+    "source_hash": "sha256:...",
+    "loaded_at": "2026-06-01T12:30:00Z",
+    "selftest_passed": true
+  },
+  "ebpf": [
+    { "name": "cgroup_connect", "id": 42, "bytecode_hash": "sha256:...", "attach_cgroup": "/sys/fs/cgroup" },
+    { "name": "audit_event",    "id": 43, "bytecode_hash": "sha256:..." }
+  ],
+  "seal": {
+    "backend": "tpm2|snp|tdx|noop",
+    "kid": "...",
+    "counter": 7
+  },
+  "nonce": "...",
+  "ts": "2026-06-01T12:34:56Z",
+  "jws": "eyJhbGc..."  // optional, present when sealed
+}</code></pre>
+</section>
+
+<section id="access">
+<h2><span class="num">4</span>Access Control</h2>
+<ul>
+  <li>Reachable only via the localhost listener; no external exposure.</li>
+  <li>Subject to standard GPA AuthZ: by default, any in-VM caller may read; rules can restrict if desired.</li>
+  <li>Rate-limited (1 req/s per caller cgroup) to prevent measurement-driven side channels.</li>
+</ul>
+</section>
+
+<section id="sign">
+<h2><span class="num">5</span>Signing</h2>
+<ul>
+  <li>When a hardware backend (1.2) is present, sign the canonical JSON payload + nonce with the attestation key (TPM AIK, SNP report, TDX QUOTE) and place the proof in <code>jws</code>.</li>
+  <li>When <code>noop</code> backend, omit <code>jws</code>; tooling treats the response as unauthenticated diagnostic.</li>
+  <li>Nonce is reflected verbatim; binding nonce + measurements prevents replay across calls.</li>
+</ul>
+</section>
+
+<section id="integration">
+<h2><span class="num">6</span>Integration</h2>
+<ul>
+  <li><code>proxy_agent/src/proxy/proxy_server.rs</code> — new handler before the generic forwarding path.</li>
+  <li>Pulls fields from: build-time const (version), <code>policy_store.current()</code>, <code>redirector::loaded_programs()</code>, <code>key_keeper::sealing</code>.</li>
+  <li><code>gpa-doctor</code> (direction 6.2) and Azure Policy hook can both consume this.</li>
+</ul>
+</section>
+
+<section id="tests">
+<h2><span class="num">7</span>Tests</h2>
+<ul>
+  <li>Probe returns expected fields; binary_hash matches actual file hash.</li>
+  <li>With <code>tpm2</code> backend simulator, JWS validates with the AIK.</li>
+  <li>Rate-limit test: 100 rapid requests → some 429s; payload counter stable.</li>
+  <li>Mutate binary (in test harness) → next call returns the new hash; external monitor detects drift.</li>
+</ul>
+</section>
+
+<section id="risks">
+<h2><span class="num">8</span>Risks</h2>
+<ul>
+  <li><strong>Information disclosure</strong> of internal program ids. Mitigation: ids are not secrets; documented as public attestation surface.</li>
+  <li><strong>Hot-loop callers</strong> can heat up the agent. Mitigation: rate limit + cheap payload caching with nonce-only signing per request.</li>
+</ul>
+</section>
+
+<section id="milestones">
+<h2><span class="num">9</span>Milestones</h2>
+<table>
+  <thead><tr><th>M</th><th>Deliverable</th><th>Exit</th></tr></thead>
+  <tbody>
+    <tr><td>M1</td><td>Unsigned endpoint</td><td>Surfaces in <code>gpa-doctor</code></td></tr>
+    <tr><td>M2</td><td>Signed via vTPM backend</td><td>JWS verification documented</td></tr>
+    <tr><td>M3</td><td>Defender for Cloud probe</td><td>Drift alerts configured</td></tr>
+  </tbody>
+</table>
+</section>
+
+<footer>Detail design for direction 3.3. Parent: <a href="innovation-directions.html">innovation-directions.html</a>.</footer>
+
+</main></div></body></html>

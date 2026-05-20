@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>6.2 gpa-doctor</title>
+<link rel="stylesheet" href="innovation.css"></head>
+<body><div class="layout">
+<nav class="toc">
+<a class="back" href="innovation-directions.html">← Back to all directions</a>
+<h2>Sections</h2><ol>
+<li><a href="#overview">1. Overview</a></li>
+<li><a href="#checks">2. Checks</a></li>
+<li><a href="#report">3. Report</a></li>
+<li><a href="#safety">4. Production safety</a></li>
+<li><a href="#integration">5. Integration</a></li>
+<li><a href="#tests">6. Tests</a></li>
+<li><a href="#risks">7. Risks</a></li>
+<li><a href="#milestones">8. Milestones</a></li>
+</ol></nav>
+<main>
+
+<header class="hero">
+  <div><span class="pill">GPA</span><span class="pill">Direction 6.2</span><span class="pill">Operability</span></div>
+  <h1>Detailed Design — gpa-doctor</h1>
+  <p>One-command hardening check derived from the pentest suite. Runs read-only probes that mirror specific pentest cases (A1, E1, E4, G4, D4) and emits a coloured green/yellow/red report. Safe to run on production.</p>
+  <p><strong>Files affected:</strong> new <code>proxy_agent/src/bin/gpa_doctor.rs</code>; reuses telemetry endpoints.</p>
+</header>
+
+<section id="overview">
+<h2><span class="num">1</span>Overview &amp; Goals</h2>
+<div class="meta">
+  <div class="cell"><div class="label">Impact</div><div class="value"><span class="badge high">High</span> support deflection</div></div>
+  <div class="cell"><div class="label">Effort</div><div class="value"><span class="badge low">Small</span></div></div>
+  <div class="cell"><div class="label">Risk</div><div class="value"><span class="badge low">Low</span> read-only</div></div>
+  <div class="cell"><div class="label">Scope</div><div class="value"><span class="badge scope">CLI</span></div></div>
+</div>
+<h3>Goals</h3>
+<ul>
+  <li>One command. One report. Zero side effects.</li>
+  <li>Each finding cites the pentest case it derives from.</li>
+  <li>Run by support engineers and by customers themselves.</li>
+</ul>
+</section>
+
+<section id="checks">
+<h2><span class="num">2</span>Checks</h2>
+<table>
+  <thead><tr><th>Check</th><th>Maps to</th><th>What it does</th></tr></thead>
+  <tbody>
+    <tr><td>eBPF programs loaded &amp; attached</td><td>A1</td><td>Verifies the redirect program is live; tests connect-to-fabric path is captured</td></tr>
+    <tr><td>Loopback bypass</td><td>E1</td><td>Probes whether non-agent local processes can reach upstream fabric directly</td></tr>
+    <tr><td>Header smuggling</td><td>E4</td><td>Confirms agent strips/rejects suspicious headers known to bypass authorization</td></tr>
+    <tr><td>State file integrity</td><td>G4</td><td>Checks owner/mode/SELinux label on <code>/var/lib/azure/proxyagent/*</code></td></tr>
+    <tr><td>Time/clock sanity</td><td>D4</td><td>Verifies system clock skew vs WireServer; PoP token expirations</td></tr>
+    <tr><td>Audit log shape</td><td>—</td><td>Last 1000 entries parse cleanly; no broken hash chain (ties to 3.1)</td></tr>
+  </tbody>
+</table>
+</section>
+
+<section id="report">
+<h2><span class="num">3</span>Report</h2>
+<pre><code>$ gpa-doctor
+[ OK   ] eBPF programs loaded (cgroup_connect4, sk_lookup)         [A1]
+[ WARN ] Loopback bypass possible: nginx on :8080 has direct route [E1]
+[ OK   ] Header strip configured                                   [E4]
+[ FAIL ] /var/lib/azure/proxyagent/state.json mode is 0644 (want 0640) [G4]
+[ OK   ] Clock skew 12 ms                                          [D4]
+[ OK   ] Audit log chain intact (last 1000 entries)
+2 OK · 1 WARN · 1 FAIL · suggested actions printed below
+</code></pre>
+<ul>
+  <li>Each line ends with the pentest case ID so customers can find the public write-up.</li>
+  <li><code>--json</code> mode for monitoring integration.</li>
+  <li>Suggestions reference exact <code>chmod</code> / config edits.</li>
+</ul>
+</section>
+
+<section id="safety">
+<h2><span class="num">4</span>Production Safety</h2>
+<ul>
+  <li>All probes are read or self-targeted (we only test our own listener).</li>
+  <li>No upstream traffic generated except a single benign IMDS "instance" GET (idempotent).</li>
+  <li>Runtime &lt; 1 second; CPU bounded.</li>
+  <li>Refuses to run as a non-root user with a clear message — except for the read-only checks that don't need root.</li>
+</ul>
+</section>
+
+<section id="integration">
+<h2><span class="num">5</span>Integration</h2>
+<ul>
+  <li>Optional cron/systemd timer publishes the report to Geneva/OTel daily.</li>
+  <li>Linked from the README, troubleshooting docs, and CES/CSS playbooks.</li>
+</ul>
+</section>
+
+<section id="tests">
+<h2><span class="num">6</span>Tests</h2>
+<ul>
+  <li>Each check has a positive and a negative fixture.</li>
+  <li>Idempotency: 100 runs produce identical reports given a static system.</li>
+</ul>
+</section>
+
+<section id="risks">
+<h2><span class="num">7</span>Risks</h2>
+<ul>
+  <li><strong>False positives</strong> on heterogeneous host configurations. Mitigation: WARN (not FAIL) for ambiguous findings; "more info" link.</li>
+</ul>
+</section>
+
+<section id="milestones">
+<h2><span class="num">8</span>Milestones</h2>
+<table>
+  <thead><tr><th>M</th><th>Deliverable</th><th>Exit</th></tr></thead>
+  <tbody>
+    <tr><td>M1</td><td>Six built-in checks + report</td><td>Used by CSS in one ticket</td></tr>
+    <tr><td>M2</td><td>JSON mode + nightly reporter</td><td>Telemetry shows fleet posture</td></tr>
+  </tbody>
+</table>
+</section>
+
+<footer>Detail design for direction 6.2. Parent: <a href="innovation-directions.html">innovation-directions.html</a>.</footer>
+
+</main></div></body></html>

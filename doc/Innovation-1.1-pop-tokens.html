@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>1.1 Short-lived PoP Tokens</title>
+<link rel="stylesheet" href="innovation.css"></head>
+<body><div class="layout">
+<nav class="toc">
+<a class="back" href="innovation-directions.html">← Back to all directions</a>
+<h2>Sections</h2><ol>
+<li><a href="#overview">1. Overview</a></li>
+<li><a href="#today">2. Today</a></li>
+<li><a href="#token">3. Token format</a></li>
+<li><a href="#mint">4. Mint &amp; verify</a></li>
+<li><a href="#wire">5. Wire protocol</a></li>
+<li><a href="#integration">6. Integration</a></li>
+<li><a href="#rollout">7. Rollout</a></li>
+<li><a href="#tests">8. Tests</a></li>
+<li><a href="#risks">9. Risks</a></li>
+<li><a href="#milestones">10. Milestones</a></li>
+</ol></nav>
+<main>
+
+<header class="hero">
+  <div><span class="pill">GPA</span><span class="pill">Direction 1.1</span><span class="pill">AuthN</span></div>
+  <h1>Detailed Design — Short-lived Proof-of-Possession Tokens</h1>
+  <p>Replace the long-lived HMAC signature header with a compact, audience-scoped, time-bound token derived from the latched key, so a leaked key file cannot be used to sign arbitrary requests offline or to replay captured ones.</p>
+  <p><strong>Files affected:</strong> <code>proxy_agent_shared/src/</code> (new <code>pop_token</code> module),
+    <code>proxy_agent/src/key_keeper/key.rs</code>, <code>proxy_agent/src/proxy/proxy_server.rs</code>.</p>
+</header>
+
+<section id="overview">
+<h2><span class="num">1</span>Overview &amp; Goals</h2>
+<div class="meta">
+  <div class="cell"><div class="label">Impact</div><div class="value"><span class="badge high">High</span> kills replay + key-leak</div></div>
+  <div class="cell"><div class="label">Effort</div><div class="value"><span class="badge med">Medium</span></div></div>
+  <div class="cell"><div class="label">Risk</div><div class="value"><span class="badge med">Fabric coupling</span></div></div>
+  <div class="cell"><div class="label">Scope</div><div class="value"><span class="badge scope">agent + WireServer/IMDS</span></div></div>
+</div>
+
+<h3>1.1 Goals</h3>
+<ul>
+  <li>Each request bears a token valid for ≤ 30 s, bound to <em>caller</em>, <em>destination</em>, and <em>URL</em>.</li>
+  <li>The latched key never appears on the wire and never signs raw HTTP — it signs a derived session key.</li>
+  <li>Replay (pentest <code>B2</code>) becomes structurally impossible.</li>
+  <li>A leaked key file (pentest <code>B3</code>) is still useless without live caller-fingerprint material (cgroup, pid-starttime, vTPM PCRs from direction 1.2).</li>
+</ul>
+
+<h3>1.2 Non-goals</h3>
+<ul>
+  <li>Replacing the underlying primitive (still HMAC-SHA256 in v1; PQ migration is out of scope).</li>
+  <li>Asymmetric tokens — would force a fabric crypto change we want to defer.</li>
+</ul>
+</section>
+
+<section id="today">
+<h2><span class="num">2</span>Today's Behavior</h2>
+<p>GPA signs each authorized request with an HMAC over a static string derived from method, URL, and a coarse "time tick"; the signature is placed in <code>x-ms-azure-signature</code> with a sibling <code>x-ms-azure-time-tick</code> header. The HMAC key is the latched key written at provisioning. Once disclosed, it can sign anything indefinitely.</p>
+<p>The fabric checks the signature against the latched key it holds for this VM. There is no per-request nonce, no audience binding, and no caller binding.</p>
+</section>
+
+<section id="token">
+<h2><span class="num">3</span>Token Format</h2>
+<p>Compact, JWS-like, three base64url segments joined by <code>.</code>:</p>
+<pre><code>HEADER  = { "alg":"HS256", "kid":&lt;latched-key-id&gt;, "v":2 }
+PAYLOAD = {
+  "iss":  "gpa",                       // issuer
+  "aud":  "wireserver" | "imds" | "hostga",
+  "sub":  &lt;caller-fingerprint hash&gt;,    // see §3.1
+  "iat":  &lt;unix-seconds&gt;,
+  "exp":  &lt;unix-seconds, exp - iat &lt;= 30&gt;,
+  "nbf":  &lt;unix-seconds, == iat&gt;,
+  "jti":  &lt;128-bit random&gt;,            // nonce (anti-replay)
+  "url":  &lt;sha256(canonical url + method)&gt;,
+  "dip":  &lt;destination ip:port&gt;,
+  "src":  &lt;caller pid-starttime &amp; cgroup id, hashed&gt;
+}
+SIG     = HMAC-SHA256( derive_session_key(latched, jti), HEADER || "." || PAYLOAD )
+</code></pre>
+
+<h3>3.1 Caller fingerprint (<code>sub</code>)</h3>
+<ul>
+  <li><code>sub = sha256( cgroup_id || pid_starttime_ns || exe_hash )</code>.</li>
+  <li><code>exe_hash</code> is the IMA / fs-verity hash from direction 1.3 when available; falls back to <code>processFullPath</code> bytes.</li>
+  <li>The fabric does not interpret <code>sub</code>; it only ensures the same <code>sub</code> isn't reused after expiry.</li>
+</ul>
+
+<h3>3.2 Session key derivation</h3>
+<pre><code>session_key = HKDF-SHA256(
+    ikm   = latched_key,
+    salt  = jti,
+    info  = "gpa-pop-v2" || aud || dip
+)</code></pre>
+<p>This means the latched key never directly produces a tag visible on the wire; recovering the latched key requires inverting HKDF, not HMAC.</p>
+</section>
+
+<section id="mint">
+<h2><span class="num">4</span>Mint &amp; Verify</h2>
+
+<h3>4.1 Rust API</h3>
+<pre><code>pub struct PopToken(String);
+
+pub struct MintParams&lt;'a&gt; {
+    pub aud: Audience,
+    pub canonical_url_method_hash: [u8; 32],
+    pub destination: SocketAddr,
+    pub caller: &amp;'a CallerFingerprint,
+    pub ttl: Duration, // clamp to &lt;=30s
+}
+
+impl PopToken {
+    pub fn mint(key: &amp;LatchedKey, p: &amp;MintParams) -&gt; Result&lt;PopToken, MintError&gt;;
+    pub fn verify(token: &amp;str, key: &amp;LatchedKey, now: SystemTime,
+                  expected_aud: Audience) -&gt; Result&lt;Claims, VerifyError&gt;;
+}</code></pre>
+
+<h3>4.2 Constant-time comparison</h3>
+<ul>
+  <li>Use <code>subtle::ConstantTimeEq</code> for the signature compare in <code>verify</code>.</li>
+  <li>HMAC computation uses <code>hmac</code> crate with <code>sha2::Sha256</code>; both are constant-time and already in the dependency tree.</li>
+</ul>
+
+<h3>4.3 Anti-replay storage</h3>
+<ul>
+  <li>Agent side: nothing (tokens are stateless on the way out).</li>
+  <li>Fabric side: bloom filter or LRU of recently-seen <code>jti</code> values keyed by <code>(aud, sub)</code> with TTL ≥ 2× max <code>exp - iat</code>. Detail belongs to the fabric design but the agent must pick <code>jti</code> from a CSPRNG with at least 128 bits.</li>
+</ul>
+</section>
+
+<section id="wire">
+<h2><span class="num">5</span>Wire Protocol</h2>
+
+<h3>5.1 Headers (v2)</h3>
+<table>
+  <thead><tr><th>Header</th><th>Direction</th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr><td><code>x-ms-azure-pop</code></td><td>agent → fabric</td><td>The compact token from §3.</td></tr>
+    <tr><td><code>x-ms-azure-pop-aud</code></td><td>agent → fabric</td><td>Redundant audience hint to allow fast rejection before parsing.</td></tr>
+    <tr><td><code>x-ms-azure-signature</code></td><td>agent → fabric</td><td>Legacy header, still emitted during dual-emit phase.</td></tr>
+    <tr><td><code>x-ms-azure-pop-rejected</code></td><td>fabric → agent</td><td>Reason code on 401; consumed by GPA telemetry only.</td></tr>
+  </tbody>
+</table>
+
+<h3>5.2 Header stripping</h3>
+<p>GPA <strong>always</strong> strips any inbound <code>x-ms-azure-pop*</code> and <code>x-ms-azure-signature*</code>
+headers from the client request before forwarding (pentest <code>B4</code>); never propagates client-supplied values.</p>
+</section>
+
+<section id="integration">
+<h2><span class="num">6</span>Integration Points</h2>
+<table>
+  <thead><tr><th>File</th><th>Change</th></tr></thead>
+  <tbody>
+    <tr><td><code>proxy_agent_shared/src/pop_token/</code></td><td>New module: types, mint, verify, fuzz target.</td></tr>
+    <tr><td><code>proxy_agent/src/key_keeper/key.rs</code></td><td>Add <code>derive_session_key</code>; expose <code>kid()</code>.</td></tr>
+    <tr><td><code>proxy_agent/src/proxy/proxy_server.rs</code></td><td>Replace HMAC mint with <code>PopToken::mint</code>; keep legacy header behind <code>pop_v2.mode != enforce</code>.</td></tr>
+    <tr><td><code>proxy_agent/src/proxy/proxy_authorizer.rs</code></td><td>Compute canonical URL hash (reuse <code>CanonicalRequest</code> from 2.1) and caller fingerprint.</td></tr>
+    <tr><td><code>config/GuestProxyAgent.*.json</code></td><td>New <code>popToken.mode</code> = <code>off|dual|enforce</code>.</td></tr>
+  </tbody>
+</table>
+</section>
+
+<section id="rollout">
+<h2><span class="num">7</span>Rollout</h2>
+<ol>
+  <li><strong>Phase A — Off:</strong> ship code, dormant. Unit / fuzz tests run in CI only.</li>
+  <li><strong>Phase B — Dual-emit:</strong> emit both headers; fabric ignores PoP. Telemetry only.</li>
+  <li><strong>Phase C — Dual-verify:</strong> fabric verifies PoP if present, accepts either. Agent telemetry tracks fabric verdicts via the <code>x-ms-azure-pop-rejected</code> header.</li>
+  <li><strong>Phase D — PoP-only:</strong> fabric rejects requests without PoP. Legacy header removed in the next release.</li>
+</ol>
+<p>A region only advances to the next phase when error rate &lt; 0.001 % for 14 days.</p>
+</section>
+
+<section id="tests">
+<h2><span class="num">8</span>Test Strategy</h2>
+<ul>
+  <li>Golden vectors signed by a reference implementation; agent must verify identical bytes.</li>
+  <li>Property test: round-trip <code>mint → verify</code> always succeeds for fresh tokens; modifying any byte fails.</li>
+  <li>Property test: skewing the clock by &gt; 60 s rejects; within ±60 s accepts (configurable skew).</li>
+  <li><code>cargo fuzz</code> on <code>verify</code>: must never panic.</li>
+  <li>Pentest reruns: <code>B2</code> replay → REJECT; <code>B3</code> stolen-key replay on a different VM → REJECT once fabric checks <code>sub</code> stickiness.</li>
+  <li>Soak: 1 million mint/verify pairs/sec on a single core baseline; track regressions.</li>
+</ul>
+</section>
+
+<section id="risks">
+<h2><span class="num">9</span>Risks &amp; Mitigations</h2>
+<ul>
+  <li><strong>Clock drift:</strong> ±60 s tolerance; if NTP is broken GPA can request fabric time via WireServer health endpoint.</li>
+  <li><strong>Header bloat:</strong> typical token ≈ 380 bytes b64u; bounded.</li>
+  <li><strong>Fabric rollout coupling:</strong> dual-emit/dual-verify phases decouple agent and fabric releases.</li>
+  <li><strong>HSM-bound key future:</strong> session-key derivation already isolates the latched key, easing later migration to a vTPM-resident key (direction 1.2).</li>
+</ul>
+</section>
+
+<section id="milestones">
+<h2><span class="num">10</span>Milestones</h2>
+<table>
+  <thead><tr><th>M</th><th>Deliverable</th><th>Exit</th></tr></thead>
+  <tbody>
+    <tr><td>M1</td><td><code>pop_token</code> crate + 200 golden vectors</td><td>Fuzz clean for 1 CPU-day</td></tr>
+    <tr><td>M2</td><td>Dual-emit behind flag in canary region</td><td>Zero correctness regressions vs legacy</td></tr>
+    <tr><td>M3</td><td>Fabric dual-verify enabled</td><td>Pentest B2/B3 PASS</td></tr>
+    <tr><td>M4</td><td>PoP-only enforcement</td><td>Legacy header deletion PR merged</td></tr>
+  </tbody>
+</table>
+</section>
+
+<footer>Detail design for direction 1.1. Parent: <a href="innovation-directions.html">innovation-directions.html</a>.</footer>
+
+</main></div></body></html>

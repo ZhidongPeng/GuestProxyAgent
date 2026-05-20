@@ -1,0 +1,823 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Design 2.1 — Canonical Request Model</title>
+<style>
+  :root {
+    --bg:#0e1116; --panel:#161b22; --panel-2:#1c2330;
+    --text:#e6edf3; --muted:#9ba7b4;
+    --accent:#4ea1ff; --accent-2:#7ee787; --warn:#f0883e; --danger:#ff7b72;
+    --border:#2d333b; --code-bg:#0b0f14;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin:0; padding:0; background:var(--bg); color:var(--text);
+    font:15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  a { color: var(--accent); text-decoration: none; } a:hover { text-decoration: underline; }
+  .layout { display:grid; grid-template-columns: 290px 1fr; min-height:100vh; }
+  nav.toc { position:sticky; top:0; align-self:start; height:100vh; overflow-y:auto;
+    border-right:1px solid var(--border); background:var(--panel); padding:20px 18px; }
+  nav.toc h2 { font-size:12px; text-transform:uppercase; color:var(--muted); margin:0 0 10px; letter-spacing:.08em; }
+  nav.toc ol { list-style:none; padding:0; margin:0; counter-reset:item; }
+  nav.toc ol li { margin:5px 0; }
+  nav.toc ol li a { color:var(--text); font-size:13.5px; }
+  main { padding:36px 48px 80px; max-width:1180px; }
+  header.hero { border:1px solid var(--border); background:linear-gradient(135deg, #1a2030, #161b22);
+    padding:26px 28px; border-radius:12px; margin-bottom:28px; }
+  header.hero h1 { margin:0 0 6px; font-size:24px; }
+  header.hero p { margin:4px 0; color:var(--muted); }
+  .pill { display:inline-block; padding:2px 10px; border-radius:999px; font-size:12px;
+    background:#1f2937; color:var(--accent); border:1px solid var(--border); margin-right:6px; }
+  section { border:1px solid var(--border); border-radius:12px; background:var(--panel);
+    padding:24px 28px; margin:22px 0; }
+  section h2 { margin:0 0 4px; font-size:20px; color:var(--accent); }
+  section h2 .num { color:var(--accent-2); margin-right:10px; font-variant-numeric:tabular-nums; }
+  section h3 { margin:20px 0 8px; font-size:16px; color:var(--text); border-bottom:1px solid var(--border); padding-bottom:6px; }
+  section h4 { margin:14px 0 6px; font-size:14px; color:var(--accent-2); }
+  code, pre { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; }
+  code { background:var(--code-bg); border:1px solid var(--border); border-radius:4px; padding:1px 5px; font-size:12.5px; }
+  pre { background:var(--code-bg); border:1px solid var(--border); border-radius:8px; padding:14px 16px;
+    overflow-x:auto; font-size:12.5px; line-height:1.5; }
+  pre code { background:transparent; border:0; padding:0; }
+  table { width:100%; border-collapse:collapse; margin:10px 0; font-size:13.5px; }
+  th, td { border:1px solid var(--border); padding:8px 10px; text-align:left; vertical-align:top; }
+  th { background:var(--panel-2); color:var(--muted); font-weight:600; }
+  ul, ol { padding-left:22px; } ul li, ol li { margin:4px 0; }
+  .badge { display:inline-block; font-size:11px; padding:2px 8px; border-radius:4px;
+    border:1px solid var(--border); margin-right:4px; }
+  .badge.high   { background:#3a1d1d; color:var(--danger);   border-color:#5b2a2a; }
+  .badge.med    { background:#3a2a14; color:var(--warn);     border-color:#5a3e1d; }
+  .badge.low    { background:#14321f; color:var(--accent-2); border-color:#1f4a2e; }
+  .badge.scope  { background:#14253a; color:var(--accent);   border-color:#1f3a5a; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  .grid3 { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; }
+  .callout { border-left:3px solid var(--accent); background:var(--panel-2);
+    padding:10px 14px; border-radius:6px; margin:12px 0; }
+  .callout.warn   { border-left-color: var(--warn); }
+  .callout.danger { border-left-color: var(--danger); }
+  .callout.good   { border-left-color: var(--accent-2); }
+  .meta { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin:12px 0 18px; }
+  .meta .cell { background:var(--panel-2); border:1px solid var(--border); border-radius:8px; padding:8px 10px; }
+  .meta .cell .label { font-size:11px; text-transform:uppercase; color:var(--muted); letter-spacing:.06em; }
+  .meta .cell .value { font-size:13px; margin-top:2px; }
+  footer { color:var(--muted); font-size:12px; margin-top:50px; border-top:1px solid var(--border); padding-top:16px; }
+  .kbd { font-family: ui-monospace, monospace; background:#0b0f14; border:1px solid var(--border);
+    border-radius:4px; padding:1px 6px; font-size:12.5px; }
+  .ascii { white-space: pre; font-family: ui-monospace, monospace; background:var(--code-bg);
+    border:1px solid var(--border); border-radius:8px; padding:14px; overflow-x:auto; font-size:12.5px; }
+  @media (max-width:900px) {
+    .layout { grid-template-columns:1fr; }
+    nav.toc { position:static; height:auto; border-right:0; border-bottom:1px solid var(--border); }
+    main { padding:24px 18px 60px; }
+    .meta { grid-template-columns:1fr 1fr; }
+    .grid2, .grid3 { grid-template-columns:1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="layout">
+
+<nav class="toc">
+  <h2>Sections</h2>
+  <ol>
+    <li><a href="#overview">1. Overview &amp; Goals</a></li>
+    <li><a href="#today">2. Today's Behavior</a></li>
+    <li><a href="#threats">3. Threats &amp; Bypass Patterns</a></li>
+    <li><a href="#model">4. CanonicalRequest Model</a></li>
+    <li><a href="#pipeline">5. Normalization Pipeline</a></li>
+    <li><a href="#api">6. Public API &amp; Rust Sketch</a></li>
+    <li><a href="#errors">7. Error Taxonomy &amp; Fail-Closed</a></li>
+    <li><a href="#integration">8. Integration Points</a></li>
+    <li><a href="#shadow">9. Shadow-Mode Rollout</a></li>
+    <li><a href="#tests">10. Test Strategy</a></li>
+    <li><a href="#perf">11. Performance Budget</a></li>
+    <li><a href="#telemetry">12. Telemetry &amp; Observability</a></li>
+    <li><a href="#risks">13. Risks &amp; Open Questions</a></li>
+    <li><a href="#milestones">14. Milestones</a></li>
+    <li><a href="#appendix">Appendix A — Vector Table</a></li>
+  </ol>
+</nav>
+
+<main>
+
+<header class="hero">
+  <div>
+    <span class="pill">GPA</span>
+    <span class="pill">Direction 2.1</span>
+    <span class="pill">Security-critical refactor</span>
+  </div>
+  <h1>Detailed Design — Canonical Request Model</h1>
+  <p>A single, total, well-tested normalization step shared by rule loading and request matching, designed to
+    eliminate the rule/request asymmetry that produces SSRF-style AuthZ bypasses.</p>
+  <p><strong>Primary files affected:</strong>
+    <code>proxy_agent/src/proxy/authorization_rules.rs</code>,
+    <code>proxy_agent/src/key_keeper/key.rs</code>,
+    new module <code>proxy_agent/src/proxy/canonical/</code>.
+  </p>
+</header>
+
+<!-- ============================================================ -->
+<section id="overview">
+<h2><span class="num">1</span>Overview &amp; Goals</h2>
+
+<div class="meta">
+  <div class="cell"><div class="label">Impact</div><div class="value"><span class="badge high">High</span> closes a vuln family</div></div>
+  <div class="cell"><div class="label">Effort</div><div class="value"><span class="badge med">Medium</span> ~2–3 sprints</div></div>
+  <div class="cell"><div class="label">Risk</div><div class="value"><span class="badge low">Low</span> shadow-mode rollout</div></div>
+  <div class="cell"><div class="label">Scope</div><div class="value"><span class="badge scope">agent only</span></div></div>
+</div>
+
+<h3>1.1 Problem statement</h3>
+<p>Today the rule-matching pipeline performs ad-hoc, partial normalization in <em>two different places</em> — once
+when rules are loaded and once when requests are matched. The two normalizations are not byte-identical, which
+creates a class of bypass where the attacker crafts a URL that the agent considers different from the rule pattern
+but that the upstream metadata service treats as semantically equivalent.</p>
+
+<h3>1.2 Goals</h3>
+<ul>
+  <li><strong>One normalizer, one type.</strong> Both rules and requests are reduced to a single canonical form
+    (<code>CanonicalRequest</code>) before they ever meet the matcher.</li>
+  <li><strong>Total function with explicit failure.</strong> The normalizer either returns a fully-canonical value
+    or a typed error; the matcher never sees ambiguous input.</li>
+  <li><strong>Fail-closed semantics.</strong> Any normalization error denies the request and logs a structured event.</li>
+  <li><strong>Byte-stable output.</strong> Round-tripping a canonical form through the normalizer yields the same bytes
+    (idempotent). This is the property property-tests will enforce.</li>
+  <li><strong>Zero behavior change at cutover.</strong> Shadow-mode dual-evaluation must show 0 divergences for N days
+    before flipping enforcement.</li>
+</ul>
+
+<h3>1.3 Non-goals</h3>
+<ul>
+  <li>Replacing the policy language itself (that is Direction 2.2 — Cedar).</li>
+  <li>Identity normalization for users/processes (Direction 1.3 — measured identity).</li>
+  <li>Changing the on-wire request format sent upstream. We canonicalize for <em>matching</em>; the request forwarded to
+    IMDS / WireServer is the original.</li>
+</ul>
+
+</section>
+
+<!-- ============================================================ -->
+<section id="today">
+<h2><span class="num">2</span>Today's Behavior (and why it's fragile)</h2>
+
+<h3>2.1 Normalization in <code>authorization_rules.rs</code></h3>
+<p>At rule load time
+(<code>ComputedAuthorizationItem::from_authorization_item</code>), each privilege's path and query parameters
+are lowercased:</p>
+<pre><code>let normalized = Privilege {
+    name: privilege.name,
+    path: privilege.path.to_lowercase(),
+    queryParameters: privilege.queryParameters.map(|qp| {
+        qp.into_iter()
+          .map(|(k, v)| (k.to_lowercase(), v.to_lowercase()))
+          .collect()
+    }),
+};</code></pre>
+
+<p>At request time (<code>ComputedAuthorizationItem::is_allowed</code>), the request URL is percent-decoded once
+then lowercased:</p>
+<pre><code>let decoded_path = percent_encoding::percent_decode_str(request_url.path())
+    .decode_utf8_lossy();
+let lowered_request_path = decoded_path.to_lowercase();</code></pre>
+
+<p>The actual match (<code>Privilege::is_match</code> in <code>key.rs</code>) does:</p>
+<ul>
+  <li><code>actual_path.starts_with(&amp;self.path)</code></li>
+  <li>splits on <code>?</code> in the <em>decoded</em> path to harvest extra query pairs (handles <code>%3F</code> trick)</li>
+  <li>compares query parameters case-insensitively with one more percent-decode on the key</li>
+</ul>
+
+<h3>2.2 The asymmetries</h3>
+<table>
+  <thead><tr><th>Step</th><th>Rule side</th><th>Request side</th><th>Risk</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>Percent decoding</td><td>Not applied to rule path</td><td>Applied once to request path</td>
+      <td>A rule containing <code>%2F</code> by accident becomes unreachable; a request can introduce decoded characters the rule author did not anticipate.</td>
+    </tr>
+    <tr>
+      <td>Path segment collapsing (<code>..</code>, <code>.</code>)</td><td>None</td><td>None</td>
+      <td><code>/metadata/identity/../identity/oauth2/token</code> bypasses a deny on <code>/metadata/identity/oauth2</code>.</td>
+    </tr>
+    <tr>
+      <td>Trailing slash</td><td>Author-controlled</td><td>Author-controlled</td>
+      <td>Prefix <code>starts_with</code> means rule <code>/metadata</code> matches <code>/metadata-attacker</code>.</td>
+    </tr>
+    <tr>
+      <td>Matrix params <code>;foo=bar</code></td><td>Not handled</td><td>Not handled</td>
+      <td>Some HTTP stacks strip them, some don't.</td>
+    </tr>
+    <tr>
+      <td>Host normalization</td><td>N/A (no host in rule)</td><td>N/A</td>
+      <td>Pentest C7: <code>0xa9fea9fe</code>, <code>2852039166</code>, <code>[::ffff:169.254.169.254]</code> reach the same IMDS.</td>
+    </tr>
+    <tr>
+      <td>UTF-8 validity</td><td>Assumed</td><td><code>decode_utf8_lossy</code> silently replaces</td>
+      <td>Lossy substitution may yield matches the rule author didn't intend.</td>
+    </tr>
+    <tr>
+      <td>Query key/value decoding</td><td>Lowercased only</td><td>Decoded again at match time</td>
+      <td>Double-encoding (<code>%2525</code>) yields different views.</td>
+    </tr>
+  </tbody>
+</table>
+
+</section>
+
+<!-- ============================================================ -->
+<section id="threats">
+<h2><span class="num">3</span>Threats &amp; Bypass Patterns</h2>
+
+<p>The canonical model targets, at minimum, every pattern in pentest scenarios <code>D1</code> and <code>C7</code>.</p>
+
+<h3>3.1 URL-encoding differentials (pentest D1)</h3>
+<ul>
+  <li><code>%2F</code> vs <code>/</code>, mixed case <code>%2f</code>.</li>
+  <li>Double-encoding: <code>%252e%252e</code>.</li>
+  <li>Overlong UTF-8 for <code>/</code>.</li>
+  <li>Semicolon matrix params on path segments.</li>
+  <li>Trailing dot or whitespace in path.</li>
+  <li>Embedded <code>?</code> via <code>%3F</code> that re-introduces query parameters into the path string.</li>
+</ul>
+
+<h3>3.2 Host-form differentials (pentest C7)</h3>
+<ul>
+  <li>IPv4 dotted: <code>169.254.169.254</code></li>
+  <li>IPv4 decimal: <code>2852039166</code></li>
+  <li>IPv4 hex: <code>0xa9fea9fe</code></li>
+  <li>IPv4 octal: <code>0251.0376.0251.0376</code></li>
+  <li>IPv4-mapped IPv6: <code>[::ffff:169.254.169.254]</code>, <code>[::ffff:a9fe:a9fe]</code></li>
+  <li>Uppercased hostnames, trailing dots: <code>METADATA.azure.internal.</code></li>
+  <li>Userinfo smuggling: <code>http://attacker@169.254.169.254/</code></li>
+  <li>Port-form smuggling: <code>http://169.254.169.254:80@evil/</code></li>
+</ul>
+
+<h3>3.3 Header / line smuggling (out of scope, but related)</h3>
+<p>Request smuggling at the HTTP framing layer is handled separately by Hyper config + pentest A3/A4. The canonical
+model assumes Hyper produced a well-formed <code>hyper::Uri</code>.</p>
+
+</section>
+
+<!-- ============================================================ -->
+<section id="model">
+<h2><span class="num">4</span>The CanonicalRequest Model</h2>
+
+<h3>4.1 Type</h3>
+<pre><code>// proxy_agent/src/proxy/canonical/mod.rs
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct CanonicalRequest {
+    /// HTTP method, uppercased ASCII (GET, POST, ...).
+    pub method: Method,
+
+    /// Canonical destination (already classified as one of GPA's known endpoints).
+    pub destination: Destination,
+
+    /// Canonical path segments: percent-decoded, NFC-normalized, lowercased,
+    /// with `.` collapsed, `..` resolved against earlier segments, matrix params stripped.
+    /// Always begins with the empty root segment; never contains empty segments
+    /// except the final one when the original ended with `/`.
+    pub path_segments: Vec&lt;String&gt;,
+
+    /// Whether the original path had a trailing slash (preserved as a single bit so
+    /// rules can opt to be slash-sensitive without re-introducing string-level asymmetry).
+    pub trailing_slash: bool,
+
+    /// Query parameters in a canonical multi-map form: keys lowercased + decoded once,
+    /// values decoded once, preserved order is not significant (BTreeMap of Vec).
+    pub query: BTreeMap&lt;String, Vec&lt;String&gt;&gt;,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Destination {
+    Imds,         // 169.254.169.254 in any encoding, port 80
+    WireServer,   // 168.63.129.16:80
+    HostGaPlugin, // 168.63.129.16:32526
+    Unknown {     // anything else; matcher will deny unless an explicit rule allows
+        family: AddrFamily,
+        ip: IpAddr,
+        port: u16,
+        host_text: Option&lt;String&gt;, // original host text for audit, never used for matching
+    },
+}</code></pre>
+
+<h3>4.2 Invariants (checked by debug asserts and property tests)</h3>
+<ul>
+  <li><strong>Idempotent:</strong> <code>canonicalize(canonicalize(x)) == canonicalize(x)</code>.</li>
+  <li><strong>Total:</strong> for every <code>hyper::Uri</code>, the function returns either <code>Ok(CanonicalRequest)</code>
+    or a typed <code>CanonError</code>; it never panics.</li>
+  <li><strong>Round-trip-stable rendering:</strong> a debug <code>Display</code> impl produces a string that, when
+    re-parsed and canonicalized, yields the same value.</li>
+  <li><strong>UTF-8 strict:</strong> invalid UTF-8 in path or query is an error, not a lossy replacement.</li>
+  <li><strong>No host text in matching:</strong> the matcher only sees the typed <code>Destination</code> enum, never the
+    raw host string.</li>
+</ul>
+
+</section>
+
+<!-- ============================================================ -->
+<section id="pipeline">
+<h2><span class="num">5</span>The Normalization Pipeline</h2>
+
+<p>Each step is a small pure function with its own unit tests.</p>
+
+<div class="ascii">
+hyper::Uri
+    │
+    ▼  parse_scheme_method        (must be http; reject https/ws/...; method allow-list)
+    │
+    ▼  classify_destination       (IP/host -> Destination enum; covers numeric forms)
+    │
+    ▼  validate_userinfo          (must be empty; reject `user@host`)
+    │
+    ▼  decode_path_once           (single percent-decode; reject malformed %XY; reject overlong UTF-8)
+    │
+    ▼  reject_control_chars       (no CR/LF/NUL/HTAB after decode)
+    │
+    ▼  nfc_normalize              (Unicode NFC)
+    │
+    ▼  ascii_lowercase_path       (path is matched case-insensitively)
+    │
+    ▼  split_segments             (split on '/'; collapse `.`; resolve `..`; error on underflow)
+    │
+    ▼  strip_matrix_params        (drop `;k=v` suffix on each segment, preserve segment text only)
+    │
+    ▼  decode_query_once          (k/v percent-decode once; error on malformed; lowercase keys)
+    │
+    ▼  reject_embedded_query      (if decoded path now contains '?' -> error: ambiguous)
+    │
+    ▼  fold_into_btreemap         (group by key; values preserve insertion order within a key)
+    │
+    ▼  CanonicalRequest
+</div>
+
+<h3>5.1 Step details</h3>
+
+<h4>5.1.1 <code>classify_destination</code></h4>
+<ul>
+  <li>If host is a bracketed IPv6, parse with <code>std::net::Ipv6Addr</code>; if it is IPv4-mapped, project to IPv4 and continue.</li>
+  <li>If host parses as <code>Ipv4Addr</code> directly, use it.</li>
+  <li>Else attempt the historic numeric forms manually: dotted-quad with any base per octet (octal-leading-zero, hex-leading-<code>0x</code>, plain decimal), and 32-bit packed forms. A small dedicated parser, not <code>inet_aton</code>, because <code>inet_aton</code> behavior is libc-dependent.</li>
+  <li>Map the resolved IP+port to <code>Destination</code> via a constant table; unknown destinations land in <code>Destination::Unknown</code>.</li>
+  <li>Hostnames that are not IPs (e.g. <code>metadata.azure.internal</code>) are <em>not</em> resolved at this layer — DNS is a confused-deputy surface. They are returned as <code>Unknown { host_text: Some(...) }</code> and require an explicit allow rule keyed on host text.</li>
+</ul>
+
+<h4>5.1.2 <code>decode_path_once</code></h4>
+<ul>
+  <li>One pass of percent decoding. A second pass is never attempted — that is exactly the asymmetry we want to remove.</li>
+  <li>Malformed sequences (<code>%2</code>, <code>%ZZ</code>) → <code>CanonError::MalformedPercent</code>.</li>
+  <li>Detect overlong UTF-8 encodings of ASCII (e.g. <code>%C0%AF</code> for <code>/</code>) → <code>CanonError::OverlongUtf8</code>.</li>
+</ul>
+
+<h4>5.1.3 <code>split_segments</code> + dot-segment resolution (RFC 3986 §5.2.4)</h4>
+<ul>
+  <li>Empty segments collapsed (treat <code>//</code> as <code>/</code>).</li>
+  <li><code>.</code> dropped.</li>
+  <li><code>..</code> pops the previous segment; popping past root is an error (<code>CanonError::PathUnderflow</code>) rather than a no-op, because a real client would never produce it.</li>
+</ul>
+
+<h4>5.1.4 <code>strip_matrix_params</code></h4>
+<ul>
+  <li>For each segment, drop everything after the first <code>;</code>.</li>
+  <li>Document this clearly: matrix params are <strong>never</strong> used in authorization decisions.</li>
+</ul>
+
+<h4>5.1.5 <code>reject_embedded_query</code></h4>
+<ul>
+  <li>If the decoded-and-rebuilt path contains a literal <code>?</code>, the request is ambiguous: an attacker may have used <code>%3F</code> to smuggle query into the path. Today's matcher tries to rescue this; the new model rejects it as an error and logs.</li>
+</ul>
+
+</section>
+
+<!-- ============================================================ -->
+<section id="api">
+<h2><span class="num">6</span>Public API &amp; Rust Sketch</h2>
+
+<h3>6.1 Module layout</h3>
+<pre><code>proxy_agent/src/proxy/canonical/
+├── mod.rs            // CanonicalRequest, Destination, CanonError, canonicalize()
+├── destination.rs    // IP/host classification + numeric-form parser
+├── path.rs           // decode + dot-segment + matrix-strip
+├── query.rs          // decode + fold into BTreeMap
+├── rule.rs           // canonicalize a rule pattern into CanonicalPattern
+└── tests/
+    ├── vectors.rs    // 300+ golden vectors from pentest D1 / C7
+    ├── proptests.rs  // proptest invariants
+    └── differential.rs // dual-evaluate against legacy matcher in shadow mode</code></pre>
+
+<h3>6.2 Public surface</h3>
+<pre><code>pub fn canonicalize(uri: &amp;hyper::Uri, method: &amp;hyper::Method)
+    -&gt; Result&lt;CanonicalRequest, CanonError&gt;;
+
+/// Canonical form of a rule pattern. Same pipeline, but path segments may end
+/// in a "*" sentinel to mark prefix match, and `Destination` may be `Any` for
+/// rules that intentionally span endpoints.
+pub struct CanonicalPattern { /* ... */ }
+
+pub fn canonicalize_pattern(raw: &amp;RawPrivilege) -&gt; Result&lt;CanonicalPattern, CanonError&gt;;
+
+/// Matching is now a pure structural comparison on canonical forms.
+impl CanonicalPattern {
+    pub fn matches(&amp;self, req: &amp;CanonicalRequest) -&gt; bool;
+}</code></pre>
+
+<h3>6.3 Error type</h3>
+<pre><code>#[derive(Debug, thiserror::Error)]
+pub enum CanonError {
+    #[error("scheme not http")]                SchemeNotHttp,
+    #[error("method not allowed")]             MethodNotAllowed,
+    #[error("userinfo present in URL")]        UserinfoPresent,
+    #[error("malformed percent-encoding")]     MalformedPercent,
+    #[error("overlong UTF-8 in path/query")]   OverlongUtf8,
+    #[error("invalid UTF-8 in path/query")]    InvalidUtf8,
+    #[error("control character in path/query")]ControlChar,
+    #[error("path traversal past root")]       PathUnderflow,
+    #[error("embedded '?' after decoding")]    EmbeddedQuery,
+    #[error("unparseable host")]               BadHost,
+    #[error("unparseable port")]               BadPort,
+}
+
+impl CanonError {
+    /// All variants are fail-closed; this is here so callers can record a
+    /// stable string for telemetry / pentest assertions.
+    pub fn code(&amp;self) -&gt; &amp;'static str { /* ... */ }
+}</code></pre>
+
+<h3>6.4 Matcher call site (after the change)</h3>
+<pre><code>// Replaces ComputedAuthorizationItem::is_allowed's URL handling.
+let canon = match canonical::canonicalize(&amp;request.uri(), request.method()) {
+    Ok(c) =&gt; c,
+    Err(e) =&gt; {
+        logger.write(LoggerLevel::Warn,
+            format!("Canonicalization failed: {} ({})", e, e.code()));
+        return false; // fail-closed
+    }
+};
+for pattern in self.compiled_patterns.iter() {
+    if pattern.matches(&amp;canon) { /* identity check ... */ }
+}</code></pre>
+
+</section>
+
+<!-- ============================================================ -->
+<section id="errors">
+<h2><span class="num">7</span>Error Taxonomy &amp; Fail-Closed Semantics</h2>
+
+<table>
+  <thead>
+    <tr><th>Error</th><th>Likely cause</th><th>Action</th><th>Audit event code</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>SchemeNotHttp</code></td><td>WS upgrade probe (pentest A4)</td><td>Deny; 405</td><td><code>CANON_SCHEME</code></td></tr>
+    <tr><td><code>MethodNotAllowed</code></td><td>CONNECT / TRACE</td><td>Deny; 405</td><td><code>CANON_METHOD</code></td></tr>
+    <tr><td><code>UserinfoPresent</code></td><td>Host smuggling attempt</td><td>Deny; 400</td><td><code>CANON_USERINFO</code></td></tr>
+    <tr><td><code>MalformedPercent</code></td><td>Truncated / non-hex <code>%XX</code></td><td>Deny; 400</td><td><code>CANON_PCT</code></td></tr>
+    <tr><td><code>OverlongUtf8</code></td><td>Classic IDS-bypass payload</td><td>Deny; 400</td><td><code>CANON_OVERLONG</code></td></tr>
+    <tr><td><code>InvalidUtf8</code></td><td>Random bytes or wrong codec</td><td>Deny; 400</td><td><code>CANON_UTF8</code></td></tr>
+    <tr><td><code>ControlChar</code></td><td>CRLF injection attempt</td><td>Deny; 400</td><td><code>CANON_CTRL</code></td></tr>
+    <tr><td><code>PathUnderflow</code></td><td>Too many <code>..</code></td><td>Deny; 400</td><td><code>CANON_UNDERFLOW</code></td></tr>
+    <tr><td><code>EmbeddedQuery</code></td><td><code>%3F</code> smuggling</td><td>Deny; 400</td><td><code>CANON_EMBQ</code></td></tr>
+    <tr><td><code>BadHost</code></td><td>Mixed numeric forms that fail parsing</td><td>Deny; 400</td><td><code>CANON_HOST</code></td></tr>
+    <tr><td><code>BadPort</code></td><td>Out-of-range port</td><td>Deny; 400</td><td><code>CANON_PORT</code></td></tr>
+  </tbody>
+</table>
+
+<div class="callout danger">
+<strong>Fail-closed rule:</strong> every <code>CanonError</code> path returns <code>false</code> from the matcher and
+emits a structured audit entry that includes the error code, the original (redacted) URL, the caller cgroup id, and
+the active <code>policy_epoch</code>. There is no "best effort" branch.
+</div>
+
+</section>
+
+<!-- ============================================================ -->
+<section id="integration">
+<h2><span class="num">8</span>Integration Points</h2>
+
+<table>
+  <thead>
+    <tr><th>File</th><th>Today</th><th>After change</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>proxy_agent/src/proxy/authorization_rules.rs</code></td>
+      <td>Lowercases privilege path/query during <code>from_authorization_item</code>; percent-decodes request path during <code>is_allowed</code>.</td>
+      <td>Calls <code>canonical::canonicalize_pattern</code> at load time, <code>canonical::canonicalize</code> at request time; <em>no</em> ad-hoc string ops.</td>
+    </tr>
+    <tr>
+      <td><code>proxy_agent/src/key_keeper/key.rs</code></td>
+      <td><code>Privilege::is_match</code> does <code>starts_with</code> + embedded-query rescue + per-key percent-decode.</td>
+      <td>Method removed (or wraps <code>CanonicalPattern::matches</code> for back-compat callers).</td>
+    </tr>
+    <tr>
+      <td><code>proxy_agent/src/proxy/proxy_authorizer.rs</code></td>
+      <td>Calls <code>is_allowed(uri, claims)</code>.</td>
+      <td>Calls <code>canonicalize</code> once, then <code>is_allowed(canon, claims)</code>; logs <code>CanonError</code> on failure.</td>
+    </tr>
+    <tr>
+      <td><code>proxy_agent/src/proxy/proxy_server.rs</code></td>
+      <td>Hands raw <code>Uri</code> down.</td>
+      <td>Unchanged; canonical form is computed once inside the authorizer and cached on the connection context.</td>
+    </tr>
+    <tr>
+      <td><code>proxy_agent/src/key_keeper/local_rules.rs</code></td>
+      <td>Lowercases rule fields during merge.</td>
+      <td>Calls <code>canonicalize_pattern</code>; rejects rules that fail canonicalization (fail-closed).</td>
+    </tr>
+  </tbody>
+</table>
+
+</section>
+
+<!-- ============================================================ -->
+<section id="shadow">
+<h2><span class="num">9</span>Shadow-Mode Rollout</h2>
+
+<p>The canonicalizer ships before the matcher cuts over.</p>
+
+<h3>9.1 Mode flag</h3>
+<pre><code>// In GuestProxyAgent.linux.json / .windows.json
+"canonicalRequest": {
+    "mode": "shadow"   // "off" | "shadow" | "enforce"
+}</code></pre>
+
+<ul>
+  <li><strong>off</strong> — legacy path only (default in first release).</li>
+  <li><strong>shadow</strong> — legacy decides; canonical runs in parallel; divergences logged.</li>
+  <li><strong>enforce</strong> — canonical decides; legacy still computes for divergence telemetry.</li>
+</ul>
+
+<h3>9.2 Divergence record</h3>
+<pre><code>{
+  "ts": "2026-06-01T12:34:56Z",
+  "policy_epoch": 174,
+  "request_uri_redacted": "/metadata/identity/oauth2/token?api-version=2018-02-01",
+  "legacy_decision": "allow",
+  "canon_decision":  "deny",
+  "canon_error":     null,
+  "matched_rule_id": "imds.identity.read",
+  "caller_cgroup":   "/sys/fs/cgroup/system.slice/walinuxagent.service",
+  "delta_reason":    "trailing_slash_difference"
+}</code></pre>
+
+<h3>9.3 Cutover criteria</h3>
+<ul>
+  <li>≥ 14 consecutive days with zero divergences across the production fleet sample.</li>
+  <li>All pentest D1 and C7 vectors PASS in enforcement mode in the CI canary.</li>
+  <li>p99 added latency &lt; 100 µs (measured during shadow mode).</li>
+  <li>One full release in <strong>shadow</strong> behind a feature flag before any region flips to <strong>enforce</strong>.</li>
+</ul>
+
+</section>
+
+<!-- ============================================================ -->
+<section id="tests">
+<h2><span class="num">10</span>Test Strategy</h2>
+
+<h3>10.1 Golden vectors</h3>
+<p>A frozen table of <code>(input_uri, expected_canonical | expected_error)</code>. The seed set comes from:</p>
+<ul>
+  <li>Every <code>D1</code> and <code>C7</code> case in <code>pentest/linux/DESIGN.md</code>.</li>
+  <li>OWASP URL-canonicalization corpus.</li>
+  <li>Hand-curated IMDS / WireServer real-world URLs harvested from production logs (redacted).</li>
+</ul>
+
+<h3>10.2 Property tests (<code>proptest</code>)</h3>
+<pre><code>proptest! {
+    #[test]
+    fn idempotent(uri in any_uri()) {
+        if let Ok(c1) = canonicalize_uri(&amp;uri) {
+            let c2 = canonicalize_uri(&amp;c1.render()).unwrap();
+            prop_assert_eq!(c1, c2);
+        }
+    }
+
+    #[test]
+    fn no_panics(uri_bytes in any::&lt;Vec&lt;u8&gt;&gt;()) {
+        let _ = std::panic::catch_unwind(|| {
+            if let Ok(uri) = hyper::Uri::try_from(uri_bytes) {
+                let _ = canonicalize(&amp;uri, &amp;hyper::Method::GET);
+            }
+        }).unwrap();
+    }
+
+    #[test]
+    fn host_form_equivalence(ip in any::&lt;Ipv4Addr&gt;()) {
+        let dotted  = format!("http://{}/x", ip);
+        let decimal = format!("http://{}/x", u32::from(ip));
+        let hex     = format!("http://0x{:x}/x", u32::from(ip));
+        prop_assert_eq!(
+            canonicalize_str(&amp;dotted).map(|c| c.destination),
+            canonicalize_str(&amp;decimal).map(|c| c.destination),
+        );
+        prop_assert_eq!(
+            canonicalize_str(&amp;dotted).map(|c| c.destination),
+            canonicalize_str(&amp;hex).map(|c| c.destination),
+        );
+    }
+}</code></pre>
+
+<h3>10.3 Differential test against legacy matcher</h3>
+<p>Bound the legacy matcher and the new canonical matcher to the same rule set and the same request stream
+(harvested from production logs). Any divergence is a CI failure during the enforce-prep window.</p>
+
+<h3>10.4 Fuzzing</h3>
+<ul>
+  <li><code>cargo fuzz</code> target on <code>canonicalize(bytes)</code> — must never panic.</li>
+  <li>Second target on <code>CanonicalPattern::matches</code> — must never panic; pattern produced from random rule JSON.</li>
+  <li>Run for ≥ 1 CPU-day before each release; record corpora in <code>proxy_agent/src/proxy/canonical/tests/corpus/</code>.</li>
+</ul>
+
+<h3>10.5 Pentest re-runs</h3>
+<p>Add a new pentest phase in <code>pentest/linux/phase4_rules_fuzz/</code>:</p>
+<ul>
+  <li><strong>S20</strong> — every D1 vector must return identical decisions in legacy and canonical modes (or canonical-strictly-stricter).</li>
+  <li><strong>S21</strong> — every C7 host form must resolve to the same <code>Destination</code> as the dotted form.</li>
+  <li><strong>S22</strong> — invalid UTF-8, overlong UTF-8, and embedded <code>?</code> must produce <code>CanonError</code> and a deny.</li>
+</ul>
+
+</section>
+
+<!-- ============================================================ -->
+<section id="perf">
+<h2><span class="num">11</span>Performance Budget</h2>
+
+<table>
+  <thead><tr><th>Operation</th><th>Target p50</th><th>Target p99</th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr><td><code>canonicalize</code> (typical IMDS GET)</td><td>≤ 5 µs</td><td>≤ 30 µs</td><td>One pass each over path and query; no allocations beyond small Vec/BTreeMap.</td></tr>
+    <tr><td><code>CanonicalPattern::matches</code></td><td>≤ 1 µs</td><td>≤ 5 µs</td><td>Slice-equality over pre-sized segment vec.</td></tr>
+    <tr><td>Total added latency vs legacy</td><td>—</td><td>≤ 100 µs</td><td>Measured end-to-end during shadow mode.</td></tr>
+  </tbody>
+</table>
+
+<h3>11.1 Allocation strategy</h3>
+<ul>
+  <li>Use <code>SmallVec&lt;[Cow&lt;'a, str&gt;; 8]&gt;</code> for path segments; most IMDS paths are ≤ 6 segments.</li>
+  <li>Borrow from the source <code>Uri</code> wherever the decode is a no-op (no <code>%</code> in the segment).</li>
+  <li>BTreeMap is acceptable here because query maps are tiny (typical: 1–3 keys); benchmark before optimizing.</li>
+</ul>
+
+<h3>11.2 Hot path caching</h3>
+<ul>
+  <li>Compiled patterns are stored once at rule load, swapped via <code>arc_swap::ArcSwap&lt;Vec&lt;CanonicalPattern&gt;&gt;</code>
+    (this also satisfies the TOCTOU concern from pentest <code>D5</code>).</li>
+</ul>
+
+</section>
+
+<!-- ============================================================ -->
+<section id="telemetry">
+<h2><span class="num">12</span>Telemetry &amp; Observability</h2>
+
+<h3>12.1 Metrics</h3>
+<ul>
+  <li><code>gpa_canon_calls_total{result="ok|error"}</code></li>
+  <li><code>gpa_canon_errors_total{code="CANON_PCT|CANON_OVERLONG|..."}</code></li>
+  <li><code>gpa_canon_divergence_total{reason="trailing_slash|embedded_query|host_form|..."}</code> (shadow mode only)</li>
+  <li><code>gpa_canon_latency_microseconds</code> (histogram)</li>
+</ul>
+
+<h3>12.2 Audit log fields</h3>
+<p>New fields appended to each entry in <code>ProxyAgent.Connection.log</code>:</p>
+<ul>
+  <li><code>canon_path</code> — rendered canonical path (redacted: identifiers replaced with placeholder).</li>
+  <li><code>canon_dest</code> — <code>imds|wireserver|hostga|unknown</code>.</li>
+  <li><code>canon_error</code> — error code or null.</li>
+  <li><code>policy_epoch</code> — snapshot id used for this request.</li>
+</ul>
+
+<h3>12.3 Operator-visible signal</h3>
+<p>A non-zero divergence rate after the first week of shadow mode is the single most important signal: it directly
+identifies rules whose authors implicitly relied on the legacy normalization quirks. Surface this in
+<code>gpa-doctor</code> (Direction 6.2) so operators can fix their rules <em>before</em> enforce mode is enabled.</p>
+
+</section>
+
+<!-- ============================================================ -->
+<section id="risks">
+<h2><span class="num">13</span>Risks &amp; Open Questions</h2>
+
+<h3>13.1 Risks</h3>
+<ul>
+  <li><strong>Existing rules may rely on quirks.</strong> Mitigation: shadow mode + divergence reporting + a one-release
+    overlap period.</li>
+  <li><strong>Hostname rules.</strong> If a customer has a rule keyed on a hostname rather than an IP, our refusal to
+    DNS-resolve at the matcher means the rule will only match if the client also uses that exact hostname text.
+    Document clearly; provide a migration tool.</li>
+  <li><strong>IPv6 link-local zone IDs</strong> (<code>fe80::1%eth0</code>) — decide whether to strip or reject; current
+    proposal is to reject (fail-closed).</li>
+  <li><strong>Performance regression</strong> on tiny VMs with high IMDS QPS. Mitigation: benchmark suite gated in CI;
+    SmallVec; borrow-when-possible decoding.</li>
+</ul>
+
+<h3>13.2 Open questions</h3>
+<ol>
+  <li>Should <code>CanonicalPattern</code> support glob/regex on segments, or only exact + prefix? Recommendation: exact +
+    prefix only; richer matching is the policy-language work in Direction 2.2.</li>
+  <li>Do we expose the canonical form on <code>/.well-known/gpa/attestation</code> (Direction 3.3) for diagnostic use?
+    Recommendation: yes, but redact identifiers.</li>
+  <li>For unknown destinations, do we ever forward, or strictly deny? Current proposal: strictly deny.</li>
+</ol>
+
+</section>
+
+<!-- ============================================================ -->
+<section id="milestones">
+<h2><span class="num">14</span>Milestones</h2>
+
+<table>
+  <thead>
+    <tr><th>M</th><th>Deliverable</th><th>Exit criteria</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>M1</td>
+      <td>Module skeleton + types + error taxonomy</td>
+      <td>Compiles; unit tests for each helper at &gt; 90% line coverage</td>
+    </tr>
+    <tr>
+      <td>M2</td>
+      <td>Golden vectors + property tests + fuzz target</td>
+      <td>Zero panics in 1 CPU-day of fuzzing; all D1/C7 vectors pass</td>
+    </tr>
+    <tr>
+      <td>M3</td>
+      <td>Shadow-mode integration in <code>proxy_authorizer.rs</code></td>
+      <td>Divergence telemetry visible in dev/test; behavior unchanged for production traffic</td>
+    </tr>
+    <tr>
+      <td>M4</td>
+      <td>Rule-loader uses canonical patterns; legacy <code>Privilege</code> deprecated</td>
+      <td>All existing rule files still load; old API marked <code>#[deprecated]</code></td>
+    </tr>
+    <tr>
+      <td>M5</td>
+      <td>Region-by-region cutover to enforce mode</td>
+      <td>Zero divergence for 14 days per region; pentest S20–S22 pass</td>
+    </tr>
+    <tr>
+      <td>M6</td>
+      <td>Removal of legacy matcher</td>
+      <td>All call sites migrated; legacy code deleted; codebase reduction recorded</td>
+    </tr>
+  </tbody>
+</table>
+
+</section>
+
+<!-- ============================================================ -->
+<section id="appendix">
+<h2><span class="num">A</span>Appendix — Representative Vector Table</h2>
+
+<p>A sample of the golden vectors. The full table lives in
+<code>proxy_agent/src/proxy/canonical/tests/vectors.rs</code>.</p>
+
+<h3>A.1 Path vectors</h3>
+<table>
+  <thead><tr><th>Input path</th><th>Canonical</th><th>Or error</th></tr></thead>
+  <tbody>
+    <tr><td><code>/metadata/identity</code></td><td><code>/metadata/identity</code></td><td>—</td></tr>
+    <tr><td><code>/Metadata/Identity</code></td><td><code>/metadata/identity</code></td><td>—</td></tr>
+    <tr><td><code>/metadata//identity</code></td><td><code>/metadata/identity</code></td><td>—</td></tr>
+    <tr><td><code>/metadata/./identity</code></td><td><code>/metadata/identity</code></td><td>—</td></tr>
+    <tr><td><code>/metadata/x/../identity</code></td><td><code>/metadata/identity</code></td><td>—</td></tr>
+    <tr><td><code>/metadata%2Fidentity</code></td><td><code>/metadata/identity</code></td><td>—</td></tr>
+    <tr><td><code>/metadata%252Fidentity</code></td><td><code>/metadata%2fidentity</code></td><td>— (single decode only)</td></tr>
+    <tr><td><code>/metadata/%C0%AFidentity</code></td><td>—</td><td><code>OverlongUtf8</code></td></tr>
+    <tr><td><code>/metadata/identity/../../..</code></td><td>—</td><td><code>PathUnderflow</code></td></tr>
+    <tr><td><code>/metadata/identity;jsessionid=abc</code></td><td><code>/metadata/identity</code></td><td>—</td></tr>
+    <tr><td><code>/metadata/identity%3Fapi-version=2018</code></td><td>—</td><td><code>EmbeddedQuery</code></td></tr>
+    <tr><td><code>/metadata/identity%0A</code></td><td>—</td><td><code>ControlChar</code></td></tr>
+  </tbody>
+</table>
+
+<h3>A.2 Host vectors (all should map to <code>Destination::Imds</code>)</h3>
+<table>
+  <thead><tr><th>Host text</th><th>Result</th></tr></thead>
+  <tbody>
+    <tr><td><code>169.254.169.254</code></td><td><code>Imds</code></td></tr>
+    <tr><td><code>2852039166</code></td><td><code>Imds</code></td></tr>
+    <tr><td><code>0xa9fea9fe</code></td><td><code>Imds</code></td></tr>
+    <tr><td><code>0251.0376.0251.0376</code></td><td><code>Imds</code></td></tr>
+    <tr><td><code>[::ffff:169.254.169.254]</code></td><td><code>Imds</code></td></tr>
+    <tr><td><code>[::ffff:a9fe:a9fe]</code></td><td><code>Imds</code></td></tr>
+    <tr><td><code>user@169.254.169.254</code></td><td><code>CanonError::UserinfoPresent</code></td></tr>
+    <tr><td><code>169.254.169.254:80@evil.com</code></td><td><code>CanonError::BadHost</code></td></tr>
+    <tr><td><code>metadata.azure.internal</code></td><td><code>Destination::Unknown { host_text: Some(...) }</code></td></tr>
+  </tbody>
+</table>
+
+</section>
+
+<footer>
+  Detailed design for direction 2.1 of the GPA innovation plan. Parent doc: <a href="innovation-directions.html">innovation-directions.html</a>.
+  Source-of-truth files: <code>proxy_agent/src/proxy/authorization_rules.rs</code>,
+  <code>proxy_agent/src/key_keeper/key.rs</code>,
+  <code>pentest/linux/DESIGN.md</code>.
+</footer>
+
+</main>
+</div>
+</body>
+</html>

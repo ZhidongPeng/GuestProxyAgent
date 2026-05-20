@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>5.3 Cross-Cloud Port</title>
+<link rel="stylesheet" href="innovation.css"></head>
+<body><div class="layout">
+<nav class="toc">
+<a class="back" href="innovation-directions.html">← Back to all directions</a>
+<h2>Sections</h2><ol>
+<li><a href="#overview">1. Overview</a></li>
+<li><a href="#why">2. Why cross-cloud</a></li>
+<li><a href="#abstraction">3. Abstraction</a></li>
+<li><a href="#aws">4. AWS driver</a></li>
+<li><a href="#gcp">5. GCP driver</a></li>
+<li><a href="#packaging">6. Packaging</a></li>
+<li><a href="#integration">7. Integration</a></li>
+<li><a href="#tests">8. Tests</a></li>
+<li><a href="#risks">9. Risks</a></li>
+<li><a href="#milestones">10. Milestones</a></li>
+</ol></nav>
+<main>
+
+<header class="hero">
+  <div><span class="pill">GPA</span><span class="pill">Direction 5.3</span><span class="pill">Multi-cloud</span></div>
+  <h1>Detailed Design — Cross-Cloud Port</h1>
+  <p>Refactor signer + destinations into traits so community-supported drivers can govern AWS IMDSv2 and GCP metadata server traffic with the same eBPF chokepoint and rule engine. Positioning: a <em>metadata firewall for any cloud</em>.</p>
+  <p><strong>Files affected:</strong> trait surfaces in <code>proxy_agent/src/destinations/</code> and <code>proxy_agent/src/key_keeper/</code>.</p>
+</header>
+
+<section id="overview">
+<h2><span class="num">1</span>Overview &amp; Goals</h2>
+<div class="meta">
+  <div class="cell"><div class="label">Impact</div><div class="value"><span class="badge med">Medium</span> ecosystem reach</div></div>
+  <div class="cell"><div class="label">Effort</div><div class="value"><span class="badge med">Medium</span></div></div>
+  <div class="cell"><div class="label">Risk</div><div class="value"><span class="badge low">Low</span> additive</div></div>
+  <div class="cell"><div class="label">Scope</div><div class="value"><span class="badge scope">agent + drivers</span></div></div>
+</div>
+<h3>Goals</h3>
+<ul>
+  <li>AWS / GCP metadata services can be governed by the same agent.</li>
+  <li>Driver authors implement two traits; core remains untouched.</li>
+  <li>Existing Azure behavior unchanged.</li>
+</ul>
+</section>
+
+<section id="why">
+<h2><span class="num">2</span>Why Cross-Cloud</h2>
+<ul>
+  <li>AWS IMDSv2 and GCP metadata both have the confused-deputy class of bugs that motivated GPA.</li>
+  <li>Multi-cloud security teams want one mental model for "what can read instance credentials."</li>
+  <li>Architecture (cgroup eBPF + identity-aware proxy) is cloud-neutral; only the signer and destination set are Azure-specific.</li>
+</ul>
+</section>
+
+<section id="abstraction">
+<h2><span class="num">3</span>Abstraction Lines</h2>
+<pre><code>pub trait CloudPlatform: Send + Sync {
+    fn name(&amp;self) -&gt; &amp;'static str;
+    fn destinations(&amp;self) -&gt; Vec&lt;Box&lt;dyn DestinationDriver&gt;&gt;;
+    fn local_identity_source(&amp;self) -&gt; Box&lt;dyn IdentitySource&gt;; // node identity / instance role
+}
+
+pub trait RequestSigner: Send + Sync {
+    fn sign(&amp;self, req: &amp;mut http::Request&lt;Body&gt;, dest: &amp;Destination, caller: &amp;ResolvedIdentity)
+        -&gt; Result&lt;(), SignError&gt;;
+}</code></pre>
+<ul>
+  <li>Azure platform implementation reuses today's logic.</li>
+  <li>AWS / GCP implementations provided as separate crates so they can iterate independently.</li>
+</ul>
+</section>
+
+<section id="aws">
+<h2><span class="num">4</span>AWS Driver</h2>
+<ul>
+  <li>Destinations: <code>169.254.169.254:80</code> (IMDS) and instance-profile endpoints.</li>
+  <li>Signer: re-mints IMDSv2 session tokens with TTL bound by the caller's policy; rejects IMDSv1 PUT-less requests entirely.</li>
+  <li>Caller-scoped tokens optionally bound to pod identity in EKS.</li>
+</ul>
+</section>
+
+<section id="gcp">
+<h2><span class="num">5</span>GCP Driver</h2>
+<ul>
+  <li>Destinations: <code>metadata.google.internal</code> (169.254.169.254) and <code>metadata.google.internal:80</code>.</li>
+  <li>Mandates <code>Metadata-Flavor: Google</code> header presence (the standard GCP SSRF guard) and rejects requests without it.</li>
+  <li>Authorization scopes derived from URL path (<code>/instance/service-accounts/default/token</code> → <code>gcp:identity:read</code>).</li>
+</ul>
+</section>
+
+<section id="packaging">
+<h2><span class="num">6</span>Packaging</h2>
+<ul>
+  <li><code>gpa-azure</code>, <code>gpa-aws</code>, <code>gpa-gcp</code> binaries built from the same workspace with feature flags.</li>
+  <li>Default release is <code>gpa-azure</code>; AWS/GCP builds maintained by community + signed via the same Sigstore process (3.4).</li>
+</ul>
+</section>
+
+<section id="integration">
+<h2><span class="num">7</span>Integration</h2>
+<ul>
+  <li>Canonical model (2.1) cloud-neutral; <code>Destination::Unknown</code> becomes <code>Destination::CloudSpecific(&amp;'static str)</code> for non-fabric endpoints.</li>
+  <li>Capability scopes (1.4) namespaced per platform: <code>aws:sts:assume_role</code>, <code>gcp:storage:read</code>.</li>
+  <li>Telemetry (3.2) labels include <code>cloud</code>.</li>
+</ul>
+</section>
+
+<section id="tests">
+<h2><span class="num">8</span>Tests</h2>
+<ul>
+  <li>Conformance tests per driver against documented metadata API shapes.</li>
+  <li>Regression: Azure default build behaves byte-identically to today's release.</li>
+  <li>SSRF regression: cross-cloud known bypasses (e.g. <code>Metadata-Flavor</code> missing on GCP) blocked.</li>
+</ul>
+</section>
+
+<section id="risks">
+<h2><span class="num">9</span>Risks</h2>
+<ul>
+  <li><strong>Community ownership</strong> for non-Azure drivers — must clearly mark non-Azure builds as community-maintained.</li>
+  <li><strong>License compatibility</strong> for any cloud-specific SDKs — prefer plain HTTP clients.</li>
+</ul>
+</section>
+
+<section id="milestones">
+<h2><span class="num">10</span>Milestones</h2>
+<table>
+  <thead><tr><th>M</th><th>Deliverable</th><th>Exit</th></tr></thead>
+  <tbody>
+    <tr><td>M1</td><td>Trait refactor; Azure unchanged</td><td>All existing tests pass</td></tr>
+    <tr><td>M2</td><td>AWS driver MVP</td><td>EC2 instance with IMDSv2 enforcement demo</td></tr>
+    <tr><td>M3</td><td>GCP driver MVP</td><td>GCE instance demo</td></tr>
+  </tbody>
+</table>
+</section>
+
+<footer>Detail design for direction 5.3. Parent: <a href="innovation-directions.html">innovation-directions.html</a>.</footer>
+
+</main></div></body></html>

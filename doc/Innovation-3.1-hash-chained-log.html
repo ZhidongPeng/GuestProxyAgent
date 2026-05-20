@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>3.1 Hash-chained Audit Log</title>
+<link rel="stylesheet" href="innovation.css"></head>
+<body><div class="layout">
+<nav class="toc">
+<a class="back" href="innovation-directions.html">← Back to all directions</a>
+<h2>Sections</h2><ol>
+<li><a href="#overview">1. Overview</a></li>
+<li><a href="#today">2. Today</a></li>
+<li><a href="#format">3. Record format</a></li>
+<li><a href="#chain">4. Chain semantics</a></li>
+<li><a href="#anchor">5. Anchoring</a></li>
+<li><a href="#rotation">6. Rotation</a></li>
+<li><a href="#verify">7. Verifier tool</a></li>
+<li><a href="#integration">8. Integration</a></li>
+<li><a href="#tests">9. Tests</a></li>
+<li><a href="#risks">10. Risks</a></li>
+<li><a href="#milestones">11. Milestones</a></li>
+</ol></nav>
+<main>
+
+<header class="hero">
+  <div><span class="pill">GPA</span><span class="pill">Direction 3.1</span><span class="pill">Audit integrity</span></div>
+  <h1>Detailed Design — Hash-chained, Append-only Audit Log</h1>
+  <p>Wrap the connection log with a Merkle/hash chain so any post-hoc tampering (deletion, edit, injection) breaks the chain and is detectable. Optional anchoring to an external transparency log makes the chain non-repudiable.</p>
+  <p><strong>Files affected:</strong> <code>proxy_agent/src/common/logger</code> (Sink abstraction),
+    <code>proxy_agent/src/proxy/proxy_summary.rs</code>, new <code>proxy_agent/src/audit/chain.rs</code>.</p>
+</header>
+
+<section id="overview">
+<h2><span class="num">1</span>Overview &amp; Goals</h2>
+<div class="meta">
+  <div class="cell"><div class="label">Impact</div><div class="value"><span class="badge med">Medium</span> compliance + IR</div></div>
+  <div class="cell"><div class="label">Effort</div><div class="value"><span class="badge low">Small</span></div></div>
+  <div class="cell"><div class="label">Risk</div><div class="value"><span class="badge low">Low</span></div></div>
+  <div class="cell"><div class="label">Scope</div><div class="value"><span class="badge scope">agent</span></div></div>
+</div>
+<h3>Goals</h3>
+<ul>
+  <li>Tampering with the audit log is detectable; addresses pentest <code>F2</code> (log injection) and <code>F3</code> (rotation race).</li>
+  <li>No central service required for tamper-evidence; anchoring optional.</li>
+  <li>Negligible runtime overhead (≤ 1 µs / record).</li>
+</ul>
+</section>
+
+<section id="today">
+<h2><span class="num">2</span>Today</h2>
+<p>Connection log is a plain newline-delimited JSON file. A root attacker can edit or delete entries; an attacker who can inject newlines into a process name or URL can forge entries that pass downstream parsers.</p>
+</section>
+
+<section id="format">
+<h2><span class="num">3</span>Record Format</h2>
+<pre><code>// One line per record (NDJSON)
+{
+  "seq": 175201,
+  "ts": "2026-06-01T12:34:56.789Z",
+  "kind": "decision|policy_install|service|...",
+  "payload": { ... arbitrary ... },
+  "prev_hash": "b3:9f8a...",      // hash of record seq-1 (full line bytes)
+  "hash": "b3:2c1d..."            // sha256 of (prev_hash || canonical_json(payload) || ts || seq)
+}</code></pre>
+<ul>
+  <li><strong>Canonical JSON</strong> for the payload to ensure deterministic hashing across runtimes.</li>
+  <li><strong>Length-prefix</strong> embedded in the line (start of line: <code>16-hex-len </code>) to defeat newline-injection — parsers ignore content past <code>len</code>.</li>
+  <li>Every record carries its sequence number; gaps are immediately detected.</li>
+</ul>
+</section>
+
+<section id="chain">
+<h2><span class="num">4</span>Chain Semantics</h2>
+<ul>
+  <li>The chain is a forward hash list — minimal compute, sufficient for tamper-evidence.</li>
+  <li>Periodic "checkpoint" records (every N records or T seconds) include a Merkle root over the latest segment to allow O(log N) inclusion proofs later.</li>
+  <li><code>prev_hash</code> at sequence 0 is a fixed sentinel containing service start time, binary hash, and policy epoch at startup.</li>
+</ul>
+</section>
+
+<section id="anchor">
+<h2><span class="num">5</span>Anchoring (optional)</h2>
+<ul>
+  <li>Periodic checkpoint hashes can be:
+    <ul>
+      <li>Submitted to a Rekor-compatible transparency log.</li>
+      <li>Sent to Azure Monitor as a signed custom-log entry, signed by the VM's vTPM AIK if available.</li>
+      <li>Mirrored locally to a read-only directory under <code>/var/log/azure-proxy-agent/checkpoints/</code> for offline forensic use.</li>
+    </ul>
+  </li>
+  <li>Anchoring failures do not block log writes — fail-open for availability, log telemetry instead.</li>
+</ul>
+</section>
+
+<section id="rotation">
+<h2><span class="num">6</span>Rotation (closes F3)</h2>
+<ul>
+  <li>Rotation creates a new file <code>ProxyAgent.Connection.NNN.log</code>; the first record in NNN+1 is a "rotation" record that includes the final <code>hash</code> of NNN.</li>
+  <li>Open file via <code>O_NOFOLLOW | O_CREAT | O_EXCL</code> to defeat symlink swap.</li>
+  <li>Permissions enforced as 0600 root:root via <code>fchmod</code> after creation and verified before each append.</li>
+  <li>Rotation never overwrites; old files are renamed atomically.</li>
+</ul>
+</section>
+
+<section id="verify">
+<h2><span class="num">7</span>Verifier Tool</h2>
+<p><code>gpa audit verify [--from N] [--to M] [--anchor file]</code></p>
+<ul>
+  <li>Walks the chain, validates each record's hash; reports first divergence with sequence numbers and byte offsets.</li>
+  <li><code>--anchor</code> validates against a fetched checkpoint file (or rekor inclusion proof).</li>
+  <li>Exits non-zero on tamper-detection; suitable for SIEM integration.</li>
+</ul>
+</section>
+
+<section id="integration">
+<h2><span class="num">8</span>Integration</h2>
+<ul>
+  <li>Logger refactored to a <code>trait Sink</code> with implementations: <code>PlainFileSink</code> (legacy), <code>ChainedFileSink</code>, <code>SyslogSink</code>, <code>TestSink</code>.</li>
+  <li>Choice via config <code>audit.sink = "chained"</code>; default off in v1.</li>
+  <li>Connection log writer + service log writer share the sink trait so both gain integrity.</li>
+</ul>
+</section>
+
+<section id="tests">
+<h2><span class="num">9</span>Tests</h2>
+<ul>
+  <li>Append, verify → pass. Edit one byte of payload → verifier reports failure at that sequence.</li>
+  <li>Delete a record line → next record's <code>prev_hash</code> mismatch detected.</li>
+  <li>Newline injection in process name → verifier still parses correctly because length-prefix bounds the record.</li>
+  <li>Symlink swap pre-rotation → <code>O_NOFOLLOW</code> open fails; alert event written to previous file before exit.</li>
+  <li>Pentest <code>F2</code>/<code>F3</code> reruns: PASS.</li>
+</ul>
+</section>
+
+<section id="risks">
+<h2><span class="num">10</span>Risks</h2>
+<ul>
+  <li><strong>Performance:</strong> hashing every record adds ~1 µs; bounded.</li>
+  <li><strong>Recovery after crash:</strong> last partial line skipped on restart; checkpoint emitted noting the gap.</li>
+  <li><strong>Disk full:</strong> chain still self-consistent; rotation policy must avoid pruning without a verified anchor.</li>
+</ul>
+</section>
+
+<section id="milestones">
+<h2><span class="num">11</span>Milestones</h2>
+<table>
+  <thead><tr><th>M</th><th>Deliverable</th><th>Exit</th></tr></thead>
+  <tbody>
+    <tr><td>M1</td><td>Sink trait + plain + chained impls</td><td>Logger refactor merged behind feature flag</td></tr>
+    <tr><td>M2</td><td>Verifier CLI</td><td>F2/F3 pentest PASS</td></tr>
+    <tr><td>M3</td><td>Optional Rekor anchoring</td><td>Anchor docs published</td></tr>
+  </tbody>
+</table>
+</section>
+
+<footer>Detail design for direction 3.1. Parent: <a href="innovation-directions.html">innovation-directions.html</a>.</footer>
+
+</main></div></body></html>

@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>6.3 Rule Authoring UX</title>
+<link rel="stylesheet" href="innovation.css"></head>
+<body><div class="layout">
+<nav class="toc">
+<a class="back" href="innovation-directions.html">← Back to all directions</a>
+<h2>Sections</h2><ol>
+<li><a href="#overview">1. Overview</a></li>
+<li><a href="#schema">2. JSON Schema</a></li>
+<li><a href="#ext">3. VS Code extension</a></li>
+<li><a href="#diff">4. Diff view</a></li>
+<li><a href="#integration">5. Integration</a></li>
+<li><a href="#tests">6. Tests</a></li>
+<li><a href="#risks">7. Risks</a></li>
+<li><a href="#milestones">8. Milestones</a></li>
+</ol></nav>
+<main>
+
+<header class="hero">
+  <div><span class="pill">GPA</span><span class="pill">Direction 6.3</span><span class="pill">DX</span></div>
+  <h1>Detailed Design — Rule Authoring UX</h1>
+  <p>A JSON Schema for the rule format and a VS Code extension that gives autocomplete, validation, hover docs, and a diff view between the remote rule set and the local override (<code>local_rules.rs</code>).</p>
+  <p><strong>Files affected:</strong> new <code>schema/rules.schema.json</code>; new <code>tools/vscode-gpa-rules/</code> extension; uses the simulator from 6.1.</p>
+</header>
+
+<section id="overview">
+<h2><span class="num">1</span>Overview &amp; Goals</h2>
+<div class="meta">
+  <div class="cell"><div class="label">Impact</div><div class="value"><span class="badge med">Medium</span> author velocity</div></div>
+  <div class="cell"><div class="label">Effort</div><div class="value"><span class="badge med">Medium</span></div></div>
+  <div class="cell"><div class="label">Risk</div><div class="value"><span class="badge low">Low</span></div></div>
+  <div class="cell"><div class="label">Scope</div><div class="value"><span class="badge scope">tooling</span></div></div>
+</div>
+<h3>Goals</h3>
+<ul>
+  <li>Schema-driven authoring; no need to memorize field names.</li>
+  <li>Real-time decision preview using simulator (6.1).</li>
+  <li>Make local-override drift obvious.</li>
+</ul>
+</section>
+
+<section id="schema">
+<h2><span class="num">2</span>JSON Schema</h2>
+<pre><code>{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gpa.azure.com/schema/rules.json",
+  "type": "object",
+  "required": ["version","grants"],
+  "properties": {
+    "version": { "const": 2 },
+    "grants": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/grant" }
+    }
+  },
+  "$defs": {
+    "grant": {
+      "type": "object",
+      "required": ["principal","scopes"],
+      "properties": {
+        "principal": { "$ref": "#/$defs/principal" },
+        "scopes":    { "type": "array", "items": { "pattern":
+                       "^(imds|wireserver|hostga|keyvault|arm):" } },
+        "conditions": { "$ref": "#/$defs/conditions" }
+      }
+    }
+  }
+}</code></pre>
+<ul>
+  <li>Schema is the source of truth; agent parser is generated from it (or tested against it).</li>
+  <li>Published at a stable URL so editors auto-fetch.</li>
+</ul>
+</section>
+
+<section id="ext">
+<h2><span class="num">3</span>VS Code Extension</h2>
+<ul>
+  <li>Activates on files matching <code>**/gpa.rules.json</code> or with the JSON schema header.</li>
+  <li>Autocomplete for principal kinds, scope strings, conditions.</li>
+  <li>Hover docs explain each scope (e.g. "imds:identity:read — allows the token endpoint, response includes the access token").</li>
+  <li>Status-bar shows simulator verdict for a focused request (loaded from a sibling <code>.req.json</code>).</li>
+  <li>Quick fix: convert <code>identity: "*"</code> to scoped rules using cluster/fleet audit data.</li>
+</ul>
+</section>
+
+<section id="diff">
+<h2><span class="num">4</span>Diff View</h2>
+<ul>
+  <li>"GPA: Compare Local Override to Remote" command opens a diff between the remote rule set and the compiled-in overrides from <code>proxy_agent/src/authorization/local_rules.rs</code>.</li>
+  <li>Renders both as canonical JSON for clean diff regardless of source format.</li>
+  <li>Flags any local rule that is broader than the remote rule.</li>
+</ul>
+</section>
+
+<section id="integration">
+<h2><span class="num">5</span>Integration</h2>
+<ul>
+  <li>Extension invokes <code>gpa policy simulate</code> via a sidecar process (no remote dependencies).</li>
+  <li>Schema versioned alongside the agent; CI generates updated schema on each release.</li>
+</ul>
+</section>
+
+<section id="tests">
+<h2><span class="num">6</span>Tests</h2>
+<ul>
+  <li>Schema validation matches agent parser on a corpus of known-good + known-bad rule files.</li>
+  <li>Extension contract tests using <code>vscode-test</code>.</li>
+</ul>
+</section>
+
+<section id="risks">
+<h2><span class="num">7</span>Risks</h2>
+<ul>
+  <li><strong>Schema drift</strong> vs. parser. Mitigation: generate parser tests from schema; CI fails on drift.</li>
+</ul>
+</section>
+
+<section id="milestones">
+<h2><span class="num">8</span>Milestones</h2>
+<table>
+  <thead><tr><th>M</th><th>Deliverable</th><th>Exit</th></tr></thead>
+  <tbody>
+    <tr><td>M1</td><td>JSON Schema + drift CI</td><td>Schema used in agent tests</td></tr>
+    <tr><td>M2</td><td>VS Code extension (autocomplete + simulate)</td><td>Used by ≥ 3 rule authors</td></tr>
+    <tr><td>M3</td><td>Diff view</td><td>Local override drift visible at a glance</td></tr>
+  </tbody>
+</table>
+</section>
+
+<footer>Detail design for direction 6.3. Parent: <a href="innovation-directions.html">innovation-directions.html</a>.</footer>
+
+</main></div></body></html>

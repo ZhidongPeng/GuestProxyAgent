@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>5.2 Gate More Endpoints</title>
+<link rel="stylesheet" href="innovation.css"></head>
+<body><div class="layout">
+<nav class="toc">
+<a class="back" href="innovation-directions.html">← Back to all directions</a>
+<h2>Sections</h2><ol>
+<li><a href="#overview">1. Overview</a></li>
+<li><a href="#today">2. Today</a></li>
+<li><a href="#design">3. Destination drivers</a></li>
+<li><a href="#kv">4. KeyVault example</a></li>
+<li><a href="#arm">5. ARM token example</a></li>
+<li><a href="#config">6. Config</a></li>
+<li><a href="#integration">7. Integration</a></li>
+<li><a href="#tests">8. Tests</a></li>
+<li><a href="#risks">9. Risks</a></li>
+<li><a href="#milestones">10. Milestones</a></li>
+</ol></nav>
+<main>
+
+<header class="hero">
+  <div><span class="pill">GPA</span><span class="pill">Direction 5.2</span><span class="pill">New endpoints</span></div>
+  <h1>Detailed Design — Gate Additional Cloud-Credential Endpoints</h1>
+  <p>Generalize GPA from "IMDS + WireServer + HostGAPlugin" to a pluggable framework where additional cloud-credential endpoints (KeyVault MSI, ARM token, Storage MI) are governed by the same rule engine.</p>
+  <p><strong>Files affected:</strong> new <code>proxy_agent/src/destinations/</code> module, canonical model (2.1), classifier (1.4).</p>
+</header>
+
+<section id="overview">
+<h2><span class="num">1</span>Overview &amp; Goals</h2>
+<div class="meta">
+  <div class="cell"><div class="label">Impact</div><div class="value"><span class="badge high">High</span> bigger product surface</div></div>
+  <div class="cell"><div class="label">Effort</div><div class="value"><span class="badge med">Medium</span></div></div>
+  <div class="cell"><div class="label">Risk</div><div class="value"><span class="badge low">Low</span> additive</div></div>
+  <div class="cell"><div class="label">Scope</div><div class="value"><span class="badge scope">agent</span></div></div>
+</div>
+<h3>Goals</h3>
+<ul>
+  <li>One rule language to govern all cloud-credential egress.</li>
+  <li>New endpoints add a driver module; no core changes.</li>
+  <li>Authoring stays declarative.</li>
+</ul>
+</section>
+
+<section id="today">
+<h2><span class="num">2</span>Today</h2>
+<p>Destination IPs are hard-coded; classifier knows only IMDS/WireServer/HostGAPlugin URL shapes. Customers wanting to gate KeyVault calls have no path through GPA.</p>
+</section>
+
+<section id="design">
+<h2><span class="num">3</span>Destination Drivers</h2>
+<pre><code>pub trait DestinationDriver: Send + Sync {
+    fn id(&amp;self) -&gt; &amp;'static str;
+    fn addresses(&amp;self) -&gt; &amp;[SocketAddrSpec]; // IPs/ports for eBPF redirect map
+    fn classify(&amp;self, req: &amp;CanonicalRequest) -&gt; Option&lt;Scope&gt;;
+    fn signer(&amp;self) -&gt; &amp;dyn RequestSigner; // adds creds before forwarding
+    fn upstream(&amp;self, req: &amp;CanonicalRequest) -&gt; Upstream; // resolved URL/host
+}</code></pre>
+<ul>
+  <li>Built-in drivers: <code>imds</code>, <code>wireserver</code>, <code>hostga</code>.</li>
+  <li>New drivers: <code>keyvault_msi</code>, <code>arm_token</code>, <code>storage_mi</code>.</li>
+  <li>Drivers register their address specs at startup; eBPF redirect map is populated dynamically.</li>
+</ul>
+</section>
+
+<section id="kv">
+<h2><span class="num">4</span>KeyVault MSI Example</h2>
+<ul>
+  <li>Destination spec: <code>*.vault.azure.net:443</code> (TLS-terminated; SNI used for routing).</li>
+  <li>Classifier maps <code>GET /secrets/&lt;name&gt;?api-version=...</code> to scope <code>keyvault:secret:read:&lt;vault&gt;</code>.</li>
+  <li>Signer fetches an AAD token using PoP-bound identity (no static client secrets in the agent).</li>
+  <li>Rules: <code>{ identity: "billing-pod", scopes: ["keyvault:secret:read:billing-vault"] }</code>.</li>
+</ul>
+</section>
+
+<section id="arm">
+<h2><span class="num">5</span>ARM Token Example</h2>
+<ul>
+  <li>Destination: <code>management.azure.com:443</code>.</li>
+  <li>Classifier maps verb + resource provider to typed scopes (<code>arm:Microsoft.Compute/virtualMachines:read</code>).</li>
+  <li>Scopes intentionally align with Azure RBAC action names so policy is reviewable side-by-side with RBAC role definitions.</li>
+</ul>
+</section>
+
+<section id="config">
+<h2><span class="num">6</span>Config</h2>
+<pre><code>{
+  "destinations": {
+    "enabled": ["imds","wireserver","hostga","keyvault_msi"],
+    "keyvault_msi": { "vaults": ["billing-vault","app-vault"] }
+  }
+}</code></pre>
+<ul>
+  <li>Enabled set drives which BPF redirect entries are loaded.</li>
+  <li>Disabling a driver removes its redirect entries safely.</li>
+</ul>
+</section>
+
+<section id="integration">
+<h2><span class="num">7</span>Integration</h2>
+<ul>
+  <li>Canonical model (2.1) needs to handle TLS-fronted destinations; for those, the agent terminates TLS using a fabric-provisioned cert (acceptable for the localhost hop).</li>
+  <li>PoP (1.1) signing applies uniformly because tokens are minted with audience = driver id.</li>
+  <li>OTel (3.2) labels include driver id.</li>
+</ul>
+</section>
+
+<section id="tests">
+<h2><span class="num">8</span>Tests</h2>
+<ul>
+  <li>Per-driver classification golden vectors.</li>
+  <li>Disable driver → no redirect entry → connection bypasses agent → fabric-side AAD rejects (defense-in-depth).</li>
+  <li>End-to-end: pod calls KeyVault → agent enforces scope → upstream succeeds.</li>
+</ul>
+</section>
+
+<section id="risks">
+<h2><span class="num">9</span>Risks</h2>
+<ul>
+  <li><strong>TLS termination at localhost</strong> requires careful cert handling. Mitigation: certs generated per-boot, pinned by SPKI; never exposed off-host.</li>
+  <li><strong>Endpoint churn</strong> — APIs evolve. Mitigation: driver tables updateable independently of agent core.</li>
+</ul>
+</section>
+
+<section id="milestones">
+<h2><span class="num">10</span>Milestones</h2>
+<table>
+  <thead><tr><th>M</th><th>Deliverable</th><th>Exit</th></tr></thead>
+  <tbody>
+    <tr><td>M1</td><td>Driver trait + refactor existing endpoints</td><td>No behavior change</td></tr>
+    <tr><td>M2</td><td>KeyVault MSI driver</td><td>Pilot customer</td></tr>
+    <tr><td>M3</td><td>ARM token driver</td><td>Mapped scopes align with RBAC</td></tr>
+  </tbody>
+</table>
+</section>
+
+<footer>Detail design for direction 5.2. Parent: <a href="innovation-directions.html">innovation-directions.html</a>.</footer>
+
+</main></div></body></html>

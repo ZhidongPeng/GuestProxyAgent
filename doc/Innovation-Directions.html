@@ -1,0 +1,709 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Guest Proxy Agent — Innovation Directions: Designs &amp; Implementation Plans</title>
+<style>
+  :root {
+    --bg: #0e1116;
+    --panel: #161b22;
+    --panel-2: #1c2330;
+    --text: #e6edf3;
+    --muted: #9ba7b4;
+    --accent: #4ea1ff;
+    --accent-2: #7ee787;
+    --warn: #f0883e;
+    --danger: #ff7b72;
+    --border: #2d333b;
+    --code-bg: #0b0f14;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .layout { display: grid; grid-template-columns: 280px 1fr; min-height: 100vh; }
+  nav.toc {
+    position: sticky; top: 0; align-self: start;
+    height: 100vh; overflow-y: auto;
+    border-right: 1px solid var(--border);
+    background: var(--panel);
+    padding: 20px 18px;
+  }
+  nav.toc h2 { font-size: 13px; text-transform: uppercase; color: var(--muted); margin: 0 0 12px; letter-spacing: .08em; }
+  nav.toc ol { list-style: none; padding: 0; margin: 0; }
+  nav.toc ol li { margin: 6px 0; }
+  nav.toc ol li a { color: var(--text); font-size: 14px; }
+  nav.toc ol li ul { list-style: none; padding-left: 14px; margin: 4px 0 8px; border-left: 1px solid var(--border); }
+  nav.toc ol li ul li a { color: var(--muted); font-size: 13px; }
+  main { padding: 36px 48px 80px; max-width: 1100px; }
+  header.hero {
+    border: 1px solid var(--border); background: linear-gradient(135deg, #1a2030, #161b22);
+    padding: 28px 30px; border-radius: 12px; margin-bottom: 32px;
+  }
+  header.hero h1 { margin: 0 0 8px; font-size: 26px; }
+  header.hero p { margin: 4px 0; color: var(--muted); }
+  .pill { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px;
+    background: #1f2937; color: var(--accent); border: 1px solid var(--border); margin-right: 6px; }
+  section.direction {
+    border: 1px solid var(--border); border-radius: 12px; background: var(--panel);
+    padding: 28px 30px; margin: 26px 0;
+  }
+  section.direction h2 { margin: 0 0 6px; font-size: 22px; color: var(--accent); }
+  section.direction h2 .num { color: var(--accent-2); margin-right: 10px; font-variant-numeric: tabular-nums; }
+  section.direction h3 { margin: 22px 0 8px; font-size: 16px; color: var(--text); border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+  section.direction h4 { margin: 16px 0 6px; font-size: 14px; color: var(--accent-2); }
+  .meta {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin: 12px 0 18px;
+  }
+  .meta .cell {
+    background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px;
+    padding: 8px 10px;
+  }
+  .meta .cell .label { font-size: 11px; text-transform: uppercase; color: var(--muted); letter-spacing: .06em; }
+  .meta .cell .value { font-size: 13px; margin-top: 2px; }
+  code, pre { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; }
+  code { background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; font-size: 12.5px; }
+  pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;
+    padding: 14px 16px; overflow-x: auto; font-size: 12.5px; line-height: 1.5; }
+  pre code { background: transparent; border: 0; padding: 0; }
+  table { width: 100%; border-collapse: collapse; margin: 10px 0; font-size: 13.5px; }
+  th, td { border: 1px solid var(--border); padding: 8px 10px; text-align: left; vertical-align: top; }
+  th { background: var(--panel-2); color: var(--muted); font-weight: 600; }
+  ul, ol { padding-left: 22px; }
+  ul li, ol li { margin: 4px 0; }
+  .badge { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 4px;
+    border: 1px solid var(--border); margin-right: 4px; }
+  .badge.high   { background: #3a1d1d; color: var(--danger);  border-color: #5b2a2a; }
+  .badge.med    { background: #3a2a14; color: var(--warn);    border-color: #5a3e1d; }
+  .badge.low    { background: #14321f; color: var(--accent-2);border-color: #1f4a2e; }
+  .badge.scope  { background: #14253a; color: var(--accent);  border-color: #1f3a5a; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .callout {
+    border-left: 3px solid var(--accent); background: var(--panel-2);
+    padding: 10px 14px; border-radius: 6px; margin: 12px 0;
+  }
+  .callout.warn { border-left-color: var(--warn); }
+  .callout.danger { border-left-color: var(--danger); }
+  a.detail-link { display: inline-block; margin: -2px 0 10px; padding: 3px 10px; font-size: 12px;
+    background: #14253a; color: var(--accent); border: 1px solid #1f3a5a; border-radius: 999px;
+    text-decoration: none; }
+  a.detail-link:hover { background: #1f3a5a; text-decoration: none; }
+  a.detail-link::after { content: " \2192"; }
+  footer { color: var(--muted); font-size: 12px; margin-top: 50px; border-top: 1px solid var(--border); padding-top: 16px; }
+  @media (max-width: 900px) {
+    .layout { grid-template-columns: 1fr; }
+    nav.toc { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--border); }
+    main { padding: 24px 18px 60px; }
+    .meta { grid-template-columns: 1fr 1fr; }
+    .grid2 { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="layout">
+
+<nav class="toc">
+  <h2>Innovation Directions</h2>
+  <ol>
+    <li><a href="#d1">1. AuthN/AuthZ Model</a>
+      <ul>
+        <li><a href="#d1-tokens">Short-lived PoP tokens</a></li>
+        <li><a href="#d1-vtpm">vTPM / CVM sealing</a></li>
+        <li><a href="#d1-identity">Measured identity</a></li>
+        <li><a href="#d1-cap">Capability grants</a></li>
+      </ul>
+    </li>
+    <li><a href="#d2">2. Rule Engine Modernization</a></li>
+    <li><a href="#d3">3. Observability &amp; Supply Chain</a></li>
+    <li><a href="#d4">4. eBPF / Kernel Hardening</a></li>
+    <li><a href="#d5">5. Threat Coverage Expansion</a></li>
+    <li><a href="#d6">6. Developer &amp; Operator UX</a></li>
+    <li><a href="#d7">7. Performance &amp; Footprint</a></li>
+    <li><a href="#roadmap">Cross-cutting Roadmap</a></li>
+  </ol>
+</nav>
+
+<main>
+
+<header class="hero">
+  <div>
+    <span class="pill">Azure Guest Proxy Agent</span>
+    <span class="pill">Rust + eBPF</span>
+    <span class="pill">Security</span>
+  </div>
+  <h1>Innovation Directions — Detailed Designs &amp; Implementation Plans</h1>
+  <p>Companion document to the repo analysis. Each direction includes goals, design, code-level touch points in the GPA codebase, an incremental implementation plan, test strategy, risks, and success metrics.</p>
+  <p><strong>Reference areas:</strong>
+    <code>proxy_agent/src/proxy/authorization_rules.rs</code>,
+    <code>proxy_agent/src/key_keeper/</code>,
+    <code>proxy_agent/src/redirector/</code>,
+    <code>proxy_agent_extension/</code>,
+    <code>pentest/linux/</code>.
+  </p>
+</header>
+
+<!-- =================================================================== -->
+<section class="direction" id="d1">
+<h2><span class="num">1</span>Strengthen the AuthN/AuthZ Model</h2>
+
+<div class="meta">
+  <div class="cell"><div class="label">Impact</div><div class="value"><span class="badge high">High</span> closes whole vuln classes</div></div>
+  <div class="cell"><div class="label">Effort</div><div class="value"><span class="badge med">Medium–Large</span></div></div>
+  <div class="cell"><div class="label">Risk</div><div class="value"><span class="badge med">Wire-compat with fabric</span></div></div>
+  <div class="cell"><div class="label">Scope</div><div class="value"><span class="badge scope">agent + fabric coord</span></div></div>
+</div>
+
+<p>Today GPA authenticates with a long-lived HMAC key latched at provisioning time
+(<code>proxy_agent/src/key_keeper/key.rs</code>) and adds <code>x-ms-azure-signature</code> to
+every authorized request. Identity is taken from cgroup + <code>processFullPath</code> reported by eBPF audit.
+Four sub-initiatives raise the floor.</p>
+
+<h3 id="d1-tokens">1.1 Short-lived Proof-of-Possession (PoP) tokens</h3>
+<a class="detail-link" href="innovation-1.1-pop-tokens.html">Detailed design</a>
+
+<h4>Goal</h4>
+<ul>
+  <li>Eliminate the "steal key file → sign forever" path (pentest <code>B3</code>, <code>E5</code>).</li>
+  <li>Bind each token to caller, destination, and time, so replay (<code>B2</code>) becomes structurally impossible.</li>
+</ul>
+
+<h4>Design</h4>
+<ul>
+  <li>Replace the single HMAC over <code>METHOD || URL || time-tick</code> with a JWS-like compact token:
+    <code>header.payload.sig</code> where payload includes
+    <code>{aud, sub (caller fingerprint), iat, exp ≤ 30s, nonce, dest_ip, url_hash}</code>.</li>
+  <li>Signature stays HMAC-SHA256 initially (no fabric crypto change), but the <em>signed claims</em> shape changes,
+    so the fabric can reject any token without an <code>exp</code>.</li>
+  <li>Token is minted per request in <code>proxy_server.rs</code> right before forwarding; replaces direct header injection.</li>
+  <li>Add a <em>session key</em> derived from latched key + nonce so the latched key never appears on the wire and never signs raw HTTP.</li>
+</ul>
+
+<h4>Code touch points</h4>
+<ul>
+  <li><code>proxy_agent/src/key_keeper/key.rs</code> — add <code>derive_session_key(nonce) -&gt; SessionKey</code>.</li>
+  <li><code>proxy_agent/src/proxy/proxy_server.rs</code> — replace <code>x-ms-azure-signature</code> mint path with <code>mint_pop_token(req, caller, dest)</code>.</li>
+  <li><code>proxy_agent_shared</code> — new module <code>pop_token</code> with serde structs + constant-time compare.</li>
+  <li>Wire-compat shim: emit both legacy and new headers behind a feature flag <code>pop_v2</code> until fabric is ready.</li>
+</ul>
+
+<h4>Plan</h4>
+<ol>
+  <li>RFC + threat model doc; align with WireServer/IMDS team on header name and accepted claim set.</li>
+  <li>Implement <code>pop_token</code> crate with golden-vector tests.</li>
+  <li>Ship dual-emit behind config flag; telemetry-only (fabric ignores new header).</li>
+  <li>Fabric flips acceptance; deprecate legacy header after one release cycle.</li>
+</ol>
+
+<h4>Tests</h4>
+<ul>
+  <li>Unit: claim canonicalization, clock-skew tolerance, constant-time verify.</li>
+  <li>Pentest re-runs: <code>B2</code> replay must fail; <code>B3</code> stolen-key + cross-VM must still fail because <code>sub</code> binds caller identity verified by fabric+vTPM (see 1.2).</li>
+  <li>Fuzz the token parser (<code>cargo-fuzz</code>).</li>
+</ul>
+
+<h4>Risks</h4>
+<ul>
+  <li>Clock drift; mitigate by accepting ±60s and refreshing via fabric time.</li>
+  <li>Fabric rollout coupling; mitigate with dual-emit flag.</li>
+</ul>
+
+<h3 id="d1-vtpm">1.2 vTPM / Confidential-VM attestation binding</h3>
+<a class="detail-link" href="innovation-1.2-vtpm-sealing.html">Detailed design</a>
+
+<h4>Goal</h4>
+<p>Make a stolen key file useless on another VM, and make key rollback (<code>E5</code>) cryptographically infeasible.</p>
+
+<h4>Design</h4>
+<ul>
+  <li>At provisioning, seal the latched key to vTPM PCRs covering: firmware, bootloader, kernel cmdline, and <code>azure-proxy-agent</code> binary measurement (IMA).</li>
+  <li>Under CVM (SEV-SNP / TDX), include the attestation report hash. The fabric stores the bound report and only honors signatures whose KID matches.</li>
+  <li>On unseal failure (rebooted into a tampered image), GPA enters fail-closed and requests a re-provisioning.</li>
+</ul>
+
+<h4>Code touch points</h4>
+<ul>
+  <li>New crate <code>proxy_agent/src/key_keeper/sealing/</code> with backends:
+    <code>tpm2.rs</code> (uses <code>tss-esapi</code>), <code>snp.rs</code>, <code>tdx.rs</code>, <code>noop.rs</code>.</li>
+  <li><code>key.rs</code> — add <code>load_sealed()</code> / <code>store_sealed()</code> wrapping current on-disk reads.</li>
+  <li>Provisioning flow in <code>provision.rs</code> — request fresh attestation, hand to fabric, persist sealed blob.</li>
+</ul>
+
+<h4>Plan</h4>
+<ol>
+  <li>Backend detection helper (probe <code>/dev/tpmrm0</code>, SEV-SNP MSRs, TDX guest module).</li>
+  <li>Implement <code>noop</code> + <code>tpm2</code> backends behind feature flag; keep current plain-file path as default.</li>
+  <li>Pilot in selected SKUs; collect attestation latency telemetry.</li>
+  <li>Promote to default for CVM SKUs; keep plain-file as fallback for legacy SKUs.</li>
+</ol>
+
+<h4>Tests</h4>
+<ul>
+  <li>Reboot with modified kernel cmdline must produce unseal failure → fail-closed.</li>
+  <li>Snapshot+restore of <code>/var/lib/azure-proxy-agent</code> to a different VM must fail unseal.</li>
+  <li>Pentest <code>E5</code> rollback: re-introducing an older sealed blob fails monotonic counter check.</li>
+</ul>
+
+<h3 id="d1-identity">1.3 Measured caller identity (replace path-string matching)</h3>
+<a class="detail-link" href="innovation-1.3-measured-identity.html">Detailed design</a>
+
+<h4>Goal</h4>
+<p>Defeat pentest scenarios <code>C3</code> (bind-mount over <code>/proc/self/exe</code>) and <code>D2</code> (symlink to allowed binary) by matching on <em>what the code is</em>, not <em>where it lives</em>.</p>
+
+<h4>Design</h4>
+<ul>
+  <li>Capture binary measurement in-kernel via <strong>IMA</strong> (<code>ima_file_hash()</code>) or <strong>fs-verity</strong> root hash; on Windows, use code-integrity / WDAC hash.</li>
+  <li>Emit measurement in the eBPF audit event consumed by <code>redirector::lookup_audit</code>.</li>
+  <li>Extend <code>Privilege</code> in <code>key.rs</code> with optional <code>exeHash: Option&lt;Sha256&gt;</code>; matcher prefers hash over path when present, and rejects when both diverge.</li>
+</ul>
+
+<h4>Code touch points</h4>
+<ul>
+  <li><code>linux-ebpf/ebpf_cgroup.c</code> — augment audit map value with hash bytes.</li>
+  <li><code>proxy_agent/src/redirector/linux/</code> — surface hash field.</li>
+  <li><code>proxy_agent/src/proxy/authorization_rules.rs</code> — new matcher predicate; back-compat: if rule lacks hash, fall back to path matching.</li>
+</ul>
+
+<h4>Plan</h4>
+<ol>
+  <li>Add hash plumbing end-to-end, audit-only (log mismatches).</li>
+  <li>Author tooling to generate hashes for allow-listed binaries (extension handlers, customer agents).</li>
+  <li>Enable enforcement per rule via <code>enforceMeasurement: true</code>.</li>
+</ol>
+
+<h3 id="d1-cap">1.4 Capability-style scoped grants</h3>
+<a class="detail-link" href="innovation-1.4-capability-scopes.html">Detailed design</a>
+
+<h4>Goal</h4>
+<p>Move from "this path is allowed for this identity" to verifiable scopes
+(<code>imds:instance:read</code>, <code>wireserver:goalstate:read</code>, <code>hostga:extensions:status:write</code>).</p>
+
+<h4>Design</h4>
+<ul>
+  <li>Introduce a Cedar/CEL-style policy compiled to an evaluation IR at rule-load time.</li>
+  <li>Each request is mapped to a typed <code>Action</code> + <code>Resource</code> by a URL classifier (one canonical mapping table per endpoint).</li>
+  <li>Identity carries a set of granted scopes; decision is <code>scopes ⊇ required(action)</code>.</li>
+</ul>
+
+<h4>Why it matters</h4>
+<ul>
+  <li>Enables static analysis ("does any rule grant unauthenticated WireServer write?") — see direction 2.</li>
+  <li>Eliminates SSRF-style URL-encoding bypasses because the classifier normalizes once and operates on the typed action.</li>
+</ul>
+
+</section>
+
+<!-- =================================================================== -->
+<section class="direction" id="d2">
+<h2><span class="num">2</span>Modernize the Rule Engine</h2>
+
+<div class="meta">
+  <div class="cell"><div class="label">Impact</div><div class="value"><span class="badge high">High</span> kills SSRF-bypass family</div></div>
+  <div class="cell"><div class="label">Effort</div><div class="value"><span class="badge med">Medium</span></div></div>
+  <div class="cell"><div class="label">Risk</div><div class="value"><span class="badge low">Self-contained</span></div></div>
+  <div class="cell"><div class="label">Scope</div><div class="value"><span class="badge scope">agent only</span></div></div>
+</div>
+
+<p>Current matcher: lowercased <code>request.path().starts_with(rule.path)</code> plus a query-param map
+(<a>authorization_rules.rs:194</a>, <a>key.rs:223</a>). This is the largest single source of latent
+AuthZ bypass surface.</p>
+
+<h3>2.1 Canonical request model</h3>
+<a class="detail-link" href="innovation-2.1-canonical-request.html">Detailed design</a>
+<ul>
+  <li>Build a single <code>CanonicalRequest</code> type produced by <em>one</em> normalizer:
+    percent-decode → collapse <code>.</code>/<code>..</code> → strip <code>;params</code> → lowercase host → resolve numeric IP forms
+    (decimal, hex, IPv4-mapped IPv6 — pentest <code>C7</code>).</li>
+  <li>Use the same normalizer for rule loading and request matching — eliminates rule/request asymmetry.</li>
+  <li>Reject requests whose normalization is ambiguous (e.g. invalid UTF-8 in path) — fail-closed.</li>
+</ul>
+
+<h3>2.2 Typed policy language</h3>
+<a class="detail-link" href="innovation-2.2-typed-policy-cedar.html">Detailed design</a>
+<ul>
+  <li>Pick one: <strong>Cedar</strong> (Rust-native, fast, analyzable) or <strong>OPA/Rego</strong> (familiar).
+    Recommendation: <strong>Cedar</strong> — has a verified evaluator and supports static analysis.</li>
+  <li>Compile JSON rules at load time into a Cedar policy set; keep a legacy adapter so existing rules continue to work.</li>
+</ul>
+
+<pre><code>// proxy_agent/src/proxy/policy/mod.rs
+pub struct CompiledPolicy { /* Cedar policy set + entity store */ }
+
+impl CompiledPolicy {
+    pub fn from_legacy(rules: &amp;AuthorizationItem) -&gt; Result&lt;Self&gt; { /* ... */ }
+    pub fn evaluate(&amp;self, req: &amp;CanonicalRequest, caller: &amp;CallerIdentity) -&gt; Decision { /* ... */ }
+}</code></pre>
+
+<h3>2.3 Versioned snapshots (TOCTOU fix — pentest D5)</h3>
+<a class="detail-link" href="innovation-2.3-versioned-snapshots.html">Detailed design</a>
+<ul>
+  <li>Wrap the active policy in <code>arc_swap::ArcSwap&lt;CompiledPolicy&gt;</code>.</li>
+  <li>Each request captures <code>(arc, epoch)</code> at accept time and uses it for the whole forwarding decision.</li>
+  <li>Surface <code>policy_epoch</code> in the connection log.</li>
+</ul>
+
+<h3>2.4 Differential / property testing</h3>
+<a class="detail-link" href="innovation-2.4-differential-testing.html">Detailed design</a>
+<ul>
+  <li>For each rule loaded, auto-generate "evil twins":
+    case toggles, percent-encoded slashes, trailing-slash variants, IPv6 forms, Unicode confusables.</li>
+  <li>Run the matcher on each variant; mismatch with the original ⇒ block the rule and alert.</li>
+  <li>Integrate into <code>local_rules.rs</code> reload path and into CI.</li>
+</ul>
+
+<h3>Plan</h3>
+<ol>
+  <li>Introduce <code>CanonicalRequest</code> + normalizer; add property-tests (<code>proptest</code>) and run against the current matcher in shadow mode.</li>
+  <li>Land Cedar compilation behind a feature flag; dual-evaluate (legacy + Cedar), log divergences.</li>
+  <li>Flip enforcement to Cedar once divergence rate is zero for N days in production telemetry.</li>
+  <li>Remove legacy matcher.</li>
+</ol>
+
+<h3>Metrics</h3>
+<ul>
+  <li>Divergence rate (legacy vs Cedar) → must reach 0 before cutover.</li>
+  <li>Pentest <code>D1</code>/<code>C7</code> scenarios reach 100% pass.</li>
+  <li>Rule load time &lt; 50 ms for 1k rules.</li>
+</ul>
+
+</section>
+
+<!-- =================================================================== -->
+<section class="direction" id="d3">
+<h2><span class="num">3</span>Observability &amp; Supply-Chain Trust</h2>
+
+<div class="meta">
+  <div class="cell"><div class="label">Impact</div><div class="value"><span class="badge med">Medium</span> + audit/compliance</div></div>
+  <div class="cell"><div class="label">Effort</div><div class="value"><span class="badge med">Medium</span></div></div>
+  <div class="cell"><div class="label">Risk</div><div class="value"><span class="badge low">Low</span></div></div>
+  <div class="cell"><div class="label">Scope</div><div class="value"><span class="badge scope">agent + build pipeline</span></div></div>
+</div>
+
+<h3>3.1 Hash-chained, append-only audit log</h3>
+<a class="detail-link" href="innovation-3.1-hash-chained-log.html">Detailed design</a>
+<ul>
+  <li>Wrap the existing connection log with a Merkle chain:
+    <code>entry_n.hash = SHA256(entry_n.payload || entry_{n-1}.hash)</code>.</li>
+  <li>Periodically anchor the tip to a transparency log (rekor-compatible) or to Azure Monitor as a signed sentinel.</li>
+  <li>Closes pentest <code>F2</code> (log injection) and <code>F3</code> (rotation race) — tampering breaks the chain and is detectable.</li>
+</ul>
+
+<h3>3.2 OpenTelemetry export</h3>
+<a class="detail-link" href="innovation-3.2-otel-export.html">Detailed design</a>
+<ul>
+  <li>Emit metrics: allow/deny counts by rule id, signer latency, eBPF map occupancy, restart count.</li>
+  <li>Emit traces for the proxy hop (accept → authz → upstream → response) with W3C trace context.</li>
+  <li>Optional OTLP endpoint; defaults to local Prometheus exposition on a UDS only.</li>
+</ul>
+
+<h3>3.3 Self-attestation endpoint</h3>
+<a class="detail-link" href="innovation-3.3-self-attestation.html">Detailed design</a>
+<ul>
+  <li>New read-only endpoint on the local listener: <code>GET /.well-known/gpa/attestation</code>.</li>
+  <li>Returns: agent version, binary measurement, loaded eBPF prog ids and bytecode hash, attached cgroup,
+    active <code>policy_epoch</code>, sealed-key KID, attestation backend in use.</li>
+  <li>Consumable by Defender for Cloud, Azure Policy, or operator scripts.</li>
+</ul>
+
+<h3>3.4 Supply chain</h3>
+<a class="detail-link" href="innovation-3.4-supply-chain.html">Detailed design</a>
+<ul>
+  <li><strong>SBOM</strong>: generate CycloneDX during the cargo build (<code>cargo-cyclonedx</code>).</li>
+  <li><strong>Reproducible builds</strong>: pin <code>rust-toolchain.toml</code>, vendor deps,
+    use <code>-Clink-arg=-Wl,--build-id=none</code>; verify via two-builder diff in CI.</li>
+  <li><strong>in-toto / Sigstore</strong>: sign release artifacts; <code>proxy_agent_setup</code> verifies signature before installing — closes pentest <code>H1</code>.</li>
+</ul>
+
+<h3>Plan</h3>
+<ol>
+  <li>Refactor logger into a <code>trait Sink</code> with a chained-Merkle implementation.</li>
+  <li>Wire OTel behind <code>--features otel</code>; default off to keep footprint.</li>
+  <li>Add attestation endpoint (no secrets in payload; just measurements).</li>
+  <li>Pipeline work: SBOM, reproducible build, Sigstore signing, verification in setup binary.</li>
+</ol>
+
+</section>
+
+<!-- =================================================================== -->
+<section class="direction" id="d4">
+<h2><span class="num">4</span>eBPF / Kernel Hardening</h2>
+
+<div class="meta">
+  <div class="cell"><div class="label">Impact</div><div class="value"><span class="badge high">High</span> kernel-layer chokepoint</div></div>
+  <div class="cell"><div class="label">Effort</div><div class="value"><span class="badge med">Medium</span></div></div>
+  <div class="cell"><div class="label">Risk</div><div class="value"><span class="badge med">Kernel-version matrix</span></div></div>
+  <div class="cell"><div class="label">Scope</div><div class="value"><span class="badge scope">linux-ebpf + redirector</span></div></div>
+</div>
+
+<h3>4.1 Move from cgroup/<code>connect4</code> to <code>bpf_lsm</code> + <code>sk_lookup</code></h3>
+<a class="detail-link" href="innovation-4.1-sk-lookup-bpf-lsm.html">Detailed design</a>
+<ul>
+  <li><code>sk_lookup</code> redirects on the listening side; the original destination IP is preserved
+    (no SNAT-to-localhost), so we can match on real destination after netns shenanigans (pentest <code>C5</code>, <code>C6</code>).</li>
+  <li><code>bpf_lsm</code> hooks (<code>socket_connect</code>) provide a deny path even when a hostile program tries to
+    construct sockets in alternate namespaces.</li>
+  <li>Fallback to existing cgroup hook for kernels &lt; 5.13 (no <code>sk_lookup</code>).</li>
+</ul>
+
+<h3>4.2 Unify Linux + Windows eBPF on CO-RE</h3>
+<a class="detail-link" href="innovation-4.2-core-unify-ebpf.html">Detailed design</a>
+<ul>
+  <li>Today: separate sources in <code>ebpf/</code> (Windows) and <code>linux-ebpf/</code> (Linux).</li>
+  <li>Adopt libbpf-rs with CO-RE relocations; share the audit-event struct via a common header.</li>
+  <li>Ship a single BTF-portable object per platform; drop kernel-version-specific builds.</li>
+</ul>
+
+<h3>4.3 IPv6 / dual-stack</h3>
+<a class="detail-link" href="innovation-4.3-ipv6-dual-stack.html">Detailed design</a>
+<ul>
+  <li>Add v6 redirect for IMDS/WireServer link-local equivalents.</li>
+  <li>Normalize address family at the audit-event boundary so the rule engine sees a unified
+    <code>Destination</code> enum, not raw bytes.</li>
+</ul>
+
+<h3>4.4 Kernel-side throttling and audit-map LRU</h3>
+<a class="detail-link" href="innovation-4.4-ebpf-throttling-lru.html">Detailed design</a>
+<ul>
+  <li>Replace the audit hash map with <code>BPF_MAP_TYPE_LRU_HASH</code> sized by cgroup count (pentest <code>G3</code>).</li>
+  <li>Add a token bucket per cgroup in BPF; over-rate connections get an early reject before reaching user space
+    (mitigates <code>G1</code>).</li>
+</ul>
+
+<h3>Code touch points</h3>
+<ul>
+  <li><code>linux-ebpf/ebpf_cgroup.c</code> → split into <code>cgroup_connect.bpf.c</code>,
+    <code>sk_lookup.bpf.c</code>, <code>lsm.bpf.c</code>.</li>
+  <li><code>proxy_agent/src/redirector/linux/</code> → loader picks the best available program set.</li>
+  <li>Build system: introduce <code>build.rs</code> step invoking <code>clang -target bpf</code> with BTF.</li>
+</ul>
+
+<h3>Plan</h3>
+<ol>
+  <li>Add CO-RE build, keep behavior identical (no semantic change).</li>
+  <li>Land <code>sk_lookup</code> as optional, gated by kernel probe; A/B in pentest harness.</li>
+  <li>Add <code>bpf_lsm</code> deny hook; verify with <code>C5</code>/<code>C6</code> scenarios.</li>
+  <li>Switch audit map to LRU and add token bucket; verify with <code>G1</code>/<code>G3</code>.</li>
+  <li>IPv6 path last (depends on fabric v6 readiness).</li>
+</ol>
+
+</section>
+
+<!-- =================================================================== -->
+<section class="direction" id="d5">
+<h2><span class="num">5</span>Expand the Threat Coverage</h2>
+
+<div class="meta">
+  <div class="cell"><div class="label">Impact</div><div class="value"><span class="badge high">High</span> new product surface</div></div>
+  <div class="cell"><div class="label">Effort</div><div class="value"><span class="badge med">Large</span></div></div>
+  <div class="cell"><div class="label">Risk</div><div class="value"><span class="badge med">Cross-team coordination</span></div></div>
+  <div class="cell"><div class="label">Scope</div><div class="value"><span class="badge scope">agent + ecosystem</span></div></div>
+</div>
+
+<h3>5.1 Container-native / AKS mode</h3>
+<a class="detail-link" href="innovation-5.1-aks-container-native.html">Detailed design</a>
+
+<h4>Problem</h4>
+<p>On AKS nodes, any pod with hostNetwork or a permissive NetworkPolicy can reach node IMDS and steal the node managed identity.
+This is the well-known "pod-steals-node-credentials" class. GPA already runs as the IMDS chokepoint — the missing piece is
+<em>per-pod identity</em>.</p>
+
+<h4>Design</h4>
+<ul>
+  <li>Map cgroup id (already captured by eBPF audit) → Kubernetes pod via the kubelet pod-resources API or by reading
+    <code>/proc/&lt;pid&gt;/cgroup</code> + the CRI socket.</li>
+  <li>Project pod ServiceAccount → SPIFFE ID; use Azure Workload Identity federation to mint a pod-scoped token instead of
+    handing back the node MI token.</li>
+  <li>Rule shape: <code>{ namespace: "app-*", serviceAccount: "billing", allow: ["imds:identity:read"] }</code>.</li>
+</ul>
+
+<h4>Plan</h4>
+<ol>
+  <li>Ship a <code>--mode kubernetes</code> flag and a sidecar/DaemonSet manifest.</li>
+  <li>Integrate with Azure Workload Identity issuer; reuse OIDC trust to AKS cluster.</li>
+  <li>Pilot on internal clusters; publish reference NetworkPolicy that forces all IMDS traffic through GPA.</li>
+</ol>
+
+<h3>5.2 Gate other cloud endpoints</h3>
+<a class="detail-link" href="innovation-5.2-gate-more-endpoints.html">Detailed design</a>
+<ul>
+  <li>Generalize destination handling so KeyVault MSI, ARM token endpoint, and Storage MI flows can be authorized through the
+    same rule engine.</li>
+  <li>Add pluggable <em>destination drivers</em> with: address set, request classifier (URL → typed action), signer.</li>
+  <li>Customer-visible: one rule language to govern all cloud-credential egress.</li>
+</ul>
+
+<h3>5.3 Cross-cloud port</h3>
+<a class="detail-link" href="innovation-5.3-cross-cloud-port.html">Detailed design</a>
+<ul>
+  <li>Architecture (cgroup eBPF + identity-aware proxy) is cloud-neutral. The signer and destination set are Azure-specific.</li>
+  <li>Factor <code>signer</code> and <code>destinations</code> into traits; ship community drivers for AWS IMDSv2 and GCP metadata.</li>
+  <li>Positioning: <em>a metadata firewall for any cloud</em>.</li>
+</ul>
+
+</section>
+
+<!-- =================================================================== -->
+<section class="direction" id="d6">
+<h2><span class="num">6</span>Developer &amp; Operator Experience</h2>
+
+<div class="meta">
+  <div class="cell"><div class="label">Impact</div><div class="value"><span class="badge med">Medium</span> adoption + incident response</div></div>
+  <div class="cell"><div class="label">Effort</div><div class="value"><span class="badge low">Small–Medium</span></div></div>
+  <div class="cell"><div class="label">Risk</div><div class="value"><span class="badge low">Low</span></div></div>
+  <div class="cell"><div class="label">Scope</div><div class="value"><span class="badge scope">tooling</span></div></div>
+</div>
+
+<h3>6.1 Policy simulator / dry-run</h3>
+<a class="detail-link" href="innovation-6.1-policy-simulator.html">Detailed design</a>
+<ul>
+  <li>CLI: <code>gpa policy simulate --rules rules.json --request 'GET http://169.254.169.254/metadata/identity?api-version=2021-08-01' --caller pid=1234</code></li>
+  <li>Output: decision, which rule matched, canonicalization steps applied, divergence vs current production rules.</li>
+  <li>Library-mode for unit tests so customers can lock down expected behavior.</li>
+</ul>
+
+<h3>6.2 <code>gpa-doctor</code></h3>
+<a class="detail-link" href="innovation-6.2-gpa-doctor.html">Detailed design</a>
+<ul>
+  <li>One command runs hardening checks derived from <code>pentest/linux/</code>:
+    port exposure (A1), file modes (E1), restart safety (E4), orphan eBPF programs (G4), rule loader sanity (D4).</li>
+  <li>Green/yellow/red report + remediation links; safe to run on production VMs.</li>
+</ul>
+
+<h3>6.3 Rule authoring UX</h3>
+<a class="detail-link" href="innovation-6.3-rule-authoring-ux.html">Detailed design</a>
+<ul>
+  <li>JSON Schema for the rules file; ship in repo.</li>
+  <li>VS Code extension providing schema-driven autocomplete, live validation, and a "rule diff" view for
+    remote vs <code>local_rules.rs</code> overrides.</li>
+  <li>Portal-side experience reuses the same schema.</li>
+</ul>
+
+<h3>6.4 WASM rule sandbox (optional)</h3>
+<a class="detail-link" href="innovation-6.4-wasm-rule-sandbox.html">Detailed design</a>
+<ul>
+  <li>Allow customer-supplied AuthZ in WebAssembly with a tightly scoped host ABI (read normalized request, read claims,
+    return decision; no syscalls, no clocks).</li>
+  <li>Useful for advanced customers needing logic that doesn't fit a declarative rule.</li>
+  <li>Guardrails: hard CPU/memory limits per invocation; disabled by default.</li>
+</ul>
+
+</section>
+
+<!-- =================================================================== -->
+<section class="direction" id="d7">
+<h2><span class="num">7</span>Performance &amp; Footprint</h2>
+
+<div class="meta">
+  <div class="cell"><div class="label">Impact</div><div class="value"><span class="badge low">Medium</span> latency + cost</div></div>
+  <div class="cell"><div class="label">Effort</div><div class="value"><span class="badge med">Medium</span></div></div>
+  <div class="cell"><div class="label">Risk</div><div class="value"><span class="badge low">Low</span></div></div>
+  <div class="cell"><div class="label">Scope</div><div class="value"><span class="badge scope">agent only</span></div></div>
+</div>
+
+<h3>7.1 io_uring hot path</h3>
+<a class="detail-link" href="innovation-7.1-io-uring-hot-path.html">Detailed design</a>
+<ul>
+  <li>Behind feature flag, replace tokio-default reactor for the listener with <code>tokio-uring</code> or <code>monoio</code>.</li>
+  <li>Targets the IMDS read path (the most frequent request shape).</li>
+</ul>
+
+<h3>7.2 Zero-copy forwarding</h3>
+<a class="detail-link" href="innovation-7.2-zero-copy-splice.html">Detailed design</a>
+<ul>
+  <li>After AuthN/AuthZ pass, splice the body between accept socket and upstream socket using <code>splice(2)</code>
+    when the request has no body transformation.</li>
+  <li>Avoids two user-space copies on the common GET path.</li>
+</ul>
+
+<h3>7.3 Crate consolidation</h3>
+<a class="detail-link" href="innovation-7.3-crate-consolidation.html">Detailed design</a>
+<ul>
+  <li>Today: <code>proxy_agent</code>, <code>proxy_agent_extension</code>, <code>proxy_agent_setup</code>, <code>proxy_agent_shared</code>.</li>
+  <li>Move duplicated helpers (logging, config loading, version probing) into <code>proxy_agent_shared</code>.</li>
+  <li>Build with musl for a single static binary per role; run <code>cargo-bloat</code> in CI with a budget.</li>
+</ul>
+
+<h3>Metrics</h3>
+<ul>
+  <li>p99 added latency per IMDS request ≤ 1 ms (target).</li>
+  <li>RSS at idle ≤ 20 MB (target).</li>
+  <li>Binary size ≤ 8 MB stripped (target).</li>
+</ul>
+
+</section>
+
+<!-- =================================================================== -->
+<section id="roadmap" class="direction">
+<h2><span class="num">★</span>Cross-Cutting Roadmap</h2>
+
+<table>
+  <thead>
+    <tr><th>Phase</th><th>Focus</th><th>Items</th><th>Exit criteria</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>P1 — Foundations</td>
+      <td>Safe refactors, no behavior change</td>
+      <td>2.1 canonicalizer (shadow), 2.3 ArcSwap epochs, 3.2 OTel skeleton, 7.3 crate consolidation, 4.2 CO-RE build</td>
+      <td>Zero shadow-mode divergence; CI green on all targets</td>
+    </tr>
+    <tr>
+      <td>P2 — Hardening</td>
+      <td>Close pentest-known gaps</td>
+      <td>2.2 Cedar dual-eval, 4.1 sk_lookup + bpf_lsm, 4.4 LRU + token bucket, 3.1 hash-chained log, 3.4 Sigstore-verified setup</td>
+      <td>Pentest categories C5–C7, D1, D4–D5, F2–F3, G1, G3, H1 all PASS</td>
+    </tr>
+    <tr>
+      <td>P3 — Identity step-change</td>
+      <td>Defeat key-theft and identity spoofing</td>
+      <td>1.1 PoP tokens (dual-emit), 1.2 vTPM/CVM sealing, 1.3 measured identity</td>
+      <td>Fabric accepts PoP; CVM SKUs default to sealed keys</td>
+    </tr>
+    <tr>
+      <td>P4 — Surface expansion</td>
+      <td>New customers, new endpoints</td>
+      <td>1.4 capability scopes, 5.1 AKS mode, 5.2 more endpoints, 6.1 simulator, 6.2 <code>gpa-doctor</code>, 6.3 schema/VS Code</td>
+      <td>Pilot AKS customer; first non-IMDS endpoint governed by GPA</td>
+    </tr>
+    <tr>
+      <td>P5 — Reach</td>
+      <td>Ecosystem &amp; perf polish</td>
+      <td>5.3 cross-cloud drivers, 6.4 WASM sandbox, 7.1 io_uring, 7.2 splice</td>
+      <td>Latency &amp; size budgets met; community-maintained AWS/GCP drivers</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="callout">
+  <strong>Suggested first PR sequence</strong>
+  <ol>
+    <li>Introduce <code>CanonicalRequest</code> + property tests in shadow mode (direction 2.1).</li>
+    <li>Wrap policy in <code>ArcSwap</code> with per-request epoch logging (direction 2.3).</li>
+    <li>Add CO-RE build for the eBPF objects without behavior change (direction 4.2).</li>
+    <li>Add hash-chained log sink behind a feature flag (direction 3.1).</li>
+    <li>Begin Cedar policy compilation in dual-evaluation mode (direction 2.2).</li>
+  </ol>
+  These five are low-risk, independently shippable, and unlock most of the later work.
+</div>
+
+<div class="callout warn">
+  <strong>Coordination required</strong>
+  <ul>
+    <li>Direction 1.1 (PoP tokens) and 1.2 (vTPM sealing) require WireServer/IMDS fabric-side acceptance changes.</li>
+    <li>Direction 5.1 (AKS mode) requires alignment with Azure Workload Identity team.</li>
+    <li>Direction 4.1 needs a kernel-version matrix decision (CO-RE fallback path).</li>
+  </ul>
+</div>
+
+</section>
+
+<footer>
+  Generated companion to the GPA repo analysis. Cross-references: <code>proxy_agent/src/proxy/authorization_rules.rs</code>,
+  <code>proxy_agent/src/key_keeper/key.rs</code>, <code>proxy_agent/src/redirector/</code>, <code>pentest/linux/DESIGN.md</code>.
+</footer>
+
+</main>
+</div>
+</body>
+</html>

@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>2.4 Differential / Property Testing</title>
+<link rel="stylesheet" href="innovation.css"></head>
+<body><div class="layout">
+<nav class="toc">
+<a class="back" href="innovation-directions.html">← Back to all directions</a>
+<h2>Sections</h2><ol>
+<li><a href="#overview">1. Overview</a></li>
+<li><a href="#design">2. Design</a></li>
+<li><a href="#mutators">3. Mutator catalog</a></li>
+<li><a href="#runner">4. Runner</a></li>
+<li><a href="#integration">5. Integration</a></li>
+<li><a href="#failmode">6. Failure handling</a></li>
+<li><a href="#perf">7. Perf budget</a></li>
+<li><a href="#tests">8. Tests</a></li>
+<li><a href="#risks">9. Risks</a></li>
+<li><a href="#milestones">10. Milestones</a></li>
+</ol></nav>
+<main>
+
+<header class="hero">
+  <div><span class="pill">GPA</span><span class="pill">Direction 2.4</span><span class="pill">Self-test</span></div>
+  <h1>Detailed Design — Differential &amp; Property Testing of Rules</h1>
+  <p>For each rule loaded, auto-generate "evil twin" requests (case toggles, percent-encoded slashes, IPv6 forms, Unicode confusables). Run the matcher on each variant; any mismatch with the canonical request indicates a latent bypass and blocks the rule from going live.</p>
+  <p><strong>Files affected:</strong> new <code>proxy_agent/src/proxy/policy/selftest/</code> module, hooked into <code>local_rules.rs</code> reload path and CI.</p>
+</header>
+
+<section id="overview">
+<h2><span class="num">1</span>Overview &amp; Goals</h2>
+<div class="meta">
+  <div class="cell"><div class="label">Impact</div><div class="value"><span class="badge med">Medium</span> proactive bypass detection</div></div>
+  <div class="cell"><div class="label">Effort</div><div class="value"><span class="badge low">Small</span></div></div>
+  <div class="cell"><div class="label">Risk</div><div class="value"><span class="badge low">Low</span></div></div>
+  <div class="cell"><div class="label">Scope</div><div class="value"><span class="badge scope">agent + CI</span></div></div>
+</div>
+
+<h3>Goals</h3>
+<ul>
+  <li>Every rule reload runs a self-test that proves the rule is robust to known bypass patterns.</li>
+  <li>Same self-test runs in CI on the repository's bundled rule files.</li>
+  <li>Fail-closed: a rule that fails self-test is rejected during reload, and the previous policy remains active.</li>
+</ul>
+</section>
+
+<section id="design">
+<h2><span class="num">2</span>Design</h2>
+
+<p>For every rule, the runner derives a small set of synthetic requests:</p>
+<ol>
+  <li><strong>Canonical request</strong> matching the rule's intent exactly.</li>
+  <li><strong>Evil twins</strong> — produced by mutators that should normalize to the same canonical form per 2.1.</li>
+  <li><strong>Negative twins</strong> — close-but-not-matching requests that should be rejected by the rule.</li>
+</ol>
+<p>The runner asserts: <em>canonical and evil twins produce the same decision; negative twins produce a different decision.</em></p>
+</section>
+
+<section id="mutators">
+<h2><span class="num">3</span>Mutator Catalog</h2>
+<table>
+  <thead><tr><th>Mutator</th><th>Example</th><th>Pentest mapping</th></tr></thead>
+  <tbody>
+    <tr><td>Case-toggle</td><td><code>/Metadata/Identity</code></td><td>D1</td></tr>
+    <tr><td>Percent-encoded slash</td><td><code>/metadata%2Fidentity</code></td><td>D1</td></tr>
+    <tr><td>Double-encoding</td><td><code>%252e%252e</code></td><td>D1</td></tr>
+    <tr><td>Trailing dot / whitespace</td><td><code>/metadata./</code></td><td>D1</td></tr>
+    <tr><td>Matrix params</td><td><code>/metadata;jsessionid=x/identity</code></td><td>D1</td></tr>
+    <tr><td>Embedded query via <code>%3F</code></td><td><code>/metadata/identity%3Fapi-version=2018</code></td><td>D1 (now rejected by canonicalizer)</td></tr>
+    <tr><td>IPv4 numeric</td><td><code>http://2852039166/...</code></td><td>C7</td></tr>
+    <tr><td>IPv4 hex</td><td><code>http://0xa9fea9fe/...</code></td><td>C7</td></tr>
+    <tr><td>IPv4 octal</td><td><code>http://0251.0376.0251.0376/...</code></td><td>C7</td></tr>
+    <tr><td>IPv4-mapped IPv6</td><td><code>http://[::ffff:169.254.169.254]/...</code></td><td>C7</td></tr>
+    <tr><td>Unicode confusables in identity name</td><td><code>"r\u00f6ot"</code> vs <code>"root"</code></td><td>D3</td></tr>
+  </tbody>
+</table>
+</section>
+
+<section id="runner">
+<h2><span class="num">4</span>Runner</h2>
+<pre><code>pub struct SelfTestReport {
+    pub rule_id: String,
+    pub passed: bool,
+    pub failures: Vec&lt;SelfTestFailure&gt;,
+}
+
+pub struct SelfTestFailure {
+    pub mutator: &amp;'static str,
+    pub canonical_decision: Decision,
+    pub mutated_decision: Decision,
+    pub mutated_uri: String,
+    pub reason: &amp;'static str,
+}
+
+pub fn selftest(policy: &amp;CompiledPolicy) -&gt; Vec&lt;SelfTestReport&gt;;</code></pre>
+<ul>
+  <li>Runs over the compiled policy, not the raw JSON, so it tests the actual evaluator path.</li>
+  <li>Per-rule budget: ≤ 1 ms for 30 mutators; total budget ≤ 100 ms per reload for typical rule counts.</li>
+</ul>
+</section>
+
+<section id="integration">
+<h2><span class="num">5</span>Integration</h2>
+<ul>
+  <li><strong>Reload path</strong> (<code>local_rules.rs</code>): selftest runs before <code>PolicyStore::install</code>. Failure → install aborted, previous snapshot stays.</li>
+  <li><strong>CI</strong>: <code>cargo test --features selftest -- --include-ignored</code> runs against every fixture rule file in <code>config/</code>.</li>
+  <li><strong>Operator visibility</strong>: <code>status.json</code> exposes <code>last_selftest_failures</code>; <code>gpa-doctor</code> (direction 6.2) surfaces this prominently.</li>
+</ul>
+</section>
+
+<section id="failmode">
+<h2><span class="num">6</span>Failure Handling</h2>
+<ul>
+  <li>Selftest failures during reload are non-fatal for serving (we keep the prior policy) but block the new one.</li>
+  <li>Selftest failures in CI are fatal — block PR merges. Authors fix either the rule or the mutator.</li>
+  <li>Each failure includes a <em>minimum-reproducer URI</em> for fast triage.</li>
+</ul>
+</section>
+
+<section id="perf">
+<h2><span class="num">7</span>Performance</h2>
+<ul>
+  <li>Selftest runs off the hot path (rule-reload thread).</li>
+  <li>Time-bounded; if budget exceeded, emit a warning and continue (don't deadlock on a pathological rule set).</li>
+</ul>
+</section>
+
+<section id="tests">
+<h2><span class="num">8</span>Tests for the selftest itself</h2>
+<ul>
+  <li>Inject an intentionally-buggy matcher (e.g. case-sensitive substring) and confirm selftest catches the bypass.</li>
+  <li>Inject a "perfect" matcher and confirm selftest reports zero failures.</li>
+  <li>Property test: for any rule, mutated canonical request and original canonical request canonicalize to equal forms.</li>
+</ul>
+</section>
+
+<section id="risks">
+<h2><span class="num">9</span>Risks</h2>
+<ul>
+  <li><strong>False positives</strong> if a mutator generates a request that legitimately differs semantically. Mitigation: maintain mutators in a curated list, not generic fuzz.</li>
+  <li><strong>Rule writers blocked</strong> by unfamiliar failures. Mitigation: the report includes the reproducer URI and the mutator name; <code>gpa policy simulate</code> (6.1) provides a single-step debugger.</li>
+</ul>
+</section>
+
+<section id="milestones">
+<h2><span class="num">10</span>Milestones</h2>
+<table>
+  <thead><tr><th>M</th><th>Deliverable</th><th>Exit</th></tr></thead>
+  <tbody>
+    <tr><td>M1</td><td>10 mutators + report type</td><td>Runs in CI on bundled rules</td></tr>
+    <tr><td>M2</td><td>Reload-path integration</td><td>Install aborted on failure; covered by test</td></tr>
+    <tr><td>M3</td><td>Operator surface (<code>status.json</code>, <code>gpa-doctor</code>)</td><td>Documented in operator guide</td></tr>
+  </tbody>
+</table>
+</section>
+
+<footer>Detail design for direction 2.4. Parent: <a href="innovation-directions.html">innovation-directions.html</a>.</footer>
+
+</main></div></body></html>

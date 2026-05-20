@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>4.4 eBPF Throttling and Audit-map LRU</title>
+<link rel="stylesheet" href="innovation.css"></head>
+<body><div class="layout">
+<nav class="toc">
+<a class="back" href="innovation-directions.html">← Back to all directions</a>
+<h2>Sections</h2><ol>
+<li><a href="#overview">1. Overview</a></li>
+<li><a href="#today">2. Today</a></li>
+<li><a href="#lru">3. LRU map</a></li>
+<li><a href="#bucket">4. Token bucket</a></li>
+<li><a href="#sizing">5. Sizing</a></li>
+<li><a href="#integration">6. Integration</a></li>
+<li><a href="#tests">7. Tests</a></li>
+<li><a href="#risks">8. Risks</a></li>
+<li><a href="#milestones">9. Milestones</a></li>
+</ol></nav>
+<main>
+
+<header class="hero">
+  <div><span class="pill">GPA</span><span class="pill">Direction 4.4</span><span class="pill">DoS hardening</span></div>
+  <h1>Detailed Design — Kernel-side Throttling &amp; Audit-map LRU</h1>
+  <p>Replace the audit hash map with an LRU-evicting map, and add a per-cgroup token bucket in BPF so connection floods are dropped early. Mitigates pentest <code>G1</code> (connection flood) and <code>G3</code> (audit-map exhaustion).</p>
+  <p><strong>Files affected:</strong> <code>linux-ebpf/cgroup_connect.bpf.c</code>, <code>linux-ebpf/audit_event.bpf.c</code>, <code>proxy_agent/src/redirector/</code>.</p>
+</header>
+
+<section id="overview">
+<h2><span class="num">1</span>Overview &amp; Goals</h2>
+<div class="meta">
+  <div class="cell"><div class="label">Impact</div><div class="value"><span class="badge med">Medium</span> availability</div></div>
+  <div class="cell"><div class="label">Effort</div><div class="value"><span class="badge low">Small</span></div></div>
+  <div class="cell"><div class="label">Risk</div><div class="value"><span class="badge low">Low</span></div></div>
+  <div class="cell"><div class="label">Scope</div><div class="value"><span class="badge scope">eBPF</span></div></div>
+</div>
+<h3>Goals</h3>
+<ul>
+  <li>Audit map cannot be exhausted to evict legitimate entries.</li>
+  <li>A noisy cgroup cannot DoS the agent into a fail-open window.</li>
+  <li>Throttling visible via the metrics in 3.2.</li>
+</ul>
+</section>
+
+<section id="today">
+<h2><span class="num">2</span>Today</h2>
+<p>The audit map is a fixed-size hash map. Once full, new identities cannot be recorded and a legitimate caller may be missing an audit entry at decision time. There is no kernel-side rate limit.</p>
+</section>
+
+<section id="lru">
+<h2><span class="num">3</span>LRU Map</h2>
+<pre><code>struct { __uint(type, BPF_MAP_TYPE_LRU_HASH);
+         __type(key, __u64);  // cgroup_id
+         __type(value, struct gpa_audit_event);
+         __uint(max_entries, AUDIT_MAP_MAX);
+} gpa_audit_map SEC(".maps");</code></pre>
+<ul>
+  <li>Eviction is least-recently-used; a stale cgroup ages out, an active one stays.</li>
+  <li><code>AUDIT_MAP_MAX</code> sized from <code>(expected unique cgroups) * 2</code>; default 16,384.</li>
+  <li>Map size sampled by the agent every 30 s and exported (<code>gpa_ebpf_audit_map_entries</code>).</li>
+</ul>
+</section>
+
+<section id="bucket">
+<h2><span class="num">4</span>Token Bucket</h2>
+<pre><code>struct token_bucket { __u64 tokens; __u64 last_refill_ns; };
+struct { __uint(type, BPF_MAP_TYPE_LRU_HASH);
+         __type(key, __u64);  // cgroup_id
+         __type(value, struct token_bucket);
+         __uint(max_entries, AUDIT_MAP_MAX);
+} gpa_rl SEC(".maps");
+
+SEC("cgroup/connect4")
+int gpa_rate_limit(struct bpf_sock_addr *ctx) {
+    __u64 cg = bpf_get_current_cgroup_id();
+    struct token_bucket *b = bpf_map_lookup_elem(&amp;gpa_rl, &amp;cg);
+    if (!b) { /* lazy init */ }
+    refill(b, bpf_ktime_get_ns());
+    if (b-&gt;tokens == 0) {
+        increment_counter(METRIC_RL_DROPPED, cg);
+        return 0; // deny connect
+    }
+    b-&gt;tokens--;
+    return 1;
+}</code></pre>
+<ul>
+  <li>Bucket capacity: 100 connects, refill 50/s per cgroup (tunable).</li>
+  <li>Dropped connect returns <code>EACCES</code> to the caller; not a silent black-hole.</li>
+  <li>Per-cgroup, so a single noisy container cannot starve neighbors.</li>
+</ul>
+</section>
+
+<section id="sizing">
+<h2><span class="num">5</span>Sizing &amp; Tuning</h2>
+<table>
+  <thead><tr><th>Param</th><th>Default</th><th>Source</th></tr></thead>
+  <tbody>
+    <tr><td><code>AUDIT_MAP_MAX</code></td><td>16384</td><td>Config; overridable via <code>--ebpf-audit-max</code></td></tr>
+    <tr><td>Token bucket capacity</td><td>100</td><td>Config</td></tr>
+    <tr><td>Token bucket refill rate</td><td>50/s</td><td>Config</td></tr>
+    <tr><td>Map sampler interval</td><td>30 s</td><td>Config</td></tr>
+  </tbody>
+</table>
+</section>
+
+<section id="integration">
+<h2><span class="num">6</span>Integration</h2>
+<ul>
+  <li>Redirector loads the new map types and exposes counters to OTel (3.2).</li>
+  <li>Telemetry: <code>gpa_ebpf_audit_map_evictions_total</code>, <code>gpa_ebpf_rate_limited_total{cgroup}</code>.</li>
+  <li><code>gpa-doctor</code> warns when eviction rate or RL drop rate is non-zero over 5 minutes.</li>
+</ul>
+</section>
+
+<section id="tests">
+<h2><span class="num">7</span>Tests</h2>
+<ul>
+  <li>Spawn many short-lived cgroups → map grows but never exceeds <code>AUDIT_MAP_MAX</code>; eviction counter increases; legitimate cgroup retains entry due to recency.</li>
+  <li>Connect-flood single cgroup → RL drops counter increments; agent CPU stays bounded; service does not crash (pentest <code>G1</code>).</li>
+  <li>G3 audit-map exhaustion attempt → legitimate caller retains decision attribution.</li>
+</ul>
+</section>
+
+<section id="risks">
+<h2><span class="num">8</span>Risks</h2>
+<ul>
+  <li><strong>Bursty workloads</strong> hit RL ceiling. Mitigation: per-config bucket; observable in metrics; doc tuning guidance.</li>
+  <li><strong>LRU not strict FIFO</strong> — acceptable for this use case.</li>
+</ul>
+</section>
+
+<section id="milestones">
+<h2><span class="num">9</span>Milestones</h2>
+<table>
+  <thead><tr><th>M</th><th>Deliverable</th><th>Exit</th></tr></thead>
+  <tbody>
+    <tr><td>M1</td><td>LRU map + sampler</td><td>G3 pentest PASS</td></tr>
+    <tr><td>M2</td><td>Token bucket</td><td>G1 pentest PASS; agent steady at flood</td></tr>
+  </tbody>
+</table>
+</section>
+
+<footer>Detail design for direction 4.4. Parent: <a href="innovation-directions.html">innovation-directions.html</a>.</footer>
+
+</main></div></body></html>

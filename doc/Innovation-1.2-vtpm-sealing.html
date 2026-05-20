@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>1.2 vTPM / CVM Sealing</title>
+<link rel="stylesheet" href="innovation.css"></head>
+<body><div class="layout">
+<nav class="toc">
+<a class="back" href="innovation-directions.html">← Back to all directions</a>
+<h2>Sections</h2><ol>
+<li><a href="#overview">1. Overview</a></li>
+<li><a href="#today">2. Today</a></li>
+<li><a href="#design">3. Sealing design</a></li>
+<li><a href="#backends">4. Backends</a></li>
+<li><a href="#pcrs">5. PCR / report bindings</a></li>
+<li><a href="#provision">6. Provisioning flow</a></li>
+<li><a href="#unseal">7. Unseal flow</a></li>
+<li><a href="#integration">8. Integration</a></li>
+<li><a href="#tests">9. Tests</a></li>
+<li><a href="#risks">10. Risks</a></li>
+<li><a href="#milestones">11. Milestones</a></li>
+</ol></nav>
+<main>
+
+<header class="hero">
+  <div><span class="pill">GPA</span><span class="pill">Direction 1.2</span><span class="pill">Hardware root of trust</span></div>
+  <h1>Detailed Design — vTPM / CVM Attestation Binding for the Latched Key</h1>
+  <p>Seal the latched key to a hardware root of trust so that copying <code>/var/lib/azure-proxy-agent/keys/*</code> to another VM, restoring an older snapshot, or booting a tampered image yields an unrecoverable key blob.</p>
+  <p><strong>Files affected:</strong> new <code>proxy_agent/src/key_keeper/sealing/</code> module,
+    <code>proxy_agent/src/key_keeper/key.rs</code>, <code>proxy_agent/src/provision.rs</code>.</p>
+</header>
+
+<section id="overview">
+<h2><span class="num">1</span>Overview &amp; Goals</h2>
+<div class="meta">
+  <div class="cell"><div class="label">Impact</div><div class="value"><span class="badge high">High</span> kills key-theft &amp; rollback</div></div>
+  <div class="cell"><div class="label">Effort</div><div class="value"><span class="badge med">Medium</span></div></div>
+  <div class="cell"><div class="label">Risk</div><div class="value"><span class="badge med">Hardware matrix</span></div></div>
+  <div class="cell"><div class="label">Scope</div><div class="value"><span class="badge scope">agent + fabric KID registry</span></div></div>
+</div>
+
+<h3>Goals</h3>
+<ul>
+  <li>Stolen key blob on disk cannot be used on a different VM (pentest <code>B3</code>).</li>
+  <li>Older sealed blob cannot be replayed after rotation (pentest <code>E5</code>).</li>
+  <li>Booting a tampered kernel/agent invalidates the seal and forces re-provisioning.</li>
+  <li>CVM (SEV-SNP / TDX) deployments get cryptographic guest-identity binding.</li>
+</ul>
+
+<h3>Non-goals</h3>
+<ul>
+  <li>Generic vTPM management or attestation service implementation — we consume Azure's MAA (Microsoft Azure Attestation) where applicable.</li>
+  <li>Migrating the HMAC algorithm itself (PoP work is direction 1.1).</li>
+</ul>
+</section>
+
+<section id="today">
+<h2><span class="num">2</span>Today's Behavior</h2>
+<p>The latched key is written as a plain file under <code>/var/lib/azure-proxy-agent/keys/</code> with mode 0600.
+Any root-level compromise reads it; a snapshot of the directory survives migration to a different VM; a previous
+file restored after rotation works against the fabric until rotation logic catches up.</p>
+</section>
+
+<section id="design">
+<h2><span class="num">3</span>Sealing Design</h2>
+
+<h3>3.1 On-disk format</h3>
+<pre><code>// .sealed file format (binary, versioned)
+struct SealedBlob {
+    magic: [u8;4]           = b"GSP1",
+    version: u8             = 1,
+    backend: u8             = TPM2 | SNP | TDX | NOOP,
+    kid: [u8;16],           // key id, same as PoP header kid
+    counter: u64,           // monotonic, signed by backend (anti-rollback)
+    attestation_ref: [u8;32], // sha256 of attestation report or PCR digest
+    ciphertext_len: u32,
+    ciphertext: [u8],       // AES-256-GCM-SIV under a backend-managed KEK
+    tag_len: u32,
+    tag: [u8],              // backend-specific attestation/seal proof
+}</code></pre>
+
+<h3>3.2 Layered keys</h3>
+<ul>
+  <li><strong>LatchedKey</strong> (random, 32 bytes) — what the rest of GPA already uses.</li>
+  <li><strong>KEK</strong> (key-encryption key) — derived inside the backend (vTPM sealed object, SNP-derived key, or TDX MRTD-bound key).</li>
+  <li>Plaintext LatchedKey is unwrapped only into protected memory (<code>mlock</code> + <code>zeroize::Zeroizing</code>) and never reaches disk.</li>
+</ul>
+</section>
+
+<section id="backends">
+<h2><span class="num">4</span>Backends</h2>
+
+<table>
+  <thead><tr><th>Backend</th><th>Crate</th><th>Detection</th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr><td><code>tpm2</code></td><td><code>tss-esapi</code></td><td><code>/dev/tpmrm0</code> on Linux; TBS on Windows</td><td>Uses TPM 2.0 sealed object + PolicyPCR.</td></tr>
+    <tr><td><code>snp</code></td><td><code>sev</code> + custom</td><td><code>SEV_STATUS</code> MSR / <code>/dev/sev-guest</code></td><td>Derives KEK from SNP <code>VLEK</code>/<code>VCEK</code>; attestation report embeds VM measurement.</td></tr>
+    <tr><td><code>tdx</code></td><td><code>tdx-attest</code></td><td>TDX guest module device</td><td>KEK from TDX RTMR; attestation report from TD QUOTE.</td></tr>
+    <tr><td><code>noop</code></td><td>—</td><td>fallback</td><td>Encrypts with a host-stored DPAPI / Linux kernel keyring entry; explicitly weaker, only for legacy SKUs.</td></tr>
+  </tbody>
+</table>
+
+<h3>4.1 Backend trait</h3>
+<pre><code>pub trait SealingBackend: Send + Sync {
+    fn id(&amp;self) -&gt; BackendId;
+    fn seal(&amp;self, plaintext: &amp;[u8], policy: &amp;SealPolicy)
+        -&gt; Result&lt;SealedBlob, SealError&gt;;
+    fn unseal(&amp;self, blob: &amp;SealedBlob)
+        -&gt; Result&lt;Zeroizing&lt;Vec&lt;u8&gt;&gt;, SealError&gt;;
+    fn attest(&amp;self, nonce: &amp;[u8]) -&gt; Result&lt;AttestationDoc, SealError&gt;;
+    fn monotonic_counter_get(&amp;self) -&gt; Result&lt;u64, SealError&gt;;
+    fn monotonic_counter_increment(&amp;self) -&gt; Result&lt;u64, SealError&gt;;
+}</code></pre>
+</section>
+
+<section id="pcrs">
+<h2><span class="num">5</span>PCR / Report Bindings</h2>
+
+<h3>5.1 TPM2 (PCR selection)</h3>
+<table>
+  <thead><tr><th>PCR</th><th>Measures</th><th>Why</th></tr></thead>
+  <tbody>
+    <tr><td>0</td><td>Firmware code</td><td>Detect firmware swap.</td></tr>
+    <tr><td>4</td><td>Bootloader</td><td>Detect bootloader swap.</td></tr>
+    <tr><td>7</td><td>Secure Boot policy</td><td>Detect SB disable / new keys.</td></tr>
+    <tr><td>8</td><td>Kernel + initrd (via grub measurement)</td><td>Detect kernel swap.</td></tr>
+    <tr><td>9 / 14</td><td>IMA log root</td><td>Detect agent binary tampering.</td></tr>
+  </tbody>
+</table>
+
+<h3>5.2 SNP / TDX</h3>
+<ul>
+  <li>Bind the seal to the launch measurement (<code>MEASUREMENT</code> field in SNP report, <code>MRTD</code>+<code>RTMR</code> in TDX QUOTE).</li>
+  <li>Include the agent binary digest in <code>REPORT_DATA</code>/<code>RTMR3</code> so post-launch upgrades trigger a controlled re-seal rather than failing open.</li>
+</ul>
+
+<h3>5.3 Anti-rollback counter</h3>
+<ul>
+  <li>TPM: NV index with <code>NVCounter</code>; agent reads and compares against blob counter on every unseal.</li>
+  <li>SNP/TDX: use the agent's own VM-persistent virtual counter file <em>plus</em> a hash of the latest signed counter embedded in the next attestation request to the fabric (anchor to fabric monotonicity).</li>
+</ul>
+</section>
+
+<section id="provision">
+<h2><span class="num">6</span>Provisioning Flow</h2>
+<div class="ascii">
+  agent                                fabric
+    │ probe backend ───────────────────►
+    │ ◄──── selected: tpm2
+    │
+    │ attest(nonce_from_fabric) ─────►
+    │ ◄──── ack + bound_kid
+    │
+    │ generate LatchedKey (CSPRNG)
+    │ seal(LatchedKey, policy{PCR set, counter+1}) → SealedBlob
+    │ persist SealedBlob to disk
+    │ register(bound_kid, attestation_doc) ─►
+    │ ◄──── 200 OK
+</div>
+</section>
+
+<section id="unseal">
+<h2><span class="num">7</span>Unseal Flow on Service Start</h2>
+<ol>
+  <li>Read <code>.sealed</code> blob; reject if magic/version mismatch (fail-closed).</li>
+  <li>Call <code>backend.unseal</code>; on policy mismatch (PCR changed), enter <strong>reprovision</strong> state, request a fresh latch from fabric, do not serve traffic until success.</li>
+  <li>Verify <code>blob.counter ≥ backend.monotonic_counter_get()</code>; equal allowed once per boot, lesser rejected as rollback.</li>
+  <li>Place plaintext in <code>Zeroizing&lt;Vec&lt;u8&gt;&gt;</code>, <code>mlock</code> the buffer.</li>
+  <li>Erase plaintext on shutdown / SIGTERM (already happens with <code>zeroize</code> drop).</li>
+</ol>
+</section>
+
+<section id="integration">
+<h2><span class="num">8</span>Integration Points</h2>
+<ul>
+  <li><code>proxy_agent/src/key_keeper/key.rs</code> — add <code>load_sealed</code> / <code>store_sealed</code>, gated on a config flag. Existing plain-file path is the <code>noop</code> backend.</li>
+  <li><code>proxy_agent/src/provision.rs</code> — attestation handshake; expose <code>Reprovisioning</code> state to the status endpoint.</li>
+  <li><code>proxy_agent/src/service/</code> — surface backend id and <code>kid</code> in startup log + status JSON.</li>
+  <li>Build: feature flags <code>seal-tpm2</code>, <code>seal-snp</code>, <code>seal-tdx</code> so distros without those crates still build.</li>
+</ul>
+</section>
+
+<section id="tests">
+<h2><span class="num">9</span>Tests</h2>
+<ul>
+  <li><strong>Hermetic backend simulator</strong> for CI — implements the trait with in-memory PCRs to validate flows without real hardware.</li>
+  <li>Modify a simulated PCR after seal → unseal fails → agent enters reprovision; verify it serves nothing in the interim (closes a fail-open window).</li>
+  <li>Rollback test: write <code>counter-1</code> blob → unseal rejected with <code>SealError::Rollback</code>.</li>
+  <li>Cross-VM test in staging: snapshot <code>/var/lib/azure-proxy-agent</code> from VM-A, place on VM-B → unseal fails with policy mismatch.</li>
+  <li>Tamper kernel cmdline → next boot PCR9 differs → reprovision triggered.</li>
+  <li>Pentest <code>E5</code>: rollback rejected; <code>B3</code>: stolen blob useless on new VM.</li>
+</ul>
+</section>
+
+<section id="risks">
+<h2><span class="num">10</span>Risks &amp; Mitigations</h2>
+<ul>
+  <li><strong>Routine kernel updates trigger reprovision storms.</strong> Mitigation: ride the OS update pipeline; pre-stage a new seal during update window before old kernel reboots.</li>
+  <li><strong>Backend crate maturity.</strong> Mitigation: ship behind feature flags; default to <code>noop</code> on legacy SKUs.</li>
+  <li><strong>Latency at start.</strong> TPM unseal ≈ 20–50 ms; acceptable because it's once per boot.</li>
+  <li><strong>NV counter exhaustion (TPM).</strong> Mitigation: increment only on rotation, not on each boot.</li>
+</ul>
+</section>
+
+<section id="milestones">
+<h2><span class="num">11</span>Milestones</h2>
+<table>
+  <thead><tr><th>M</th><th>Deliverable</th><th>Exit</th></tr></thead>
+  <tbody>
+    <tr><td>M1</td><td>Trait + <code>noop</code> + simulator backend</td><td>All current tests still pass</td></tr>
+    <tr><td>M2</td><td>TPM2 backend behind <code>seal-tpm2</code></td><td>Tamper/rollback tests PASS on a TPM-enabled VM</td></tr>
+    <tr><td>M3</td><td>SNP + TDX backends</td><td>Cross-VM pentest <code>B3</code> PASS on CVM SKUs</td></tr>
+    <tr><td>M4</td><td>Default-on for CVM SKUs</td><td>Field error rate &lt; 0.001 % for 14 days</td></tr>
+  </tbody>
+</table>
+</section>
+
+<footer>Detail design for direction 1.2. Parent: <a href="innovation-directions.html">innovation-directions.html</a>.</footer>
+
+</main></div></body></html>
