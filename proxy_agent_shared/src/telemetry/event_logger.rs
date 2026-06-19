@@ -78,6 +78,21 @@ pub async fn start<F, Fut>(
             events.push(event);
         }
 
+        // Try to send the events directly via the in-memory telemetry queue
+        // first, so VMs without disk write permission can still report
+        // telemetry. Any events that cannot be enqueued directly (the direct
+        // path is disabled or the queue is full/closed) fall back to being
+        // buffered on disk below.
+        let events: Vec<Event> = events
+            .into_iter()
+            .filter(|event| crate::telemetry::event_sender::try_send_generic_event(event).is_err())
+            .collect();
+        if events.is_empty() {
+            // all events were queued directly, notify the event_sender
+            crate::telemetry::event_sender::notify_sender();
+            continue;
+        }
+
         // Check the event file counts,
         // if it exceeds the max file number, drop the new events
         match misc_helpers::search_files(
@@ -173,6 +188,16 @@ pub async fn report_extension_status_event(
     extension: crate::telemetry::Extension,
     operation_status: crate::telemetry::OperationStatus,
 ) {
+    let event = crate::telemetry::ExtensionStatusEvent::new(extension, operation_status);
+
+    // Try to send the event directly via the in-memory telemetry queue first,
+    // so VMs without disk write permission can still report telemetry.
+    // If the direct path is disabled or the queue is full/closed, fall back to
+    // buffering the event on disk.
+    if crate::telemetry::event_sender::try_send_extension_event(&event).is_ok() {
+        return;
+    }
+
     let event_dir = match EVENTS_DIR.get() {
         Some(dir) => dir.clone(),
         None => {
@@ -207,7 +232,6 @@ pub async fn report_extension_status_event(
         }
     }
 
-    let event = crate::telemetry::ExtensionStatusEvent::new(extension, operation_status);
     let mut file_path = event_dir.to_path_buf();
     file_path.push(crate::telemetry::new_extension_event_file_name());
     if let Err(e) = misc_helpers::json_write_to_file_async(&event, &file_path).await {

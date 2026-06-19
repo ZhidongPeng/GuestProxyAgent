@@ -19,6 +19,7 @@ use crate::{proxy_agent_status, redirector};
 use proxy_agent_shared::logger::LoggerLevel;
 use proxy_agent_shared::telemetry::event_logger;
 use proxy_agent_shared::telemetry::event_reader::EventReader;
+use proxy_agent_shared::telemetry::event_sender;
 use proxy_agent_shared::telemetry::event_sender::EventSender;
 use proxy_agent_shared::{misc_helpers, proxy_agent_aggregate_status};
 use std::path::PathBuf;
@@ -387,6 +388,18 @@ pub async fn start_event_threads(event_threads_shared_state: EventThreadsSharedS
             event_sender.start(None, None).await;
         }
     });
+
+    // Enable the direct in-memory send path so telemetry events are pushed
+    // straight to the EventSender queue and sent out, falling back to the
+    // on-disk event buffer only when the queue is full/closed. This lets VMs
+    // without disk write permission still report telemetry. The arguments must
+    // match the EventReader configuration above so events are shaped the same
+    // regardless of which path they take.
+    event_sender::enable_direct_send(
+        "ProxyAgent".to_string(),
+        "MicrosoftAzureGuestProxyAgent".to_string(),
+        None,
+    );
 
     if let Err(e) = event_threads_shared_state
         .provision_shared_state
