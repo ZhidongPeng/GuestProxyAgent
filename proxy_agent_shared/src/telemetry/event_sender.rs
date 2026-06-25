@@ -2,41 +2,23 @@
 // SPDX-License-Identifier: MIT
 
 //! This module contains the logic to send the telemetry event to the wire server.
-use std::sync::Arc;
-use std::time::Duration;
-
 use crate::common_state::CommonState;
 use crate::current_info;
 use crate::host_clients::imds_client::ImdsClient;
 use crate::host_clients::wire_server_client::WireServerClient;
 use crate::logger::{logger_manager, LoggerLevel};
+use crate::result::Result;
 use crate::telemetry::telemetry_event::{
     TelemetryData, TelemetryEvent, TelemetryEventVMData, TelemetryExtensionEventsEvent,
     TelemetryGenericLogsEvent,
 };
 use crate::telemetry::{Event, ExtensionStatusEvent};
 use concurrent_queue::ConcurrentQueue;
-use once_cell::sync::{Lazy, OnceCell};
-use tokio::sync::Notify;
+use once_cell::sync::Lazy;
+use std::time::Duration;
 
 static TELEMETRY_EVENT_QUEUE: Lazy<ConcurrentQueue<TelemetryEvent>> =
     Lazy::new(|| ConcurrentQueue::<TelemetryEvent>::bounded(1000));
-
-/// Configuration required to convert raw events into telemetry events for the
-/// direct in-memory send path. When this is not set (for example, in the
-/// extension process that does not run an EventSender), the direct path is
-/// disabled and callers fall back to the on-disk event buffer.
-static DIRECT_SEND_CONFIG: OnceCell<DirectSendConfig> = OnceCell::new();
-
-/// The notify handle used to wake the EventSender when an event is enqueued
-/// directly into the in-memory queue. Set when the EventSender task starts.
-static SENDER_NOTIFY: OnceCell<Arc<Notify>> = OnceCell::new();
-
-struct DirectSendConfig {
-    execution_mode: String,
-    event_name: String,
-    version: Option<String>,
-}
 
 const MAX_MESSAGE_SIZE: usize = 1024 * 64;
 const WIRE_SERVER_IP: &str = "168.63.129.16";
@@ -62,9 +44,6 @@ impl EventSender {
                 return;
             }
         };
-        // Publish the notify handle so the direct in-memory send path
-        // (event_logger) can wake this task immediately after enqueueing.
-        let _ = SENDER_NOTIFY.set(notify.clone());
         let cancellation_token = self.common_state.get_cancellation_token();
 
         loop {
@@ -193,52 +172,21 @@ impl EventSender {
     }
 }
 
-pub(crate) fn enqueue_event(event: TelemetryEvent) {
-    if let Err(e) = TELEMETRY_EVENT_QUEUE.push(event) {
-        logger_manager::write_warn(format!("Failed to enqueue telemetry event with error: {e}"));
-    }
-}
-
-/// Enable the direct in-memory send path.
+/// Try to enqueue a generic log event directly into the in-memory telemetry queue.
 ///
-/// This should be called once from the process that runs the [`EventSender`]
-/// (the proxy agent service). The `execution_mode` / `event_name` / `version`
-/// must match what the [`crate::telemetry::event_reader::EventReader`] would
-/// use, so events are shaped identically regardless of which path they take.
-///
-/// When this is not called (for example, in the extension process), the direct
-/// path stays disabled and callers fall back to the on-disk event buffer.
-pub fn enable_direct_send(execution_mode: String, event_name: String, version: Option<String>) {
-    if DIRECT_SEND_CONFIG
-        .set(DirectSendConfig {
-            execution_mode,
-            event_name,
-            version,
-        })
-        .is_err()
-    {
-        logger_manager::write_warn(
-            "Direct telemetry send config is already set, ignoring.".to_string(),
-        );
-    }
-}
-
-/// Try to enqueue a generic log event directly into the in-memory telemetry
-/// queue, bypassing the on-disk buffer.
-///
-/// Returns `Err` if the direct path is disabled (config not set) or the queue
-/// is full/closed, so the caller can fall back to buffering on disk.
-pub(crate) fn try_send_generic_event(event: &Event) -> std::result::Result<(), ()> {
-    let config = DIRECT_SEND_CONFIG.get().ok_or(())?;
-    let telemetry_event = TelemetryGenericLogsEvent::from_event_log(
-        event,
-        config.execution_mode.clone(),
-        config.event_name.clone(),
-        config.version.clone(),
-    );
+/// Returns `Err` if the queue is full/closed.
+pub fn try_enqueue_generic_event(
+    event: &Event,
+    execution_mode: String,
+    event_name: String,
+    version: Option<String>,
+) -> Result<()> {
+    let telemetry_event =
+        TelemetryGenericLogsEvent::from_event_log(event, execution_mode, event_name, version);
+    let telemetry_event = TelemetryEvent::GenericLogsEvent(telemetry_event);
     TELEMETRY_EVENT_QUEUE
-        .push(TelemetryEvent::GenericLogsEvent(telemetry_event))
-        .map_err(|_| ())
+        .push(telemetry_event)
+        .map_err(|e| crate::error::Error::EnqueueEvent(format!("{e}")))
 }
 
 /// Try to enqueue an extension status event directly into the in-memory
@@ -246,31 +194,19 @@ pub(crate) fn try_send_generic_event(event: &Event) -> std::result::Result<(), (
 ///
 /// Returns `Err` if the direct path is disabled (config not set) or the queue
 /// is full/closed, so the caller can fall back to buffering on disk.
-pub(crate) fn try_send_extension_event(
+pub(crate) fn try_enqueue_extension_event(
     event: &ExtensionStatusEvent,
-) -> std::result::Result<(), ()> {
-    let config = DIRECT_SEND_CONFIG.get().ok_or(())?;
+    execution_mode: String,
+) -> Result<()> {
     let telemetry_event = TelemetryExtensionEventsEvent::from_extension_status_event(
         event,
-        config.execution_mode.clone(),
+        execution_mode,
         current_info::get_current_exe_version(),
     );
-
-    enqueue_and_notify(TelemetryEvent::ExtensionEvent(telemetry_event))
-}
-
-/// Push the event onto the in-memory queue and wake the sender task.
-/// Returns `Err` if the queue is full or closed.
-fn enqueue_and_notify(event: TelemetryEvent) -> std::result::Result<(), ()> {
-    TELEMETRY_EVENT_QUEUE.push(event).map_err(|_| ())?;
-    notify_sender();
-    Ok(())
-}
-
-pub(crate) fn notify_sender() {
-    if let Some(notify) = SENDER_NOTIFY.get() {
-        notify.notify_one();
-    }
+    let telemetry_event = TelemetryEvent::ExtensionEvent(telemetry_event);
+    TELEMETRY_EVENT_QUEUE
+        .push(telemetry_event)
+        .map_err(|e| crate::error::Error::EnqueueEvent(format!("{e}")))
 }
 
 #[cfg(test)]
@@ -294,6 +230,14 @@ mod tests {
             resource_group_name: "test-resource-group".to_string(),
             vm_id: "test-vm-id".to_string(),
             image_origin: 1,
+        }
+    }
+
+    fn enqueue_event(event: TelemetryEvent) {
+        if let Err(e) = TELEMETRY_EVENT_QUEUE.push(event) {
+            logger_manager::write_warn(format!(
+                "Failed to enqueue telemetry event with error: {e}"
+            ));
         }
     }
 

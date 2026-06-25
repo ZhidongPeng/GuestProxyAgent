@@ -13,11 +13,12 @@ four cooperating async tasks. All four are spawned in
 ```mermaid
 flowchart TD
     A["Code calls write_event / report_extension_status_event"] --> B["event_logger<br/>in-memory EVENT_QUEUE"]
-    B -->|"every 60s loop: try direct send"| D["TELEMETRY_EVENT_QUEUE"]
-    B -.->|"fallback when direct send fails"| C["Events dir<br/>N.json / extension_N.json"]
+    B -->|"60s loop / async: try_enqueue (direct)"| D["TELEMETRY_EVENT_QUEUE"]
+    B -.->|"fallback when direct send fails / no config"| C["Events dir<br/>N.json / extension_N.json"]
     C -->|"EventReader.process_once (300s)"| D
     C -->|"EventReader.process_extension_status_events (60s)"| D
-    D -->|"notify"| E["EventSender"]
+    B -->|"common_state.notify_telemetry_event()"| E["EventSender"]
+    D --> E
     E -->|"batch to XML, <64KB"| F["WireServerClient<br/>POST 168.63.129.16:80<br/>/machine/?comp=telemetrydata"]
     F --> G["Azure Host / Kusto"]
 ```
@@ -28,28 +29,49 @@ File: `proxy_agent_shared/src/telemetry/event_logger.rs`
 
 - Application code calls `write_event` / `write_event_only` (generic logs) or
   `report_extension_status_event` (extension status).
-- Generic events are always pushed into a bounded in-memory `EVENT_QUEUE`
-  (capacity 1000). Messages are truncated to 4 KB (`MAX_MESSAGE_LENGTH`).
-- A background loop wakes **every 60 seconds** and drains the queue. For each
-  event it first tries the **direct in-memory send path** — converting the
-  event and pushing it straight into the `EventSender`'s `TELEMETRY_EVENT_QUEUE`
-  (then waking the sender). Only events that cannot be enqueued directly fall
-  back to disk.
+- `write_event` / `write_event_only` **always** push the event into a bounded
+  in-memory `EVENT_QUEUE` (capacity 1000). Messages are truncated to 4 KB
+  (`MAX_MESSAGE_LENGTH`).
+- A background loop in `event_logger::start` wakes **every 60 seconds** and
+  drains `EVENT_QUEUE`. When a `DirectSendConfig` is provided, each event is
+  first attempted on the **direct in-memory send path**
+  (`event_sender::try_enqueue_generic_event`), which converts it and pushes it
+  straight into the `EventSender`'s `TELEMETRY_EVENT_QUEUE`. If at least one
+  event was enqueued directly, the loop calls
+  `common_state.notify_telemetry_event()` to wake the sender. Only events that
+  cannot be enqueued directly fall back to disk.
+- `report_extension_status_event` (async) tries the direct path first via
+  `event_sender::try_enqueue_extension_event` and, on success, notifies the
+  sender and returns; otherwise it falls back to disk.
+
+### DirectSendConfig
+
+- `DirectSendConfig` is defined in `event_logger.rs` and carries the
+  `execution_mode`, `event_name`, optional `version`, and a `CommonState`
+  handle (used to notify the sender).
+- It is passed into `event_logger::start(..., direct_send_config, ...)` by the
+  proxy agent service (see [provision.rs](../proxy_agent/src/provision.rs)) and
+  also cached in a static `DIRECT_SEND_CONFIG` so
+  `report_extension_status_event` can use it.
+- The `execution_mode` / `event_name` / `version` match the `EventReader`
+  configuration so events are shaped identically regardless of which path they
+  take.
 
 ## Stage 2 — Disk buffer (fallback only)
 
-- The on-disk buffer is now a **fallback**, used only when the direct send path
-  is disabled or the in-memory send queue is full/closed. This lets VMs without
-  disk write permission still report telemetry over the direct path.
-- The direct path is enabled by `event_sender::enable_direct_send(...)`, called
-  once from the proxy agent service (the process that runs the `EventSender`).
-  In processes that do not run an `EventSender` (e.g. the extension), the direct
-  path stays disabled and everything falls back to disk as before.
+- The on-disk buffer is now a **fallback**, used only when no `DirectSendConfig`
+  is set or the in-memory send queue (`TELEMETRY_EVENT_QUEUE`) is full/closed.
+  This lets VMs without disk write permission still report telemetry over the
+  direct path.
+- Processes that pass a `DirectSendConfig` (the proxy agent service) send most
+  events directly. Processes that do not (e.g. the extension, which calls
+  `event_logger::start` with `None`) keep the original disk-only behavior.
 - Two file types act as the durable fallback buffer:
   - Generic logs: `^[0-9]+\.json$` → `TelemetryGenericLogsEvent`
   - Extension status: `^extension_[0-9]+\.json$` → `TelemetryExtensionEventsEvent`
-- If the direct write succeeds, the disk is never touched. If it falls back, the
-  file-count cap (`max_event_file_count`) still applies as backpressure.
+- If the direct send succeeds, the disk is never touched. If it falls back, the
+  file-count cap (`max_event_file_count` for generic,
+  `MAX_EXTENSION_EVENT_FILE_COUNT` for extension) still applies as backpressure.
 
 ## Stage 3 — Reading & enqueueing
 
@@ -72,7 +94,9 @@ Two independent reader loops:
 
 File: `proxy_agent_shared/src/telemetry/event_sender.rs`
 
-- `EventSender::start` waits on a `notify` (or cancellation). On notify it calls
+- `EventSender::start` waits on a `notify` (or cancellation). The notify is
+  signaled both by `event_logger` (direct path) and by the `EventReader` (disk
+  path) via `common_state.notify_telemetry_event()`. On notify it calls
   `process_event_queue`:
   1. Refreshes VM metadata via `WireServerClient` + `ImdsClient`.
   2. Builds `TelemetryEventVMData` (tenant, role, subscription, VM id, OS, RAM,
@@ -109,8 +133,18 @@ File: `proxy_agent_shared/src/host_clients/wire_server_client.rs`
 
 ## Latency note
 
-There is an asymmetry worth being aware of:
+With the direct in-memory path enabled (proxy agent service):
+
+- **Generic events** typically leave the VM within ~60 seconds (the
+  `event_logger` loop interval), since they are enqueued straight into the send
+  queue and the sender is notified.
+- **Extension status events** are enqueued and notified as soon as
+  `report_extension_status_event` runs.
+
+On the disk **fallback** path (or in processes without a `DirectSendConfig`,
+such as the extension):
 
 - **Generic events** take up to ~6 minutes worst-case to leave the VM
   (60s flush + 300s read interval).
-- **Extension status events** are faster (60s flush + 60s read interval).
+- **Extension status events** take up to ~2 minutes (60s flush + 60s read
+  interval).
