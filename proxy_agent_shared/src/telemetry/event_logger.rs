@@ -321,6 +321,39 @@ pub fn write_event_only(level: Level, message: String, method_name: &str, module
     };
 }
 
+pub fn write_etw_event(etw_event: crate::etw::etw_listener::EtwEvent) {
+    if let (Some(provider_name), Some(task_name)) = (&etw_event.provider_name, &etw_event.task_name)
+    {
+        let event_message = {
+            let message = etw_event.get_message();
+            if message.len() > MAX_MESSAGE_LENGTH {
+                message[..MAX_MESSAGE_LENGTH].to_string()
+            } else {
+                message
+            }
+        };
+
+        match EVENT_QUEUE.push(Event {
+            EventLevel: etw_event.get_level_string(),
+            Message: event_message,
+            Version: crate::current_info::get_current_exe_version(),
+            TaskName: task_name.clone(),
+            EventPid: etw_event.process_id.to_string(),
+            EventTid: etw_event.thread_id.to_string(),
+            OperationId: provider_name.clone(),
+            TimeStamp: etw_event.timestamp.to_string(),
+        }) {
+            Ok(()) => {}
+            Err(e) => {
+                logger_manager::write_log(
+                    Level::Warn,
+                    format!("Failed to push event to the queue with error: {e}"),
+                );
+            }
+        };
+    }
+}
+
 pub async fn report_extension_status_event(
     extension: crate::telemetry::Extension,
     operation_status: crate::telemetry::OperationStatus,

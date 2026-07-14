@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 //! This module provides functionality for ETW (Event Tracing for Windows) logging.
 
+pub mod etw_listener;
 pub mod etw_writer;
 
 /// This module provides functionality to read ETW events.

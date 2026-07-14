@@ -66,6 +66,8 @@ pub async fn start_service(shared_state: SharedState) {
     logger::write_information(start_message.clone());
     #[cfg(not(windows))]
     logger::write_serial_console_log(start_message);
+    #[cfg(windows)]
+    start_etw_listener();
 
     tokio::spawn({
         let key_keeper = KeyKeeper::new(
@@ -92,6 +94,34 @@ pub async fn start_service(shared_state: SharedState) {
         let proxy_server = ProxyServer::new(constants::PROXY_AGENT_PORT, &shared_state);
         async move {
             proxy_server.start().await;
+        }
+    });
+}
+
+#[cfg(windows)]
+fn start_etw_listener() {
+    const WINDOWS_ETW_TRACE_SESSION_NAME: &str = "WindowsEtwTraceSession";
+    const EBPF_FOR_WINDOWS_PROVIDER_ID: &str = "394f321c-5cf4-404c-aa34-4df1428a7f9c";
+    const NET_EBPF_EXT_PROVIDER_ID: &str = "f2f2ca01-ad02-4a07-9e90-95a2334f3692";
+
+    tokio::spawn(async {
+        use proxy_agent_shared::etw::etw_listener::EtwListener;
+
+        let mut etw_listener = EtwListener::new(WINDOWS_ETW_TRACE_SESSION_NAME);
+        if let Err(e) = etw_listener.add_provider(EBPF_FOR_WINDOWS_PROVIDER_ID, 4) {
+            logger::write_error(format!(
+                "Failed to add ETW provider '{EBPF_FOR_WINDOWS_PROVIDER_ID}' with error: {:?}",
+                e
+            ));
+        }
+        if let Err(e) = etw_listener.add_provider(NET_EBPF_EXT_PROVIDER_ID, 4) {
+            logger::write_error(format!(
+                "Failed to add ETW provider '{NET_EBPF_EXT_PROVIDER_ID}' with error: {:?}",
+                e
+            ));
+        }
+        if let Err(e) = etw_listener.run() {
+            logger::write_error(format!("Failed to run ETW listener with error: {:?}", e));
         }
     });
 }
@@ -140,6 +170,9 @@ pub fn stop_service(shared_state: SharedState) {
             .await;
         }
     });
+
+    #[cfg(windows)]
+    proxy_agent_shared::etw::etw_listener::stop();
 
     event_logger::stop();
 }
