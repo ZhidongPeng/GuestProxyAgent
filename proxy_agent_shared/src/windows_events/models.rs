@@ -1,23 +1,103 @@
 // Copyright (c) Microsoft Corporation
 // SPDX-License-Identifier: MIT
 
-//! Shared Windows Event Log XML schema.
-//!
-//! These types deserialize the XML produced by `EvtRender(EvtRenderEventXml)`
-//! for a single event log entry. The same model is consumed by both Event Log
-//! access paths:
-//!
-//! - [`super::evt_query::WindowsEventReader`] — the pull reader (`EvtQuery` /
-//!   `EvtNext`).
-//! - [`super::etw_listener::EtwSubscribe`] — the push subscriber
-//!   (`EvtSubscribe`).
-//!
-//! Keeping the schema here (rather than in either consumer) lets both paths
-//! share one definition without depending on each other.
-
+use serde_derive::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 
-use serde_derive::{Deserialize, Serialize};
+/// A decoded ETW event, serialized to JSON with the same field names/order as
+/// the original C listener produced.
+#[derive(Debug, Serialize)]
+pub struct WindowsEvent {
+    #[serde(rename = "Provider")]
+    pub provider: String,
+    #[serde(rename = "EventId")]
+    pub event_id: u16,
+    #[serde(rename = "Version")]
+    pub version: u8,
+    #[serde(rename = "Level")]
+    pub level: u8,
+    #[serde(rename = "Opcode")]
+    pub opcode: u8,
+    #[serde(rename = "Keyword")]
+    pub keyword: u64,
+    /// ISO-8601 string, or a numeric FILETIME when out of range.
+    #[serde(rename = "Timestamp")]
+    pub timestamp: Value,
+    #[serde(rename = "ProcessId")]
+    pub process_id: u32,
+    #[serde(rename = "ThreadId")]
+    pub thread_id: u32,
+    #[serde(rename = "ActivityId")]
+    pub activity_id: String,
+    #[serde(rename = "ProviderName", skip_serializing_if = "Option::is_none")]
+    pub provider_name: Option<String>,
+    #[serde(rename = "TaskName", skip_serializing_if = "Option::is_none")]
+    pub task_name: Option<String>,
+    #[serde(rename = "EventName", skip_serializing_if = "Option::is_none")]
+    pub event_name: Option<String>,
+    /// Human-readable message from the provider manifest, with `%N` placeholders
+    /// substituted by the decoded property values. Present when the schema
+    /// defines a message template.
+    #[serde(rename = "Message", skip_serializing_if = "Option::is_none")]
+    pub formatted_message: Option<String>,
+    /// Decoded top-level properties (name -> value); present when a TDH schema exists.
+    #[serde(rename = "Properties", skip_serializing_if = "Option::is_none")]
+    pub properties: Option<Map<String, Value>>,
+    /// Raw hex payload; present when no TDH schema is available.
+    #[serde(rename = "UserData", skip_serializing_if = "Option::is_none")]
+    pub user_data: Option<String>,
+}
+
+impl WindowsEvent {
+    /// Returns the best available message for the event. Uses the formatted message if available,
+    /// otherwise falls back to the decoded properties, then the raw user data, and finally an empty string.
+    pub fn get_message(&self) -> String {
+        // Use formatted_message first
+        if let Some(message) = &self.formatted_message {
+            if !message.is_empty() {
+                return message.clone();
+            }
+        }
+
+        // Second use properites,
+        // third use user_data
+        // last return empty string
+        self.message_from_properties()
+            .unwrap_or_else(|| self.user_data.clone().unwrap_or_default())
+    }
+
+    /// Builds a message string from an event's decoded properties, used when the
+    /// event has no rendered manifest message. A single string property is treated
+    /// as the message text itself; otherwise the properties are serialized to a
+    /// compact JSON object. Returns `None` when there are no properties.
+    fn message_from_properties(&self) -> Option<String> {
+        if self.properties.is_none() || self.properties.as_ref().unwrap().is_empty() {
+            return None;
+        }
+        let properties = self.properties.as_ref().unwrap();
+        if properties.len() == 1 {
+            if let Some(serde_json::Value::String(s)) = properties.values().next() {
+                return Some(s.clone());
+            }
+        }
+        serde_json::to_string(properties).ok()
+    }
+
+    /// Returns the string representation of the event's level.
+    /// Level values 0 through 5 are defined by Microsoft (see evntrace.h).
+    pub fn get_level_string(&self) -> String {
+        match self.level {
+            0 => "LogAlways".to_string(),
+            1 => "Critical".to_string(),
+            2 => "Error".to_string(),
+            3 => "Warning".to_string(),
+            4 => "Informational".to_string(),
+            5 => "Verbose".to_string(),
+            _ => "Unknown".to_string(),
+        }
+    }
+}
 
 /// A single Windows Event Log entry.
 ///
@@ -26,7 +106,7 @@ use serde_derive::{Deserialize, Serialize};
 /// both classic Event Log entries and ETW-backed channel entries.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename = "Event")]
-pub struct Event {
+pub struct EvtEvent {
     #[serde(rename = "System")]
     pub system: System,
     /// Classic / manifest events place their payload in `<EventData>`.
@@ -64,7 +144,11 @@ pub struct System {
     #[serde(rename = "EventRecordID")]
     pub event_record_id: u64,
     /// Correlation carries the activity IDs; present mainly in ETW-backed events
-    #[serde(rename = "Correlation", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "Correlation",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub correlation: Option<Correlation>,
     /// Execution may not be present in some classic event log entries
     #[serde(rename = "Execution", default)]
@@ -93,7 +177,11 @@ pub struct Provider {
 /// The `<Correlation>` element carrying activity correlation identifiers.
 #[derive(Debug, Default, Deserialize, Serialize)]
 pub struct Correlation {
-    #[serde(rename = "@ActivityID", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "@ActivityID",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub activity_id: Option<String>,
     #[serde(
         rename = "@RelatedActivityID",
@@ -179,7 +267,7 @@ mod tests {
   </EventData>
 </Event>"#;
 
-        let event: Event = serde_xml_rs::from_str(xml).expect("classic event should parse");
+        let event: EvtEvent = serde_xml_rs::from_str(xml).expect("classic event should parse");
         let data = event.event_data.unwrap().data.unwrap();
         assert_eq!(data.len(), 2);
         assert!(data[0].name.is_none());
@@ -212,13 +300,17 @@ mod tests {
   </EventData>
 </Event>"#;
 
-        let event: Event = serde_xml_rs::from_str(xml).expect("manifest event should parse");
+        let event: EvtEvent = serde_xml_rs::from_str(xml).expect("manifest event should parse");
         assert_eq!(
             event.system.provider.guid.as_deref(),
             Some("{11111111-2222-3333-4444-555555555555}")
         );
         assert_eq!(
-            event.system.correlation.and_then(|c| c.activity_id).as_deref(),
+            event
+                .system
+                .correlation
+                .and_then(|c| c.activity_id)
+                .as_deref(),
             Some("{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}")
         );
         assert_eq!(
@@ -253,7 +345,7 @@ mod tests {
   </UserData>
 </Event>"#;
 
-        let event: Event = serde_xml_rs::from_str(xml).expect("user data event should parse");
+        let event: EvtEvent = serde_xml_rs::from_str(xml).expect("user data event should parse");
         assert!(event.event_data.is_none());
         let user_data = event.user_data.expect("user data present");
         let rule = user_data.get("RuleData").expect("wrapper captured");

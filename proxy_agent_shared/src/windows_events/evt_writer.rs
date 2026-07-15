@@ -92,8 +92,8 @@ impl Drop for WindowsEventWriter {
 #[cfg(test)]
 mod tests {
     use super::WindowsEventWriter;
-    use crate::windows_events::evt_query::WindowsEventReader;
     use crate::logger::LoggerLevel;
+    use crate::windows_events::evt_query::WindowsEventReader;
     use chrono::DateTime;
 
     /// This test verifies that the WindowsEventWriter can write to the Windows Event Log

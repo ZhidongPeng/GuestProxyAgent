@@ -5,13 +5,15 @@
 //!
 //! [`WindowsEventReader`] runs an `EvtQuery` over an event log channel and
 //! yields the matching entries (decoded from each entry's XML) as
-//! [`Event`](super::event_log_model::Event)s through its [`Iterator`]
+//! [`EvtEvent`](super::models::EvtEvent)s through its [`Iterator`]
 //! implementation. Filtering by source (provider) name and an optional
 //! inclusive `[start_time, end_time]` range is pushed into the `EvtQuery`
 //! XPath so the Event Log service does the filtering and `EvtNext` only ever
 //! returns matching entries. The XML schema lives in
-//! [`super::event_log_model`] and is shared with the Event Log subscriber.
+//! [`super::models`] and is shared with the Event Log subscriber.
 
+use super::evt_listener::xpath_literal;
+use super::models::EvtEvent;
 use crate::error::Error;
 use crate::result::Result;
 use chrono::{DateTime, Utc};
@@ -21,9 +23,6 @@ use windows_sys::Win32::Foundation::{
 use windows_sys::Win32::System::EventLog::{
     EvtClose, EvtNext, EvtQuery, EvtQueryReverseDirection, EvtRender, EvtRenderEventXml, EVT_HANDLE,
 }; // wevtapi.dll
-
-use super::etw_listener::xpath_literal;
-use super::event_log_model::Event;
 
 /// Iterates over Windows Event Log entries returned by an `EvtQuery`. The query
 /// is built so the Event Log service returns only entries that match the
@@ -179,7 +178,7 @@ impl Drop for WindowsEventReader {
 }
 
 impl Iterator for WindowsEventReader {
-    type Item = Result<Event>;
+    type Item = Result<EvtEvent>;
 
     fn next(&mut self) -> Option<Self::Item> {
         // Release the previously rendered entry before fetching the next so
@@ -218,7 +217,7 @@ impl Iterator for WindowsEventReader {
 
         // The Event Log service already applied the source/time filter via the
         // query, so every returned entry is a match.
-        match serde_xml_rs::from_str::<Event>(&xml) {
+        match serde_xml_rs::from_str::<EvtEvent>(&xml) {
             Ok(event) => Some(Ok(event)),
             Err(e) => Some(Err(Error::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,

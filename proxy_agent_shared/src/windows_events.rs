@@ -4,13 +4,10 @@
 //! (`Evt*`) reader, writer, and subscriber.
 
 pub mod etw_listener;
-pub mod evt_writer;
-
-/// Shared Windows Event Log XML schema, used by both the reader and subscriber.
-pub mod event_log_model;
-
-/// This module provides functionality to read Windows Event Log entries.
+pub mod evt_listener;
 pub mod evt_query;
+pub mod evt_writer;
+pub mod models;
 
 use std::ffi::OsStr;
 use std::iter::once;

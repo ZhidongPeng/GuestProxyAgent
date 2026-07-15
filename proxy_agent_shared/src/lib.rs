@@ -5,8 +5,6 @@ pub mod common_state;
 pub mod constants;
 pub mod current_info;
 pub mod error;
-#[cfg(windows)]
-pub mod windows_events;
 pub mod host_clients;
 pub mod hyper_client;
 pub mod logger;
@@ -18,6 +16,9 @@ pub mod service;
 pub mod telemetry;
 pub mod time_buckets;
 pub mod version;
+
+#[cfg(windows)]
+pub mod windows_events;
 
 #[cfg(windows)]
 pub mod windows;

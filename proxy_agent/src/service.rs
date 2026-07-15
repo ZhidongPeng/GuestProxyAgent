@@ -104,26 +104,61 @@ fn start_etw_listener() {
     const EBPF_FOR_WINDOWS_PROVIDER_ID: &str = "394f321c-5cf4-404c-aa34-4df1428a7f9c";
     const NET_EBPF_EXT_PROVIDER_ID: &str = "f2f2ca01-ad02-4a07-9e90-95a2334f3692";
 
-    tokio::spawn(async {
-        use proxy_agent_shared::windows_events::etw_listener::EtwListener;
+    use proxy_agent_shared::windows_events::{
+        etw_listener::EtwListener, evt_listener::EvtListener, evt_listener::SourceFilter,
+    };
 
-        let mut etw_listener = EtwListener::new(WINDOWS_ETW_TRACE_SESSION_NAME);
-        if let Err(e) = etw_listener.add_provider(EBPF_FOR_WINDOWS_PROVIDER_ID, 4) {
-            logger::write_error(format!(
-                "Failed to add ETW provider '{EBPF_FOR_WINDOWS_PROVIDER_ID}' with error: {:?}",
-                e
-            ));
-        }
-        if let Err(e) = etw_listener.add_provider(NET_EBPF_EXT_PROVIDER_ID, 4) {
-            logger::write_error(format!(
-                "Failed to add ETW provider '{NET_EBPF_EXT_PROVIDER_ID}' with error: {:?}",
-                e
-            ));
-        }
-        if let Err(e) = etw_listener.run() {
-            logger::write_error(format!("Failed to run ETW listener with error: {:?}", e));
-        }
-    });
+    let mut etw_listener = EtwListener::new(WINDOWS_ETW_TRACE_SESSION_NAME);
+    if let Err(e) = etw_listener.add_provider(EBPF_FOR_WINDOWS_PROVIDER_ID, 4) {
+        logger::write_error(format!(
+            "Failed to add ETW provider '{EBPF_FOR_WINDOWS_PROVIDER_ID}' with error: {:?}",
+            e
+        ));
+    }
+    if let Err(e) = etw_listener.add_provider(NET_EBPF_EXT_PROVIDER_ID, 4) {
+        logger::write_error(format!(
+            "Failed to add ETW provider '{NET_EBPF_EXT_PROVIDER_ID}' with error: {:?}",
+            e
+        ));
+    }
+    if let Err(e) = etw_listener.run() {
+        logger::write_error(format!("Failed to run ETW listener with error: {:?}", e));
+    }
+
+    if let Err(e) = EvtListener::subscribe_by_sources(
+        "Application",
+        &[
+            SourceFilter {
+                name: "MsiInstaller".to_string(),
+                event_ids: vec![1035, 1040],
+            },
+            SourceFilter {
+                name: ".NET Runtime".to_string(),
+                event_ids: vec![1026],
+            },
+            SourceFilter {
+                name: "Application Error".to_string(),
+                event_ids: vec![1000],
+            },
+        ],
+    ) {
+        logger::write_error(format!(
+            "Failed to subscribe to Event Log channel 'Applications' with error: {:?}",
+            e
+        ));
+    }
+    if let Err(e) = EvtListener::subscribe_by_sources(
+        "System",
+        &[SourceFilter {
+            name: "User32".to_string(),
+            event_ids: vec![1074],
+        }],
+    ) {
+        logger::write_error(format!(
+            "Failed to subscribe to Event Log channel 'System' with error: {:?}",
+            e
+        ));
+    }
 }
 
 /// Start the service and wait until the service is stopped.
@@ -173,6 +208,8 @@ pub fn stop_service(shared_state: SharedState) {
 
     #[cfg(windows)]
     proxy_agent_shared::windows_events::etw_listener::stop();
+    #[cfg(windows)]
+    proxy_agent_shared::windows_events::evt_listener::stop();
 
     event_logger::stop();
 }

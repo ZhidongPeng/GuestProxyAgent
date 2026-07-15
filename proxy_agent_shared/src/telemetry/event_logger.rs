@@ -321,11 +321,14 @@ pub fn write_event_only(level: Level, message: String, method_name: &str, module
     };
 }
 
-pub fn write_etw_event(etw_event: crate::windows_events::etw_listener::EtwEvent) {
-    if let (Some(provider_name), Some(task_name)) = (&etw_event.provider_name, &etw_event.task_name)
+/// Push a Windows event to the telemetry event queue.
+#[cfg(windows)]
+pub fn push_windows_event(windows_event: crate::windows_events::models::WindowsEvent) {
+    if let (Some(provider_name), Some(task_name)) =
+        (&windows_event.provider_name, &windows_event.task_name)
     {
         let event_message = {
-            let message = etw_event.get_message();
+            let message = windows_event.get_message();
             if message.len() > MAX_MESSAGE_LENGTH {
                 message[..MAX_MESSAGE_LENGTH].to_string()
             } else {
@@ -334,14 +337,14 @@ pub fn write_etw_event(etw_event: crate::windows_events::etw_listener::EtwEvent)
         };
 
         match EVENT_QUEUE.push(Event {
-            EventLevel: etw_event.get_level_string(),
+            EventLevel: windows_event.get_level_string(),
             Message: event_message,
             Version: crate::current_info::get_current_exe_version(),
             TaskName: task_name.clone(),
-            EventPid: etw_event.process_id.to_string(),
-            EventTid: etw_event.thread_id.to_string(),
+            EventPid: windows_event.process_id.to_string(),
+            EventTid: windows_event.thread_id.to_string(),
             OperationId: provider_name.clone(),
-            TimeStamp: etw_event.timestamp.to_string(),
+            TimeStamp: windows_event.timestamp.to_string(),
         }) {
             Ok(()) => {}
             Err(e) => {
