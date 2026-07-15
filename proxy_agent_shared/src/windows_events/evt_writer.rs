@@ -92,7 +92,7 @@ impl Drop for WindowsEventWriter {
 #[cfg(test)]
 mod tests {
     use super::WindowsEventWriter;
-    use crate::etw::etw_reader::WindowsEventReader;
+    use crate::windows_events::evt_query::WindowsEventReader;
     use crate::logger::LoggerLevel;
     use chrono::DateTime;
 
@@ -190,7 +190,7 @@ mod tests {
                     .data
                     .unwrap()
                     .iter()
-                    .map(|d| d.to_string())
+                    .map(|d| d.value.clone().unwrap_or_default())
                     .collect::<Vec<_>>()
             })
             .unwrap_or_else(|| vec!["No data found".to_string()]);

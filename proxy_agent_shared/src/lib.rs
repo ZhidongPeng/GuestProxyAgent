@@ -6,7 +6,7 @@ pub mod constants;
 pub mod current_info;
 pub mod error;
 #[cfg(windows)]
-pub mod etw;
+pub mod windows_events;
 pub mod host_clients;
 pub mod hyper_client;
 pub mod logger;

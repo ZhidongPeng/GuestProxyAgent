@@ -105,7 +105,7 @@ fn start_etw_listener() {
     const NET_EBPF_EXT_PROVIDER_ID: &str = "f2f2ca01-ad02-4a07-9e90-95a2334f3692";
 
     tokio::spawn(async {
-        use proxy_agent_shared::etw::etw_listener::EtwListener;
+        use proxy_agent_shared::windows_events::etw_listener::EtwListener;
 
         let mut etw_listener = EtwListener::new(WINDOWS_ETW_TRACE_SESSION_NAME);
         if let Err(e) = etw_listener.add_provider(EBPF_FOR_WINDOWS_PROVIDER_ID, 4) {
@@ -172,7 +172,7 @@ pub fn stop_service(shared_state: SharedState) {
     });
 
     #[cfg(windows)]
-    proxy_agent_shared::etw::etw_listener::stop();
+    proxy_agent_shared::windows_events::etw_listener::stop();
 
     event_logger::stop();
 }

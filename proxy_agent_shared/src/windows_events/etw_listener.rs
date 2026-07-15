@@ -1,28 +1,38 @@
 // Copyright (c) Microsoft Corporation
 // SPDX-License-Identifier: MIT
 
-//! Real-time ETW / TraceLogging listener with JSON (JSONL) output.
+//! Windows event listeners for two distinct sources:
 //!
-//! It listens to one or more ETW providers and emits each event as a
-//! single-line JSON object (JSONL) to `stdout`. Status messages go to
-//! `stderr`. It requires administrator privileges to start an ETW session.
+//! - [`EtwListener`]: a real-time ETW / TraceLogging consumer that subscribes to
+//!   one or more ETW *providers* and delivers each decoded [`EtwEvent`] to a
+//!   handler (or the telemetry logger via [`EtwListener::run`]).
+//! - [`EtwSubscribe`]: a Windows Event Log consumer that subscribes to classic
+//!   *channels* (e.g. `Application`, `System`) via the `EvtSubscribe` API and
+//!   delivers each event's rendered XML to a handler.
 //!
-//! Providers can be specified as:
+//! Both require appropriate privileges (ETW sessions need administrator rights;
+//! some Event Log channels require elevation).
+//!
+//! ETW providers can be specified as:
 //!   - A GUID: `{22FB2CD6-0E7B-422B-A0C7-2FAD1FD0E716}` or the same without braces.
 //!   - A registered provider name: `Microsoft-Windows-Kernel-Process`.
-//!
-//! If no providers are supplied, a couple of built-in defaults are used.
 
 use crate::error::Error;
 use crate::logger::logger_manager;
 use crate::result::Result;
 use serde_derive::Serialize;
 use serde_json::{Map, Value};
+use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use windows_sys::core::GUID;
-use windows_sys::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS};
+use windows_sys::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS, GetLastError};
 use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
 use windows_sys::Win32::Security::IsValidSid;
+use windows_sys::Win32::System::EventLog::{
+    EvtClose, EvtRender, EvtRenderEventXml, EvtSubscribe, EvtSubscribeActionDeliver,
+    EvtSubscribeActionError, EvtSubscribeStartAtOldestRecord, EvtSubscribeToFutureEvents,
+    EVT_HANDLE, EVT_SUBSCRIBE_NOTIFY_ACTION,
+};
 use windows_sys::Win32::System::Diagnostics::Etw::{
     // Advapi32.dll
     CloseTrace,
@@ -99,7 +109,7 @@ static TRACE_HANDLE: AtomicU64 = AtomicU64::new(INVALID_PROCESSTRACE_HANDLE);
 ///
 /// # Example
 /// ```no_run
-/// use proxy_agent_shared::etw::etw_listener::EtwListener;
+/// use proxy_agent_shared::windows_events::etw_listener::EtwListener;
 /// use windows_sys::Win32::System::Diagnostics::Etw::TRACE_LEVEL_VERBOSE;
 ///
 /// let mut listener = EtwListener::new("my_session");
@@ -182,8 +192,22 @@ impl EtwListener {
     }
 
     /// Starts the trace session, enables the providers, and blocks processing
-    /// events (emitting JSONL to stdout) until Ctrl+C is pressed.
+    /// events until [`stop`] is called, forwarding each decoded event to the
+    /// telemetry event logger.
     pub fn run(&self) -> Result<()> {
+        self.run_with_handler(|etw_event| {
+            crate::telemetry::event_logger::write_etw_event(etw_event);
+        })
+    }
+
+    /// Like [`EtwListener::run`], but delivers each decoded [`EtwEvent`] to the
+    /// supplied `handler` instead of the telemetry logger. Blocks until
+    /// [`stop`] is called. The handler runs on the ETW consumer thread, so it
+    /// must be `Send + Sync`.
+    pub fn run_with_handler<F>(&self, handler: F) -> Result<()>
+    where
+        F: Fn(EtwEvent) + Send + Sync + 'static,
+    {
         let providers = self.providers.clone();
         if providers.is_empty() {
             return Err(Error::InvalidInput("No providers specified".to_string()));
@@ -192,9 +216,13 @@ impl EtwListener {
         STOPPED.store(false, Ordering::SeqCst);
         TRACE_HANDLE.store(INVALID_PROCESSTRACE_HANDLE, Ordering::SeqCst);
 
-        run_trace(&self.session_name, &providers)
+        let handler: EtwEventHandler = Box::new(handler);
+        run_trace(&self.session_name, &providers, &handler)
     }
 }
+
+/// Boxed callback invoked with each decoded real-time ETW event.
+type EtwEventHandler = Box<dyn Fn(EtwEvent) + Send + Sync + 'static>;
 
 pub fn stop() {
     STOPPED.store(true, Ordering::SeqCst);
@@ -207,8 +235,11 @@ pub fn stop() {
 }
 
 /// Runs the full trace lifecycle: start session, enable providers, open and
-/// process the real-time trace, then clean up.
-fn run_trace(session_name: &str, providers: &[EtwProvider]) -> Result<()> {
+/// process the real-time trace, then clean up. Each decoded event is delivered
+/// to `handler`, whose address is passed to ETW via the log file `Context` and
+/// recovered in the callback from `EVENT_RECORD.UserContext`. `handler` must
+/// outlive this call (it does: this function blocks until the trace stops).
+fn run_trace(session_name: &str, providers: &[EtwProvider], handler: &EtwEventHandler) -> Result<()> {
     let name_wide = super::to_wide(session_name);
 
     // Allocate session properties: EVENT_TRACE_PROPERTIES followed by room for
@@ -307,6 +338,9 @@ fn run_trace(session_name: &str, providers: &[EtwProvider]) -> Result<()> {
         log_file.Anonymous1.ProcessTraceMode =
             PROCESS_TRACE_MODE_REAL_TIME | PROCESS_TRACE_MODE_EVENT_RECORD;
         log_file.Anonymous2.EventRecordCallback = Some(event_record_callback);
+        // ETW copies this into each event's `UserContext`, letting the callback
+        // reach the caller's handler without a global.
+        log_file.Context = handler as *const EtwEventHandler as *mut c_void;
 
         let trace_handle = unsafe { OpenTraceW(&mut log_file) };
         if trace_handle.Value == INVALID_PROCESSTRACE_HANDLE {
@@ -417,7 +451,8 @@ fn cleanup(
     }
 }
 
-/// ETW event callback: decodes each event and prints it as a JSON line.
+/// ETW event callback: decodes each event and hands it to the caller's handler
+/// (recovered from `EVENT_RECORD.UserContext`).
 unsafe extern "system" fn event_record_callback(event: *mut EVENT_RECORD) {
     if STOPPED.load(Ordering::SeqCst) || event.is_null() {
         return;
@@ -425,10 +460,14 @@ unsafe extern "system" fn event_record_callback(event: *mut EVENT_RECORD) {
 
     // Guard against panics crossing the FFI boundary.
     let _ = std::panic::catch_unwind(|| {
-        let etw_event = decode_event(&*event);
-
-        // send to telemetry event
-        crate::telemetry::event_logger::write_etw_event(etw_event);
+        let record = &*event;
+        let ctx = record.UserContext;
+        if ctx.is_null() {
+            return;
+        }
+        let handler = &*(ctx as *const EtwEventHandler);
+        let etw_event = decode_event(record);
+        handler(etw_event);
     });
 }
 
@@ -1007,6 +1046,416 @@ pub fn parse_level(s: &str) -> u8 {
         },
     };
     level as u8
+}
+
+// ---------------------------------------------------------------------------
+// Windows Event Log subscription (classic channels via the `EvtSubscribe` API).
+//
+// While `EtwListener` above subscribes to real-time ETW *providers*, the
+// `EtwSubscribe` type below consumes the classic Windows Event Log *channels*
+// (for example `Application`, `System`, or
+// `Microsoft-Windows-Sysmon/Operational`). Those channels aggregate events from
+// many publishers and cannot be enabled through `EnableTraceEx2`, so they use
+// the Event Log (`Evt*`) API instead. Each delivered event is rendered to XML,
+// decoded into an [`EtwEvent`], and handed to a user-supplied handler.
+// ---------------------------------------------------------------------------
+
+/// Boxed callback invoked with the decoded [`EtwEvent`] for each delivered event.
+type EventLogHandler = Box<dyn Fn(EtwEvent) + Send + Sync + 'static>;
+
+/// A per-source (publisher) filter: the source/provider name and the event IDs
+/// to include from it. An empty `event_ids` list includes **every** event from
+/// that source.
+pub struct SourceFilter {
+    /// Source/provider name as it appears in the event XML's `Provider @Name`
+    /// (this is the "Source" column in Event Viewer), e.g. `"Application Error"`.
+    pub name: String,
+    /// Event IDs to include for this source; empty means all IDs.
+    pub event_ids: Vec<u32>,
+}
+
+impl SourceFilter {
+    /// Creates a filter for `name` limited to `event_ids` (empty = all events).
+    pub fn new(name: impl Into<String>, event_ids: Vec<u32>) -> Self {
+        Self {
+            name: name.into(),
+            event_ids,
+        }
+    }
+}
+
+/// A live Event Log subscription. Dropping it cancels the subscription and
+/// frees the associated callback.
+pub struct EtwSubscribe {
+    /// Handle returned by `EvtSubscribe`.
+    subscription: EVT_HANDLE,
+    /// Thin pointer to the heap-allocated callback. The subscription callback
+    /// dereferences this, so it must stay valid until the subscription is
+    /// closed. Reclaimed in `Drop`.
+    handler_ptr: *mut EventLogHandler,
+}
+
+impl EtwSubscribe {
+    /// Subscribes to an Event Log `channel`, delivering each matching event's
+    /// XML to `handler`.
+    ///
+    /// - `channel`: channel/log name, e.g. `"Application"`, `"System"`, or
+    ///   `"Microsoft-Windows-Sysmon/Operational"`.
+    /// - `query`: an XPath/structured query, or `"*"` for all events in the
+    ///   channel.
+    /// - `include_existing`: when `true`, existing records are replayed from
+    ///   the oldest record before future events; when `false`, only events
+    ///   raised after subscription are delivered.
+    /// - `handler`: called for every delivered event with its decoded [`EtwEvent`].
+    ///
+    /// Requires permission to read the channel (the `System` channel and some
+    /// others require administrator / appropriate privileges).
+    pub fn subscribe<F>(
+        channel: &str,
+        query: &str,
+        include_existing: bool,
+        handler: F,
+    ) -> Result<Self>
+    where
+        F: Fn(EtwEvent) + Send + Sync + 'static,
+    {
+        let channel_wide = super::to_wide(channel);
+        let query_wide = super::to_wide(query);
+
+        // Box the callback twice: the inner box is the fat trait-object
+        // pointer, the outer `into_raw` gives us a thin pointer we can pass to
+        // the C callback as its context.
+        let boxed: Box<EventLogHandler> = Box::new(Box::new(handler));
+        let handler_ptr = Box::into_raw(boxed);
+
+        let flags = if include_existing {
+            EvtSubscribeStartAtOldestRecord
+        } else {
+            EvtSubscribeToFutureEvents
+        };
+
+        let subscription = unsafe {
+            EvtSubscribe(
+                0,                            // session: local machine
+                0,                            // signalevent: unused with a callback
+                channel_wide.as_ptr(),        // channel path
+                query_wide.as_ptr(),          // query ("*" for all events)
+                0,                            // bookmark: none
+                handler_ptr as *const c_void, // callback context
+                Some(subscription_callback),  // delivery callback
+                flags,
+            )
+        };
+
+        if subscription == 0 {
+            let err = unsafe { GetLastError() };
+            // Reclaim the callback allocation we leaked above.
+            unsafe { drop(Box::from_raw(handler_ptr)) };
+            return Err(Error::WindowsApi(
+                format!("EvtSubscribe failed for channel '{channel}' (error {err})"),
+                std::io::Error::from_raw_os_error(err as i32),
+            ));
+        }
+
+        logger_manager::write_info(format!("Subscribed to Event Log channel '{channel}'."));
+        Ok(Self {
+            subscription,
+            handler_ptr,
+        })
+    }
+
+    /// Convenience wrapper: subscribe to all future events in a channel.
+    pub fn subscribe_channel<F>(channel: &str, handler: F) -> Result<Self>
+    where
+        F: Fn(EtwEvent) + Send + Sync + 'static,
+    {
+        Self::subscribe(channel, "*", false, handler)
+    }
+
+    /// Convenience wrapper: subscribe to a channel limited to the given event
+    /// IDs. An empty `event_ids` slice subscribes to every event in the channel.
+    ///
+    /// The IDs are turned into an XPath query such as
+    /// `*[System[(EventID=1000 or EventID=1001)]]`. Because this is a query
+    /// (not an ETW allow-list), it has no 64-ID limit and can be combined with
+    /// other predicates if you build the query string yourself and call
+    /// [`EtwSubscribe::subscribe`] directly.
+    pub fn subscribe_by_event_ids<F>(
+        channel: &str,
+        event_ids: &[u32],
+        include_existing: bool,
+        handler: F,
+    ) -> Result<Self>
+    where
+        F: Fn(EtwEvent) + Send + Sync + 'static,
+    {
+        let query = build_event_id_query(event_ids);
+        Self::subscribe(channel, &query, include_existing, handler)
+    }
+
+    /// Convenience wrapper: subscribe to a channel filtered by a list of
+    /// sources, where each source carries its own list of event IDs.
+    ///
+    /// Semantics:
+    /// - Empty `sources` slice  -> all sources (every event in the channel).
+    /// - A source with empty `event_ids` -> all events from that source.
+    /// - A source with event IDs -> only those IDs from that source.
+    ///
+    /// The sources are OR-ed together, producing a query such as:
+    /// `*[System[(Provider[@Name='A'] and (EventID=1 or EventID=2)) or Provider[@Name='B']]]`.
+    pub fn subscribe_by_sources<F>(
+        channel: &str,
+        sources: &[SourceFilter],
+        include_existing: bool,
+        handler: F,
+    ) -> Result<Self>
+    where
+        F: Fn(EtwEvent) + Send + Sync + 'static,
+    {
+        let query = build_source_query(sources);
+        Self::subscribe(channel, &query, include_existing, handler)
+    }
+}
+
+impl Drop for EtwSubscribe {
+    fn drop(&mut self) {
+        unsafe {
+            if self.subscription != 0 {
+                // `EvtClose` cancels the subscription; no further callbacks run
+                // after it returns, so freeing the handler below is safe.
+                EvtClose(self.subscription);
+                self.subscription = 0;
+            }
+            if !self.handler_ptr.is_null() {
+                drop(Box::from_raw(self.handler_ptr));
+                self.handler_ptr = std::ptr::null_mut();
+            }
+        }
+    }
+}
+
+/// Builds an XPath query selecting only the given event IDs, or `"*"` (all
+/// events) when the list is empty.
+fn build_event_id_query(event_ids: &[u32]) -> String {
+    if event_ids.is_empty() {
+        return "*".to_string();
+    }
+    let clause = event_ids
+        .iter()
+        .map(|id| format!("EventID={id}"))
+        .collect::<Vec<_>>()
+        .join(" or ");
+    format!("*[System[({clause})]]")
+}
+
+/// Builds an XPath query from a list of source filters. Returns `"*"` (all
+/// events) when `sources` is empty. Each source becomes a
+/// `Provider[@Name=...]` predicate, optionally AND-ed with its event IDs, and
+/// the sources are OR-ed together.
+fn build_source_query(sources: &[SourceFilter]) -> String {
+    if sources.is_empty() {
+        return "*".to_string();
+    }
+    let clauses: Vec<String> = sources
+        .iter()
+        .map(|source| {
+            let name = xpath_literal(&source.name);
+            if source.event_ids.is_empty() {
+                format!("Provider[@Name={name}]")
+            } else {
+                let ids = source
+                    .event_ids
+                    .iter()
+                    .map(|id| format!("EventID={id}"))
+                    .collect::<Vec<_>>()
+                    .join(" or ");
+                format!("(Provider[@Name={name}] and ({ids}))")
+            }
+        })
+        .collect();
+    format!("*[System[{}]]", clauses.join(" or "))
+}
+
+/// Produces a safe XPath 1.0 string literal for `s`, handling embedded quotes.
+/// Uses `'...'`, falls back to `"..."`, and to `concat(...)` when the value
+/// contains both quote characters.
+pub(super) fn xpath_literal(s: &str) -> String {
+    if !s.contains('\'') {
+        format!("'{s}'")
+    } else if !s.contains('"') {
+        format!("\"{s}\"")
+    } else {
+        let parts: Vec<String> = s.split('\'').map(|p| format!("'{p}'")).collect();
+        format!("concat({})", parts.join(", \"'\", "))
+    }
+}
+
+/// C callback invoked by `wevtapi` for each delivered event or delivery error.
+unsafe extern "system" fn subscription_callback(
+    action: EVT_SUBSCRIBE_NOTIFY_ACTION,
+    user_context: *const c_void,
+    event: EVT_HANDLE,
+) -> u32 {
+    if user_context.is_null() {
+        return 0;
+    }
+    let handler = &*(user_context as *const EventLogHandler);
+    if action == EvtSubscribeActionDeliver {
+        if let Some(xml) = render_event_xml(event) {
+            match etw_event_from_event_log_xml(&xml) {
+                Some(etw_event) => handler(etw_event),
+                None => logger_manager::write_warn(
+                    "Failed to parse Event Log XML into an EtwEvent.".to_string(),
+                ),
+            }
+        }
+    } else if action == EvtSubscribeActionError {
+        // On error, `event` carries the Win32 status of the failed delivery.
+        logger_manager::write_warn(format!(
+            "Event Log subscription delivery error (status {event})"
+        ));
+    }
+    0 // ERROR_SUCCESS
+}
+
+/// Renders an event handle to its XML representation.
+fn render_event_xml(event: EVT_HANDLE) -> Option<String> {
+    unsafe {
+        let mut buffer_used: u32 = 0;
+        let mut property_count: u32 = 0;
+
+        // First call with a zero-length buffer to learn the required size.
+        let ok = EvtRender(
+            0,
+            event,
+            EvtRenderEventXml,
+            0,
+            std::ptr::null_mut(),
+            &mut buffer_used,
+            &mut property_count,
+        );
+        if ok == 0 {
+            let err = GetLastError();
+            if err != ERROR_INSUFFICIENT_BUFFER {
+                logger_manager::write_warn(format!("EvtRender size query failed (error {err})"));
+                return None;
+            }
+        }
+        if buffer_used == 0 {
+            return None;
+        }
+
+        // `buffer_used` is a byte count; the payload is a UTF-16 string.
+        let mut buffer = vec![0u8; buffer_used as usize];
+        let ok = EvtRender(
+            0,
+            event,
+            EvtRenderEventXml,
+            buffer.len() as u32,
+            buffer.as_mut_ptr() as *mut c_void,
+            &mut buffer_used,
+            &mut property_count,
+        );
+        if ok == 0 {
+            let err = GetLastError();
+            logger_manager::write_warn(format!("EvtRender failed (error {err})"));
+            return None;
+        }
+
+        let wide =
+            std::slice::from_raw_parts(buffer.as_ptr() as *const u16, buffer_used as usize / 2);
+        // Trim a trailing NUL if present.
+        let wide = match wide.last() {
+            Some(0) => &wide[..wide.len() - 1],
+            _ => wide,
+        };
+        Some(String::from_utf16_lossy(wide))
+    }
+}
+
+/// Converts the XML rendered by `EvtRenderEventXml` into an [`EtwEvent`], reusing
+/// the Event Log XML model from [`super::event_log_model`]. Returns `None` if the
+/// XML cannot be parsed. Fields that classic Event Log entries don't carry
+/// (`activity_id`, `task_name`, `event_name`) are left empty/`None`.
+fn etw_event_from_event_log_xml(xml: &str) -> Option<EtwEvent> {
+    let event = serde_xml_rs::from_str::<super::event_log_model::Event>(xml).ok()?;
+    let system = event.system;
+
+    let provider = system
+        .provider
+        .name
+        .clone()
+        .or_else(|| system.provider.event_source_name.clone())
+        .unwrap_or_default();
+
+    // Keywords render as a hex string such as "0x8080000000000000".
+    let keyword = system
+        .keywords
+        .trim()
+        .strip_prefix("0x")
+        .and_then(|hex| u64::from_str_radix(hex, 16).ok())
+        .unwrap_or(0);
+
+    let timestamp = match system.time_created.system_time {
+        Some(ref t) if !t.is_empty() => Value::String(t.clone()),
+        _ => Value::Null,
+    };
+
+    // Activity correlation ID, when the entry carries a <Correlation> element.
+    let activity_id = system
+        .correlation
+        .as_ref()
+        .and_then(|c| c.activity_id.clone())
+        .unwrap_or_default();
+
+    // Map the <Data> payload entries into named properties, preferring the
+    // manifest-provided Name attribute and falling back to positional "Data{i}"
+    // keys for classic (unnamed) entries.
+    let mut props = Map::new();
+    if let Some(items) = event.event_data.and_then(|data| data.data) {
+        for (i, item) in items.into_iter().enumerate() {
+            let key = match item.name {
+                Some(name) if !name.is_empty() => name,
+                _ => format!("Data{i}"),
+            };
+            props.insert(key, Value::String(item.value.unwrap_or_default()));
+        }
+    }
+
+    // Modern manifest providers carry their payload in <UserData> instead of
+    // <EventData>; fold the provider-defined fields into the same property map.
+    if let Some(user_data) = event.user_data {
+        for fields in user_data.into_values() {
+            for (name, value) in fields {
+                // Skip attribute noise (e.g. xmlns) captured by the generic model.
+                if name.starts_with('@') {
+                    continue;
+                }
+                props.insert(name, Value::String(value));
+            }
+        }
+    }
+
+    let properties = if props.is_empty() { None } else { Some(props) };
+
+    Some(EtwEvent {
+        provider,
+        event_id: system.event_id as u16,
+        version: system.version,
+        level: system.level,
+        opcode: system.opcode,
+        keyword,
+        timestamp,
+        process_id: system.execution.process_id,
+        thread_id: system.execution.thread_id,
+        activity_id,
+        provider_name: system.provider.name,
+        task_name: None,
+        event_name: None,
+        message: None,
+        properties,
+        user_data: None,
+    })
 }
 
 #[cfg(test)]

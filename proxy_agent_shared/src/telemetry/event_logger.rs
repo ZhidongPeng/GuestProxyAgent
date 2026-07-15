@@ -321,7 +321,7 @@ pub fn write_event_only(level: Level, message: String, method_name: &str, module
     };
 }
 
-pub fn write_etw_event(etw_event: crate::etw::etw_listener::EtwEvent) {
+pub fn write_etw_event(etw_event: crate::windows_events::etw_listener::EtwEvent) {
     if let (Some(provider_name), Some(task_name)) = (&etw_event.provider_name, &etw_event.task_name)
     {
         let event_message = {

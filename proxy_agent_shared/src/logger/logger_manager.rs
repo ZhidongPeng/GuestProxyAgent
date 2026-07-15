@@ -6,7 +6,7 @@
 
 use super::rolling_logger::RollingLogger;
 #[cfg(windows)]
-use crate::etw::etw_writer::WindowsEventWriter;
+use crate::windows_events::evt_writer::WindowsEventWriter;
 use crate::logger::LoggerLevel;
 use std::collections::HashMap;
 
