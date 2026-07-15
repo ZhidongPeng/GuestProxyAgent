@@ -37,14 +37,20 @@ use windows_sys::Win32::System::Diagnostics::Etw::{
     TdhGetProperty,
     TdhGetPropertySize,
     CONTROLTRACE_HANDLE,
+    ENABLE_TRACE_PARAMETERS,
+    ENABLE_TRACE_PARAMETERS_VERSION_2,
     EVENT_CONTROL_CODE_DISABLE_PROVIDER,
     EVENT_CONTROL_CODE_ENABLE_PROVIDER,
+    EVENT_FILTER_DESCRIPTOR,
+    EVENT_FILTER_EVENT_ID,
+    EVENT_FILTER_TYPE_EVENT_ID,
     EVENT_HEADER_FLAG_64_BIT_HEADER,
     EVENT_RECORD,
     EVENT_TRACE_CONTROL_STOP,
     EVENT_TRACE_LOGFILEW,
     EVENT_TRACE_PROPERTIES,
     EVENT_TRACE_REAL_TIME_MODE,
+    MAX_EVENT_FILTER_EVENT_ID_COUNT,
     PROCESSTRACE_HANDLE,
     PROCESS_TRACE_MODE_EVENT_RECORD,
     PROCESS_TRACE_MODE_REAL_TIME,
@@ -108,6 +114,7 @@ pub struct EtwListener {
 #[derive(Clone)]
 struct EtwProvider {
     provider_id: GUID,
+    event_ids: Vec<u16>,
     level: u8,
 }
 
@@ -126,6 +133,7 @@ impl EtwListener {
             self.providers.push(EtwProvider {
                 provider_id: guid,
                 level: max_level,
+                event_ids: Vec::new(),
             });
             return Ok(());
         }
@@ -133,6 +141,37 @@ impl EtwListener {
             self.providers.push(EtwProvider {
                 provider_id: guid,
                 level: max_level,
+                event_ids: Vec::new(),
+            });
+            return Ok(());
+        }
+        Err(Error::WindowsApi(
+            format!("'{provider_id}' is not a valid GUID and was not found as a registered provider name"),
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "unknown provider"),
+        ))
+    }
+
+    /// Adds a provider specified as a GUID string or a registered provider name,
+    /// limited to the given event IDs.
+    pub fn add_provider_by_event_ids(
+        &mut self,
+        provider_id: &str,
+        max_level: u8,
+        event_ids: Vec<u16>,
+    ) -> Result<()> {
+        if let Some(guid) = parse_guid_string(provider_id) {
+            self.providers.push(EtwProvider {
+                provider_id: guid,
+                level: max_level,
+                event_ids,
+            });
+            return Ok(());
+        }
+        if let Some(guid) = resolve_provider_name(provider_id) {
+            self.providers.push(EtwProvider {
+                provider_id: guid,
+                level: max_level,
+                event_ids,
             });
             return Ok(());
         }
@@ -213,6 +252,24 @@ fn run_trace(session_name: &str, providers: &[EtwProvider]) -> Result<()> {
 
     // Enable each provider.
     for provider in providers {
+        // Optionally build an event-ID scope filter. The backing buffer and the
+        // filter/param structs must stay alive until EnableTraceEx2 returns, so
+        // they are declared here and referenced by `enable_params`.
+        let id_filter_buf = build_event_id_filter(&provider.event_ids);
+        let mut filter_desc: EVENT_FILTER_DESCRIPTOR = unsafe { std::mem::zeroed() };
+        let mut params: ENABLE_TRACE_PARAMETERS = unsafe { std::mem::zeroed() };
+        let enable_params: *const ENABLE_TRACE_PARAMETERS = if let Some(buf) = &id_filter_buf {
+            filter_desc.Ptr = buf.as_ptr() as u64;
+            filter_desc.Size = buf.len() as u32;
+            filter_desc.Type = EVENT_FILTER_TYPE_EVENT_ID;
+            params.Version = ENABLE_TRACE_PARAMETERS_VERSION_2;
+            params.EnableFilterDesc = &mut filter_desc;
+            params.FilterDescCount = 1;
+            &params
+        } else {
+            std::ptr::null()
+        };
+
         let status = unsafe {
             EnableTraceEx2(
                 session_handle,
@@ -222,7 +279,7 @@ fn run_trace(session_name: &str, providers: &[EtwProvider]) -> Result<()> {
                 0xFFFF_FFFF_FFFF_FFFF, // MatchAnyKeyword - capture all
                 0,                     // MatchAllKeyword
                 0,                     // Timeout
-                std::ptr::null(),      // EnableParameters
+                enable_params,         // event-ID scope filter, if any
             )
         };
         if status != ERROR_SUCCESS {
@@ -293,6 +350,37 @@ fn run_trace(session_name: &str, providers: &[EtwProvider]) -> Result<()> {
     cleanup(session_handle, providers, props, total_size, &name_wide);
     logger_manager::write_info("Session stopped.".to_string());
     Ok(())
+}
+
+/// Builds a packed `EVENT_FILTER_EVENT_ID` buffer for an event-ID scope filter,
+/// or `None` when `ids` is empty. The list is capped at the ETW maximum of 64
+/// IDs. `FilterIn` is set to TRUE so only the listed event IDs are delivered.
+///
+/// The returned `Vec<u8>` is the variable-length filter payload; its address is
+/// passed to ETW via `EVENT_FILTER_DESCRIPTOR.Ptr`, so it must outlive the
+/// `EnableTraceEx2` call.
+fn build_event_id_filter(ids: &[u16]) -> Option<Vec<u8>> {
+    if ids.is_empty() {
+        return None;
+    }
+    let count = ids.len().min(MAX_EVENT_FILTER_EVENT_ID_COUNT as usize);
+    // `EVENT_FILTER_EVENT_ID` already includes room for one ID (`Events: [u16; 1]`),
+    // so add space for the remaining `count - 1` IDs.
+    let total =
+        std::mem::size_of::<EVENT_FILTER_EVENT_ID>() + (count - 1) * std::mem::size_of::<u16>();
+    let mut buf = vec![0u8; total];
+    unsafe {
+        let filter = buf.as_mut_ptr() as *mut EVENT_FILTER_EVENT_ID;
+        (*filter).FilterIn = 1; // TRUE: deliver only these event IDs
+        (*filter).Reserved = 0;
+        (*filter).Count = count as u16;
+        // Write the IDs into the inline (over-allocated) `Events` array.
+        let events = std::ptr::addr_of_mut!((*filter).Events) as *mut u16;
+        for (i, id) in ids.iter().take(count).enumerate() {
+            events.add(i).write(*id);
+        }
+    }
+    Some(buf)
 }
 
 /// Disables providers and stops the trace session.
