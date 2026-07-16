@@ -439,8 +439,11 @@ fn format_event_message(event: EVT_HANDLE, publisher: &str) -> Option<String> {
             return None;
         }
 
-        // `buffer_used` counts WCHARs including the trailing NUL; trim it.
-        let len = (buffer_used as usize).min(buffer.len()).saturating_sub(1);
+        // Truncate at the first NUL terminator rather than trusting
+        // `buffer_used`: some publisher messages (e.g. ".NET Runtime") carry an
+        // embedded trailing NUL inside a substituted insert, so subtracting a
+        // single terminator would leave a stray NUL at the end of the string.
+        let len = buffer.iter().position(|&c| c == 0).unwrap_or(buffer.len());
         Some(String::from_utf16_lossy(&buffer[..len]))
     }
 }

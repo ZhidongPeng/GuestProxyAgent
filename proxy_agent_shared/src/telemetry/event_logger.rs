@@ -344,7 +344,13 @@ pub fn push_windows_event(windows_event: crate::windows_events::models::WindowsE
             EventPid: windows_event.process_id.to_string(),
             EventTid: windows_event.thread_id.to_string(),
             OperationId: provider_name.clone(),
-            TimeStamp: windows_event.timestamp.to_string(),
+            // `timestamp` is a serde_json::Value; when it's a string use the raw
+            // value, otherwise `.to_string()` would wrap it in JSON quotes and
+            // the wire server rejects the telemetry (400) for OpcodeName/Context2.
+            TimeStamp: match windows_event.timestamp.as_str() {
+                Some(ts) => ts.to_string(),
+                None => windows_event.timestamp.to_string(),
+            },
         }) {
             Ok(()) => {}
             Err(e) => {
