@@ -153,7 +153,9 @@ pub struct System {
     /// Execution may not be present in some classic event log entries
     #[serde(rename = "Execution", default)]
     pub execution: Execution,
-    #[serde(rename = "Channel")]
+    /// Channel/log name. Occasionally absent or empty on classic entries, in
+    /// which case callers fall back to the subscription's channel argument.
+    #[serde(rename = "Channel", default)]
     pub channel: String,
     #[serde(rename = "Computer")]
     pub computer: String,

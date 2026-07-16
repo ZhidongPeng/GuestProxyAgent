@@ -10,9 +10,10 @@ use std::ffi::c_void;
 use std::sync::{LazyLock, Mutex};
 use windows_sys::Win32::Foundation::{GetLastError, ERROR_INSUFFICIENT_BUFFER};
 use windows_sys::Win32::System::EventLog::{
-    EvtClose, EvtRender, EvtRenderEventXml, EvtSubscribe, EvtSubscribeActionDeliver,
-    EvtSubscribeActionError, EvtSubscribeStartAtOldestRecord, EvtSubscribeToFutureEvents,
-    EVT_HANDLE, EVT_SUBSCRIBE_NOTIFY_ACTION,
+    EvtClose, EvtFormatMessage, EvtFormatMessageEvent, EvtOpenPublisherMetadata, EvtRender,
+    EvtRenderEventXml, EvtSubscribe, EvtSubscribeActionDeliver, EvtSubscribeActionError,
+    EvtSubscribeStartAtOldestRecord, EvtSubscribeToFutureEvents, EVT_HANDLE,
+    EVT_SUBSCRIBE_NOTIFY_ACTION,
 };
 
 // ---------------------------------------------------------------------------
@@ -36,6 +37,17 @@ use windows_sys::Win32::System::EventLog::{
 
 /// Boxed callback invoked with the decoded [`WindowsEvent`] for each delivered event.
 type EventLogHandler = Box<dyn Fn(WindowsEvent) + Send + Sync + 'static>;
+
+/// Heap-allocated context handed to `EvtSubscribe` as its callback pointer. It
+/// bundles the user handler with the `channel` name the subscription was
+/// created for, so the callback can fall back to that channel when a delivered
+/// event's `<System><Channel>` element is empty.
+struct SubscriptionContext {
+    /// The `channel` argument originally passed to [`EvtListener::subscribe`].
+    channel: String,
+    /// The user-supplied event handler.
+    handler: EventLogHandler,
+}
 
 /// A per-source (publisher) filter: the source/provider name and the event IDs
 /// to include from it. An empty `event_ids` list includes **every** event from
@@ -63,10 +75,10 @@ impl SourceFilter {
 pub struct EvtListener {
     /// Handle returned by `EvtSubscribe`.
     subscription_handle: EVT_HANDLE,
-    /// Thin pointer to the heap-allocated callback. The subscription callback
-    /// dereferences this, so it must stay valid until the subscription is
-    /// closed. Reclaimed in `Drop`.
-    handler_ptr: *mut EventLogHandler,
+    /// Thin pointer to the heap-allocated callback context. The subscription
+    /// callback dereferences this, so it must stay valid until the subscription
+    /// is closed. Reclaimed in `Drop`.
+    context_ptr: *mut SubscriptionContext,
 }
 
 // SAFETY: `EvtListener` owns a raw `*mut EventLogHandler` solely so `Drop` can
@@ -111,11 +123,14 @@ impl EvtListener {
         let channel_wide = super::to_wide(channel);
         let query_wide = super::to_wide(query);
 
-        // Box the callback twice: the inner box is the fat trait-object
-        // pointer, the outer `into_raw` gives us a thin pointer we can pass to
-        // the C callback as its context.
-        let boxed: Box<EventLogHandler> = Box::new(Box::new(handler));
-        let handler_ptr = Box::into_raw(boxed);
+        // Box the context (channel + handler) and hand the OS a thin raw pointer
+        // to it to use as the callback context. Reclaimed on error below and in
+        // `Drop`.
+        let context = Box::new(SubscriptionContext {
+            channel: channel.to_string(),
+            handler: Box::new(handler),
+        });
+        let context_ptr = Box::into_raw(context);
 
         let flags = if include_existing {
             EvtSubscribeStartAtOldestRecord
@@ -130,7 +145,7 @@ impl EvtListener {
                 channel_wide.as_ptr(),        // channel path
                 query_wide.as_ptr(),          // query ("*" for all events)
                 0,                            // bookmark: none
-                handler_ptr as *const c_void, // callback context
+                context_ptr as *const c_void, // callback context
                 Some(subscription_callback),  // delivery callback
                 flags,
             )
@@ -138,8 +153,8 @@ impl EvtListener {
 
         if subscription_handle == 0 {
             let err = unsafe { GetLastError() };
-            // Reclaim the callback allocation we leaked above.
-            unsafe { drop(Box::from_raw(handler_ptr)) };
+            // Reclaim the context allocation we leaked above.
+            unsafe { drop(Box::from_raw(context_ptr)) };
             return Err(Error::WindowsApi(
                 format!("EvtSubscribe failed for channel '{channel}' (error {err})"),
                 std::io::Error::from_raw_os_error(err as i32),
@@ -148,7 +163,7 @@ impl EvtListener {
 
         Self {
             subscription_handle,
-            handler_ptr,
+            context_ptr,
         }
         .keep_alive();
 
@@ -227,13 +242,13 @@ impl Drop for EvtListener {
         unsafe {
             if self.subscription_handle != 0 {
                 // `EvtClose` cancels the subscription; no further callbacks run
-                // after it returns, so freeing the handler below is safe.
+                // after it returns, so freeing the context below is safe.
                 EvtClose(self.subscription_handle);
                 self.subscription_handle = 0;
             }
-            if !self.handler_ptr.is_null() {
-                drop(Box::from_raw(self.handler_ptr));
-                self.handler_ptr = std::ptr::null_mut();
+            if !self.context_ptr.is_null() {
+                drop(Box::from_raw(self.context_ptr));
+                self.context_ptr = std::ptr::null_mut();
             }
         }
     }
@@ -290,15 +305,19 @@ unsafe extern "system" fn subscription_callback(
     if user_context.is_null() {
         return 0;
     }
-    let handler = &*(user_context as *const EventLogHandler);
+    let context = &*(user_context as *const SubscriptionContext);
     if action == EvtSubscribeActionDeliver {
         if let Some(xml) = render_event_xml(event) {
-            match etw_event_from_event_log_xml(&xml) {
-                Some(etw_event) => handler(etw_event),
+            match windows_event_from_event_log_xml(&xml, &context.channel, event) {
+                Some(windows_event) => (context.handler)(windows_event),
                 None => logger_manager::write_warn(
                     "Failed to parse Event Log XML into an WindowsEvent.".to_string(),
                 ),
             }
+        } else {
+            logger_manager::write_warn(format!(
+                "Failed to render Event Log event (handle {event}) to XML."
+            ));
         }
     } else if action == EvtSubscribeActionError {
         // On error, `event` carries the Win32 status of the failed delivery.
@@ -364,20 +383,108 @@ fn render_event_xml(event: EVT_HANDLE) -> Option<String> {
     }
 }
 
+/// Formats the human-readable event message from the publisher's manifest,
+/// mirroring the text Event Viewer shows on its "General" tab. Opens the
+/// publisher metadata with [`EvtOpenPublisherMetadata`] and renders the event's
+/// own message with [`EvtFormatMessage`] using `EvtFormatMessageEvent`.
+///
+/// Returns `None` when `publisher` is empty, has no registered manifest (common
+/// for classic sources such as plain `Application` entries), or the lookup
+/// otherwise fails. This is best-effort: callers fall back to the decoded
+/// properties (see [`WindowsEvent::get_message`]).
+fn format_event_message(event: EVT_HANDLE, publisher: &str) -> Option<String> {
+    if publisher.trim().is_empty() {
+        return None;
+    }
+    unsafe {
+        // Open the publisher's metadata on the local machine, default locale.
+        let publisher_wide = super::to_wide(publisher);
+        let metadata = EvtOpenPublisherMetadata(0, publisher_wide.as_ptr(), std::ptr::null(), 0, 0);
+        if metadata == 0 {
+            return None;
+        }
+
+        // First call learns the required buffer size (in WCHARs, incl. NUL).
+        let mut buffer_used: u32 = 0;
+        EvtFormatMessage(
+            metadata,
+            event,
+            0,                     // message id: unused with EvtFormatMessageEvent
+            0,                     // value count
+            std::ptr::null(),      // values
+            EvtFormatMessageEvent, // render the event's own message
+            0,                     // buffer size
+            std::ptr::null_mut(),  // buffer
+            &mut buffer_used,
+        );
+        if buffer_used == 0 {
+            EvtClose(metadata);
+            return None;
+        }
+
+        let mut buffer = vec![0u16; buffer_used as usize];
+        let ok = EvtFormatMessage(
+            metadata,
+            event,
+            0,
+            0,
+            std::ptr::null(),
+            EvtFormatMessageEvent,
+            buffer.len() as u32,
+            buffer.as_mut_ptr(),
+            &mut buffer_used,
+        );
+        EvtClose(metadata);
+        if ok == 0 {
+            return None;
+        }
+
+        // `buffer_used` counts WCHARs including the trailing NUL; trim it.
+        let len = (buffer_used as usize).min(buffer.len()).saturating_sub(1);
+        Some(String::from_utf16_lossy(&buffer[..len]))
+    }
+}
+
 /// Converts the XML rendered by `EvtRenderEventXml` into an [`WindowsEvent`], reusing
 /// the Event Log XML model from [`super::models`]. Returns `None` if the
-/// XML cannot be parsed. Fields that classic Event Log entries don't carry
-/// (`activity_id`, `task_name`, `event_name`) are left empty/`None`.
-fn etw_event_from_event_log_xml(xml: &str) -> Option<WindowsEvent> {
-    let event = serde_xml_rs::from_str::<EvtEvent>(xml).ok()?;
-    let system = event.system;
+/// XML cannot be parsed.
+///
+/// `channel` is the channel the subscription was created for; it's used as the
+/// provider-name fallback when the event's `<System><Channel>` element is empty.
+/// `event` is the live event handle, used to resolve the human-readable message
+/// from the publisher manifest.
+fn windows_event_from_event_log_xml(
+    xml: &str,
+    channel: &str,
+    event: EVT_HANDLE,
+) -> Option<WindowsEvent> {
+    let evt = serde_xml_rs::from_str::<EvtEvent>(xml).ok()?;
+    let system = evt.system;
 
-    let provider = system
+    // System/Provider/@Name is the "Source" column in Event Viewer.
+    let source_name = system
         .provider
         .name
         .clone()
         .or_else(|| system.provider.event_source_name.clone())
         .unwrap_or_default();
+
+    // The "Provider" column in Event Viewer is the channel name. Prefer the
+    // channel reported in the event's `<System>` element, but fall back to the
+    // `channel` argument passed to `EvtSubscribe` when the XML omits it (some
+    // classic entries render an empty `<Channel/>`).
+    let provider_name = if system.channel.trim().is_empty() {
+        channel.to_string()
+    } else {
+        system.channel.clone()
+    };
+    // The provider GUID is optional; some classic entries omit it. Use the
+    // provider name as a fallback for the `provider_id` field in the WindowsEvent.
+    let provider_id = system
+        .provider
+        .guid
+        .clone()
+        .unwrap_or(provider_name.clone());
 
     // Keywords render as a hex string such as "0x8080000000000000".
     let keyword = system
@@ -403,7 +510,7 @@ fn etw_event_from_event_log_xml(xml: &str) -> Option<WindowsEvent> {
     // manifest-provided Name attribute and falling back to positional "Data{i}"
     // keys for classic (unnamed) entries.
     let mut props = Map::new();
-    if let Some(items) = event.event_data.and_then(|data| data.data) {
+    if let Some(items) = evt.event_data.and_then(|data| data.data) {
         for (i, item) in items.into_iter().enumerate() {
             let key = match item.name {
                 Some(name) if !name.is_empty() => name,
@@ -415,7 +522,7 @@ fn etw_event_from_event_log_xml(xml: &str) -> Option<WindowsEvent> {
 
     // Modern manifest providers carry their payload in <UserData> instead of
     // <EventData>; fold the provider-defined fields into the same property map.
-    if let Some(user_data) = event.user_data {
+    if let Some(user_data) = evt.user_data {
         for fields in user_data.into_values() {
             for (name, value) in fields {
                 // Skip attribute noise (e.g. xmlns) captured by the generic model.
@@ -429,8 +536,13 @@ fn etw_event_from_event_log_xml(xml: &str) -> Option<WindowsEvent> {
 
     let properties = if props.is_empty() { None } else { Some(props) };
 
+    // Resolve the human-readable message from the publisher manifest (the same
+    // text Event Viewer shows on its "General" tab). Computed before the struct
+    // literal because `source_name` is moved into it below.
+    let formatted_message = format_event_message(event, &source_name);
+
     Some(WindowsEvent {
-        provider,
+        provider: provider_id,
         event_id: system.event_id as u16,
         version: system.version,
         level: system.level,
@@ -440,10 +552,10 @@ fn etw_event_from_event_log_xml(xml: &str) -> Option<WindowsEvent> {
         process_id: system.execution.process_id,
         thread_id: system.execution.thread_id,
         activity_id,
-        provider_name: system.provider.name,
-        task_name: None,
-        event_name: None,
-        formatted_message: None, // TODO
+        provider_name: Some(provider_name),
+        task_name: Some(source_name.clone()),
+        event_name: Some(source_name),
+        formatted_message,
         properties,
         user_data: None,
     })
