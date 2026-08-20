@@ -55,7 +55,7 @@ impl _destination_entry {
         entry
     }
 
-    pub fn to_array(&self) -> [u32; 6] {
+    pub fn as_array(&self) -> [u32; 6] {
         let mut array: [u32; 6] = [0; 6];
         array[..4].copy_from_slice(&self.destination_ip.ip);
         array[4] = self.destination_port;
@@ -85,7 +85,7 @@ impl sock_addr_skip_process_entry {
         entry
     }
 
-    pub fn to_array(&self) -> [u32; 1] {
+    pub fn as_array(&self) -> [u32; 1] {
         [self.pid]
     }
 }
@@ -114,7 +114,7 @@ impl sock_addr_audit_key {
         }
     }
 
-    pub fn to_array(&self) -> [u32; 2] {
+    pub fn as_array(&self) -> [u32; 2] {
         [self.protocol, self.source_port]
     }
 
@@ -157,7 +157,7 @@ impl sock_addr_audit_entry {
     }
 
     #[allow(dead_code)]
-    pub fn to_array(&self) -> [u32; 5] {
+    pub fn as_array(&self) -> [u32; 5] {
         [
             self.logon_id,
             self.process_id,
@@ -383,7 +383,7 @@ mod tests {
     #[test]
     fn destination_entry_ipv4_roundtrip_array_shape() {
         let entry = destination_entry::from_ipv4(0x1081_3FA8, 80);
-        let array = entry.to_array();
+        let array = entry.as_array();
 
         assert_eq!(
             array[0], 0x1081_3FA8,
@@ -400,7 +400,7 @@ mod tests {
     #[test]
     fn audit_key_array_roundtrip() {
         let key = sock_addr_audit_key::from_source_port(1234);
-        let array = key.to_array();
+        let array = key.as_array();
         let rebuilt = sock_addr_audit_key::from_array(array);
 
         assert_eq!(rebuilt.protocol, IPPROTO_TCP, "protocol mismatch");
@@ -422,7 +422,7 @@ mod tests {
         let key = sock_addr_skip_process_entry::from_pid(pid);
 
         assert_eq!(
-            key.to_array(),
+            key.as_array(),
             [pid],
             "pid should roundtrip through the map key layout"
         );
@@ -438,7 +438,7 @@ mod tests {
             destination_port: 5,
         };
 
-        let rebuilt = sock_addr_audit_entry::from_array(canonical.to_array());
+        let rebuilt = sock_addr_audit_entry::from_array(canonical.as_array());
 
         assert_eq!(rebuilt.logon_id, canonical.logon_id);
         assert_eq!(rebuilt.process_id, canonical.process_id);
