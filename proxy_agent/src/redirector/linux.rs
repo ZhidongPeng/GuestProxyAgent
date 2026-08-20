@@ -64,7 +64,7 @@ impl BpfObject {
                 Ok(mut skip_process_map) => {
                     let key = sock_addr_skip_process_entry::from_pid(pid);
                     let value = sock_addr_skip_process_entry::from_pid(pid);
-                    match skip_process_map.insert(key.to_array(), value.to_array(), 0) {
+                    match skip_process_map.insert(key.as_array(), value.as_array(), 0) {
                         Ok(_) => logger::write(format!("skip_process_map updated with {pid}")),
                         Err(err) => {
                             return Err(Error::Bpf(BpfErrorType::UpdateBpfMapHashMap(
@@ -140,7 +140,7 @@ impl BpfObject {
                     let local_ip = super::string_to_ip(constants::PROXY_AGENT_IP);
                     let key = destination_entry::from_ipv4(dest_ipv4, dest_port);
                     let value = destination_entry::from_ipv4(local_ip, local_port);
-                    match policy_map.insert(key.to_array(), value.to_array(), 0) {
+                    match policy_map.insert(key.as_array(), value.as_array(), 0) {
                         Ok(_) => {
                             logger::write(format!("policy_map updated for {endpoint_name}"));
                         }
@@ -277,7 +277,7 @@ impl BpfObject {
             Some(map) => match HashMap::try_from(map) {
                 Ok(audit_map) => {
                     let key = sock_addr_audit_key::from_source_port(source_port);
-                    match audit_map.get(&key.to_array(), 0) {
+                    match audit_map.get(&key.as_array(), 0) {
                         Ok(value) => {
                             let audit_value = sock_addr_audit_entry::from_array(value);
                             Ok(AuditEntry {
@@ -319,7 +319,7 @@ impl BpfObject {
                 Ok(mut policy_map) => {
                     let key = destination_entry::from_ipv4(dest_ipv4, dest_port);
                     if !redirect {
-                        match policy_map.remove(&key.to_array()) {
+                        match policy_map.remove(&key.as_array()) {
                             Ok(_) => {
                                 event_logger::write_event(
                                     LoggerLevel::Info,
@@ -351,7 +351,7 @@ impl BpfObject {
                         );
                         let local_ip: u32 = super::string_to_ip(&local_ip);
                         let value = destination_entry::from_ipv4(local_ip, local_port);
-                        match policy_map.insert(key.to_array(), value.to_array(), 0) {
+                        match policy_map.insert(key.as_array(), value.as_array(), 0) {
                             Ok(_) => {
                                 event_logger::write_event(
                                     LoggerLevel::Info,
@@ -393,7 +393,7 @@ impl BpfObject {
             Some(map) => match HashMap::<&mut MapData, [u32; 2], [u32; 5]>::try_from(map) {
                 Ok(mut audit_map) => {
                     let key = sock_addr_audit_key::from_source_port(source_port);
-                    audit_map.remove(&key.to_array()).map_err(|err| {
+                    audit_map.remove(&key.as_array()).map_err(|err| {
                         Error::Bpf(BpfErrorType::MapDeleteElem(
                             source_port.to_string(),
                             format!("Error: {err}"),
@@ -657,7 +657,7 @@ mod tests {
                 )
                 .unwrap();
             audit_map
-                .insert(key.to_array(), value.to_array(), 0)
+                .insert(key.as_array(), value.as_array(), 0)
                 .unwrap();
         }
         let audit = bpf.lookup_audit(source_port);
