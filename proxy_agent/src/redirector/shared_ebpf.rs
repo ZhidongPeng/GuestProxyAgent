@@ -68,6 +68,7 @@ pub type destination_entry = _destination_entry;
 pub const IPPROTO_TCP: u32 = 6;
 #[allow(dead_code)]
 pub const IPPROTO_UDP: u32 = 17;
+pub const GPA_CONFIG_LOCAL_IP_BIND_MONITOR_ONLY: u32 = 0;
 
 #[repr(C)]
 pub struct sock_addr_skip_process_entry {
@@ -90,7 +91,7 @@ impl sock_addr_skip_process_entry {
 }
 
 #[repr(C)]
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct sock_addr_audit_key {
     pub protocol: u32,
     pub source_port: u32,
@@ -361,15 +362,17 @@ impl AuditValueEntry {
 #[cfg(not(windows))]
 pub mod linux_types {
     pub use super::{
-        destination_entry, sock_addr_audit_entry, sock_addr_audit_key, sock_addr_skip_process_entry,
+        destination_entry, sock_addr_audit_entry, sock_addr_audit_key,
+        sock_addr_skip_process_entry, GPA_CONFIG_LOCAL_IP_BIND_MONITOR_ONLY,
     };
 }
 
 #[cfg(windows)]
 pub mod windows_types {
     pub use super::{
-        destination_entry as destination_entry_t, sock_addr_audit_key as sock_addr_audit_key_t,
-        sock_addr_skip_process_entry,
+        destination_entry as destination_entry_t, sock_addr_audit_entry,
+        sock_addr_audit_key as sock_addr_audit_key_t, sock_addr_skip_process_entry,
+        GPA_CONFIG_LOCAL_IP_BIND_MONITOR_ONLY,
     };
 }
 
