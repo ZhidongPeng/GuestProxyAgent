@@ -184,6 +184,8 @@ type BpfMapLookupElem =
     unsafe extern "C" fn(map_fd: c_int, key: *const c_void, value: *mut c_void) -> c_int;
 
 type BpfMapDeleteElem = unsafe extern "C" fn(map_fd: c_int, key: *const c_void) -> c_int;
+type BpfMapGetNextKey =
+    unsafe extern "C" fn(map_fd: c_int, key: *const c_void, next_key: *mut c_void) -> c_int;
 
 type LibBpfGetError = unsafe extern "C" fn(no_use_ptr: *const c_void) -> c_long;
 
@@ -303,4 +305,15 @@ pub fn bpf_map_delete_elem(map_fd: c_int, key: *const c_void) -> Result<c_int> {
     let map_delete_elem: Symbol<BpfMapDeleteElem> =
         get_ebpf_api_fun(ebpf_api, "bpf_map_delete_elem\0")?;
     Ok(unsafe { map_delete_elem(map_fd, key) })
+}
+
+pub fn bpf_map_get_next_key(
+    map_fd: c_int,
+    key: *const c_void,
+    next_key: *mut c_void,
+) -> Result<c_int> {
+    let ebpf_api = get_ebpf_api()?;
+    let map_get_next_key: Symbol<BpfMapGetNextKey> =
+        get_ebpf_api_fun(ebpf_api, "bpf_map_get_next_key\0")?;
+    Ok(unsafe { map_get_next_key(map_fd, key, next_key) })
 }

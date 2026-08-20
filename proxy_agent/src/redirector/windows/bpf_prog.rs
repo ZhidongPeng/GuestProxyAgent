@@ -9,6 +9,9 @@ use crate::common::{
     error::{BpfErrorType, Error},
     result::Result,
 };
+use crate::redirector::shared_ebpf::windows_types::{
+    sock_addr_audit_entry, GPA_CONFIG_LOCAL_IP_BIND_MONITOR_ONLY,
+};
 use crate::redirector::AuditEntry;
 use proxy_agent_shared::misc_helpers;
 use std::ffi::c_void;
@@ -332,6 +335,77 @@ impl BpfObject {
         }
 
         Ok(())
+    }
+
+    pub fn update_local_ip_bind_monitor_only(&self, enabled: bool) -> Result<()> {
+        let map_name = "config_map";
+        let map_fd = self.get_bpf_map_fd(map_name)?;
+        let key = GPA_CONFIG_LOCAL_IP_BIND_MONITOR_ONLY;
+        let value = [u32::from(enabled)];
+
+        let result = bpf_map_update_elem(
+            map_fd,
+            &key as *const u32 as *const c_void,
+            value.as_ptr() as *const c_void,
+            0,
+        )
+        .map_err(|e| {
+            Error::Bpf(BpfErrorType::UpdateBpfMapHashMap(
+                map_name.to_string(),
+                "localIPBindMonitorOnly".to_string(),
+                e.to_string(),
+            ))
+        })?;
+        if result != 0 {
+            return Err(Error::Bpf(BpfErrorType::UpdateBpfMapHashMap(
+                map_name.to_string(),
+                "localIPBindMonitorOnly".to_string(),
+                format!("bpf_map_update_elem returned error code {result}"),
+            )));
+        }
+        Ok(())
+    }
+
+    pub fn drain_audit_only(&self) -> Result<Vec<AuditEntry>> {
+        let map_name = "audit_only_map";
+        let map_fd = self.get_bpf_map_fd(map_name)?;
+        let mut keys = Vec::new();
+        let mut previous_key: Option<sock_addr_audit_key_t> = None;
+
+        loop {
+            let mut next_key = sock_addr_audit_key_t::from_array([0; 2]);
+            let previous_key_ptr = previous_key
+                .as_ref()
+                .map_or(std::ptr::null(), |key| key as *const _ as *const c_void);
+            let result = bpf_map_get_next_key(
+                map_fd,
+                previous_key_ptr,
+                &mut next_key as *mut sock_addr_audit_key_t as *mut c_void,
+            )?;
+            if result != 0 {
+                break;
+            }
+            previous_key = Some(next_key);
+            keys.push(next_key);
+        }
+
+        let mut records = Vec::with_capacity(keys.len());
+        for key in keys {
+            let mut value = sock_addr_audit_entry::empty();
+            let result = bpf_map_lookup_elem(
+                map_fd,
+                &key as *const sock_addr_audit_key_t as *const c_void,
+                &mut value as *mut sock_addr_audit_entry as *mut c_void,
+            )?;
+            if result == 0 {
+                records.push(value.to_audit_entry());
+                let _ = bpf_map_delete_elem(
+                    map_fd,
+                    &key as *const sock_addr_audit_key_t as *const c_void,
+                )?;
+            }
+        }
+        Ok(records)
     }
 
     /**

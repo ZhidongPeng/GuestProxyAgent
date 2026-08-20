@@ -8,6 +8,7 @@ use crate::common::{
 };
 use crate::redirector::shared_ebpf::linux_types::{
     destination_entry, sock_addr_audit_entry, sock_addr_audit_key, sock_addr_skip_process_entry,
+    GPA_CONFIG_LOCAL_IP_BIND_MONITOR_ONLY,
 };
 use crate::redirector::{ip_to_string, AuditEntry};
 use crate::shared_state::redirector_wrapper::RedirectorSharedState;
@@ -84,6 +85,40 @@ impl BpfObject {
             None => {
                 return Err(Error::Bpf(BpfErrorType::GetBpfMap(
                     skip_process_map_name.to_string(),
+                    "Map does not exist".to_string(),
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn update_local_ip_bind_monitor_only(&mut self, enabled: bool) -> Result<()> {
+        let config_map_name = "config_map";
+        match self.0.map_mut(config_map_name) {
+            Some(map) => match HashMap::<&mut MapData, u32, [u32; 1]>::try_from(map) {
+                Ok(mut config_map) => config_map
+                    .insert(
+                        GPA_CONFIG_LOCAL_IP_BIND_MONITOR_ONLY,
+                        [u32::from(enabled)],
+                        0,
+                    )
+                    .map_err(|err| {
+                        Error::Bpf(BpfErrorType::UpdateBpfMapHashMap(
+                            config_map_name.to_string(),
+                            "localIPBindMonitorOnly".to_string(),
+                            err.to_string(),
+                        ))
+                    })?,
+                Err(err) => {
+                    return Err(Error::Bpf(BpfErrorType::LoadBpfMapHashMap(
+                        config_map_name.to_string(),
+                        err.to_string(),
+                    )));
+                }
+            },
+            None => {
+                return Err(Error::Bpf(BpfErrorType::GetBpfMap(
+                    config_map_name.to_string(),
                     "Map does not exist".to_string(),
                 )));
             }
@@ -380,6 +415,47 @@ impl BpfObject {
             }
         }
         Ok(())
+    }
+
+    pub fn drain_audit_only(&mut self) -> Result<Vec<AuditEntry>> {
+        let audit_map_name = "audit_only_map";
+        match self.0.map_mut(audit_map_name) {
+            Some(map) => {
+                let mut audit_map = HashMap::<&mut MapData, [u32; 2], [u32; 5]>::try_from(map)
+                    .map_err(|err| {
+                        Error::Bpf(BpfErrorType::LoadBpfMapHashMap(
+                            audit_map_name.to_string(),
+                            err.to_string(),
+                        ))
+                    })?;
+                let mut records = Vec::new();
+                for item in audit_map.iter() {
+                    let (key, value) = item.map_err(|err| {
+                        Error::Bpf(BpfErrorType::MapLookupElem(
+                            audit_map_name.to_string(),
+                            err.to_string(),
+                        ))
+                    })?;
+                    records.push((
+                        key,
+                        sock_addr_audit_entry::from_array(value).to_audit_entry(),
+                    ));
+                }
+                for (key, _) in &records {
+                    audit_map.remove(key).map_err(|err| {
+                        Error::Bpf(BpfErrorType::MapDeleteElem(
+                            audit_map_name.to_string(),
+                            err.to_string(),
+                        ))
+                    })?;
+                }
+                Ok(records.into_iter().map(|(_, entry)| entry).collect())
+            }
+            None => Err(Error::Bpf(BpfErrorType::GetBpfMap(
+                audit_map_name.to_string(),
+                "Map does not exist".to_string(),
+            ))),
+        }
     }
 }
 
