@@ -17,6 +17,8 @@
 #define IPPROTO_UDP 17
 #define AF_INET 2
 #define AF_INET6 10
+#define SOL_SOCKET 1
+#define SO_BINDTODEVICE 25
 
 // Type aliases for backward compatibility with existing code
 typedef struct gpa_skip_process_entry sock_addr_skip_process_entry;

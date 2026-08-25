@@ -56,6 +56,13 @@ struct {
     __uint(max_entries, 200);
 } local_map SEC(".maps");
 
+struct {
+    __uint(type, BPF_MAP_TYPE_SK_STORAGE);
+    __type(key, __u32);
+    __type(value, __u32);
+    __uint(map_flags, BPF_F_NO_PREALLOC);
+} bind_to_device_storage SEC(".maps");
+
 
 /*
     check the current pid in the skip_process map.
@@ -78,6 +85,49 @@ local_ip_bind_monitor_only_enabled(void)
     __u32 key = GPA_CONFIG_LOCAL_IP_BIND_MONITOR_ONLY;
     struct gpa_config_entry *entry = bpf_map_lookup_elem(&config_map, &key);
     return entry != NULL && entry->enabled != 0;
+}
+
+static __always_inline int
+socket_is_bound_to_device(struct bpf_sock *sk)
+{
+    if (sk == NULL)
+    {
+        return 0;
+    }
+
+    return bpf_sk_storage_get(&bind_to_device_storage, sk, NULL, 0) != NULL;
+}
+
+SEC("cgroup/setsockopt")
+int track_bind_to_device(struct bpf_sockopt *ctx)
+{
+    if (!local_ip_bind_monitor_only_enabled() ||
+        ctx->level != SOL_SOCKET || ctx->optname != SO_BINDTODEVICE ||
+        ctx->sk == NULL)
+    {
+        return 1;
+    }
+
+    if (ctx->optlen > 1)
+    {
+        __u32 initial_value = 1;
+        __u32 *value = bpf_sk_storage_get(
+            &bind_to_device_storage,
+            ctx->sk,
+            &initial_value,
+            BPF_SK_STORAGE_GET_F_CREATE);
+        if (value != NULL)
+        {
+            *value = 1;
+            bpf_printk("track_bind_to_device: Socket bound to a device.");
+        }
+    }
+    else
+    {
+        bpf_sk_storage_delete(&bind_to_device_storage, ctx->sk);
+    }
+
+    return 1;
 }
 
 /*
@@ -139,8 +189,9 @@ authorize_v4(struct bpf_sock_addr *ctx)
         __u32 source_ip = ctx->sk != NULL ? ctx->sk->src_ip4 : 0;
         __u32 source_ip_host = bpf_ntohl(source_ip);
         __u32 audit_only = local_ip_bind_monitor_only_enabled() &&
-                   source_ip != 0 &&
-                   (source_ip_host & 0xff000000) != 0x7f000000;
+                                                     ((source_ip != 0 &&
+                                                         (source_ip_host & 0xff000000) != 0x7f000000) ||
+                                                        socket_is_bound_to_device(ctx->sk));
 
         // update to the audit map before changing the destination ip and port.
         if (update_local_map_entry(ctx, audit_only) == 1)

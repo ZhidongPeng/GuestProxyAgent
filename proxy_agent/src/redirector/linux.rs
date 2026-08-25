@@ -12,7 +12,7 @@ use crate::redirector::shared_ebpf::linux_types::{
 };
 use crate::redirector::{ip_to_string, AuditEntry};
 use crate::shared_state::redirector_wrapper::RedirectorSharedState;
-use aya::programs::{CgroupSockAddr, KProbe};
+use aya::programs::{CgroupSockAddr, CgroupSockopt, KProbe};
 use aya::{
     maps::{HashMap, MapData},
     programs::CgroupAttachMode,
@@ -222,6 +222,48 @@ impl BpfObject {
             }
         }
 
+        Ok(())
+    }
+
+    pub fn attach_cgroup_sockopt_program(&mut self, cgroup2_root_path: PathBuf) -> Result<()> {
+        let program_name = "track_bind_to_device";
+        let cgroup = std::fs::File::open(cgroup2_root_path).map_err(|err| {
+            Error::Bpf(BpfErrorType::OpenCgroup(
+                config::get_cgroup_root().display().to_string(),
+                err.to_string(),
+            ))
+        })?;
+        let program: &mut CgroupSockopt = self
+            .0
+            .program_mut(program_name)
+            .ok_or_else(|| {
+                Error::Bpf(BpfErrorType::GetBpfProgram(
+                    program_name.to_string(),
+                    "Program does not exist".to_string(),
+                ))
+            })?
+            .try_into()
+            .map_err(|err: aya::programs::ProgramError| {
+                Error::Bpf(BpfErrorType::ConvertBpfProgram(
+                    "CgroupSockopt".to_string(),
+                    err.to_string(),
+                ))
+            })?;
+        program.load().map_err(|err| {
+            Error::Bpf(BpfErrorType::LoadBpfProgram(
+                program_name.to_string(),
+                err.to_string(),
+            ))
+        })?;
+        program
+            .attach(cgroup, CgroupAttachMode::Single)
+            .map_err(|err| {
+                Error::Bpf(BpfErrorType::AttachBpfProgram(
+                    program_name.to_string(),
+                    err.to_string(),
+                ))
+            })?;
+        logger::write(format!("{program_name} program loaded and attached."));
         Ok(())
     }
 
@@ -487,7 +529,7 @@ impl super::Redirector {
                 config::get_cgroup_root()
             }
         };
-        if let Err(e) = bpf_object.attach_cgroup_program(cgroup2_path) {
+        if let Err(e) = bpf_object.attach_cgroup_program(cgroup2_path.clone()) {
             let message = format!("Failed to attach cgroup program for redirection. {e}");
             event_logger::write_event(
                 LoggerLevel::Warn,
@@ -498,6 +540,7 @@ impl super::Redirector {
             );
             return Err(e);
         }
+        bpf_object.attach_cgroup_sockopt_program(cgroup2_path)?;
         Ok(())
     }
 }
