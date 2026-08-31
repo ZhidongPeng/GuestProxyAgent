@@ -184,8 +184,11 @@ type BpfMapLookupElem =
     unsafe extern "C" fn(map_fd: c_int, key: *const c_void, value: *mut c_void) -> c_int;
 
 type BpfMapDeleteElem = unsafe extern "C" fn(map_fd: c_int, key: *const c_void) -> c_int;
-type BpfMapGetNextKey =
-    unsafe extern "C" fn(map_fd: c_int, key: *const c_void, next_key: *mut c_void) -> c_int;
+type RingBufferSampleFn = unsafe extern "C" fn(*mut c_void, *mut c_void, usize) -> c_int;
+type RingBufferNew =
+    unsafe extern "C" fn(c_int, RingBufferSampleFn, *mut c_void, *const c_void) -> *mut ring_buffer;
+type RingBufferPoll = unsafe extern "C" fn(*mut ring_buffer, c_int) -> c_int;
+type RingBufferFree = unsafe extern "C" fn(*mut ring_buffer);
 
 type LibBpfGetError = unsafe extern "C" fn(no_use_ptr: *const c_void) -> c_long;
 
@@ -307,13 +310,25 @@ pub fn bpf_map_delete_elem(map_fd: c_int, key: *const c_void) -> Result<c_int> {
     Ok(unsafe { map_delete_elem(map_fd, key) })
 }
 
-pub fn bpf_map_get_next_key(
+pub fn ring_buffer__new(
     map_fd: c_int,
-    key: *const c_void,
-    next_key: *mut c_void,
-) -> Result<c_int> {
+    callback: RingBufferSampleFn,
+    context: *mut c_void,
+) -> Result<*mut ring_buffer> {
     let ebpf_api = get_ebpf_api()?;
-    let map_get_next_key: Symbol<BpfMapGetNextKey> =
-        get_ebpf_api_fun(ebpf_api, "bpf_map_get_next_key\0")?;
-    Ok(unsafe { map_get_next_key(map_fd, key, next_key) })
+    let new_ring: Symbol<RingBufferNew> = get_ebpf_api_fun(ebpf_api, "ring_buffer__new\0")?;
+    Ok(unsafe { new_ring(map_fd, callback, context, std::ptr::null()) })
+}
+
+pub fn ring_buffer__poll(ring: *mut ring_buffer, timeout_ms: c_int) -> Result<c_int> {
+    let ebpf_api = get_ebpf_api()?;
+    let poll_ring: Symbol<RingBufferPoll> = get_ebpf_api_fun(ebpf_api, "ring_buffer__poll\0")?;
+    Ok(unsafe { poll_ring(ring, timeout_ms) })
+}
+
+pub fn ring_buffer__free(ring: *mut ring_buffer) -> Result<()> {
+    let ebpf_api = get_ebpf_api()?;
+    let free_ring: Symbol<RingBufferFree> = get_ebpf_api_fun(ebpf_api, "ring_buffer__free\0")?;
+    unsafe { free_ring(ring) };
+    Ok(())
 }

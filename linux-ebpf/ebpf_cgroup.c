@@ -43,10 +43,8 @@ struct {
 } audit_map SEC(".maps");
 
 struct {
-    __uint(type, BPF_MAP_TYPE_LRU_HASH);
-    __type(key, struct gpa_audit_key);
-    __type(value, struct gpa_audit_event);
-    __uint(max_entries, 200);
+    __uint(type, BPF_MAP_TYPE_RINGBUF);
+    __uint(max_entries, 256 * 1024);
 } audit_only_map SEC(".maps");
 
 struct {
@@ -171,7 +169,7 @@ int connect4(struct bpf_sock_addr *ctx)
 }
 
 static __always_inline int
-update_audit_map_entry_sk(__u32 local_port, struct gpa_sock_addr_local_entry *local_entry)
+update_audit_map_entry_sk(__u32 local_port, __u32 local_ipv4, struct gpa_sock_addr_local_entry *local_entry)
 {
     struct gpa_audit_key key = {0};
     key.protocol = local_entry->protocol;
@@ -187,7 +185,11 @@ update_audit_map_entry_sk(__u32 local_port, struct gpa_sock_addr_local_entry *lo
     __u64 ret;
     if (local_entry->audit_only)
     {
-        ret = bpf_map_update_elem(&audit_only_map, &key, &entry, 0);
+        struct gpa_audit_only_event event = {0};
+        event.kernel_timestamp_ns = bpf_ktime_get_ns();
+        event.local_ipv4 = local_ipv4;
+        event.audit = entry;
+        ret = bpf_ringbuf_output(&audit_only_map, &event, sizeof(event), 0);
     }
     else
     {
@@ -222,6 +224,7 @@ trace_v4(struct pt_regs *ctx, struct sock *sk)
         return 0;
     }
     __be32 skc_daddr = BPF_CORE_READ(sk, __sk_common.skc_daddr);
+    __be32 skc_rcv_saddr = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
     __be16 skc_dport = BPF_CORE_READ(sk, __sk_common.skc_dport);
     __u16 skc_num = BPF_CORE_READ(sk, __sk_common.skc_num);
 
@@ -237,7 +240,7 @@ trace_v4(struct pt_regs *ctx, struct sock *sk)
     struct gpa_sock_addr_local_entry *local_entry = bpf_map_lookup_elem(&local_map, &pid_tgid);
     if (local_entry != NULL)
     {
-        update_audit_map_entry_sk(skc_num, local_entry);
+        update_audit_map_entry_sk(skc_num, skc_rcv_saddr, local_entry);
         __u64 ret = bpf_map_delete_elem(&local_map, &pid_tgid);
         if (ret != 0)
         {

@@ -7,14 +7,14 @@ use crate::common::{
     result::Result,
 };
 use crate::redirector::shared_ebpf::linux_types::{
-    destination_entry, sock_addr_audit_entry, sock_addr_audit_key, sock_addr_skip_process_entry,
-    GPA_CONFIG_LOCAL_IP_BIND_MONITOR_ONLY,
+    audit_only_event, destination_entry, sock_addr_audit_entry, sock_addr_audit_key,
+    sock_addr_skip_process_entry, GPA_CONFIG_LOCAL_IP_BIND_MONITOR_ONLY,
 };
-use crate::redirector::{ip_to_string, AuditEntry};
+use crate::redirector::{ip_to_string, AuditEntry, AuditOnlyRecord};
 use crate::shared_state::redirector_wrapper::RedirectorSharedState;
 use aya::programs::{CgroupSockAddr, KProbe};
 use aya::{
-    maps::{HashMap, MapData},
+    maps::{HashMap, MapData, RingBuf},
     programs::CgroupAttachMode,
 };
 use aya::{Btf, Ebpf, EbpfLoader};
@@ -417,45 +417,60 @@ impl BpfObject {
         Ok(())
     }
 
-    pub fn drain_audit_only(&mut self) -> Result<Vec<AuditEntry>> {
+    pub fn subscribe_audit_only(
+        &mut self,
+        cancellation_token: tokio_util::sync::CancellationToken,
+    ) -> Result<tokio::sync::mpsc::UnboundedReceiver<AuditOnlyRecord>> {
         let audit_map_name = "audit_only_map";
-        match self.0.map_mut(audit_map_name) {
-            Some(map) => {
-                let mut audit_map = HashMap::<&mut MapData, [u32; 2], [u32; 5]>::try_from(map)
-                    .map_err(|err| {
-                        Error::Bpf(BpfErrorType::LoadBpfMapHashMap(
-                            audit_map_name.to_string(),
-                            err.to_string(),
-                        ))
-                    })?;
-                let mut records = Vec::new();
-                for item in audit_map.iter() {
-                    let (key, value) = item.map_err(|err| {
-                        Error::Bpf(BpfErrorType::MapLookupElem(
-                            audit_map_name.to_string(),
-                            err.to_string(),
-                        ))
-                    })?;
-                    records.push((
-                        key,
-                        sock_addr_audit_entry::from_array(value).to_audit_entry(),
-                    ));
-                }
-                for (key, _) in &records {
-                    audit_map.remove(key).map_err(|err| {
-                        Error::Bpf(BpfErrorType::MapDeleteElem(
-                            audit_map_name.to_string(),
-                            err.to_string(),
-                        ))
-                    })?;
-                }
-                Ok(records.into_iter().map(|(_, entry)| entry).collect())
-            }
-            None => Err(Error::Bpf(BpfErrorType::GetBpfMap(
+        let map = self.0.take_map(audit_map_name).ok_or_else(|| {
+            Error::Bpf(BpfErrorType::GetBpfMap(
                 audit_map_name.to_string(),
                 "Map does not exist".to_string(),
-            ))),
-        }
+            ))
+        })?;
+        let ring = RingBuf::try_from(map).map_err(|err| {
+            Error::Bpf(BpfErrorType::LoadBpfMapHashMap(
+                audit_map_name.to_string(),
+                err.to_string(),
+            ))
+        })?;
+        let mut async_ring = tokio::io::unix::AsyncFd::new(ring).map_err(|err| {
+            Error::Bpf(BpfErrorType::LoadBpfMapHashMap(
+                audit_map_name.to_string(),
+                err.to_string(),
+            ))
+        })?;
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = cancellation_token.cancelled() => return,
+                    readiness = async_ring.readable_mut() => {
+                        let Ok(mut guard) = readiness else { return; };
+                        while let Some(item) = guard.get_inner_mut().next() {
+                            match audit_only_event::from_bytes(&item) {
+                                Ok(event) => {
+                                    let record = AuditOnlyRecord {
+                                        entry: event.to_audit_entry(),
+                                        kernel_timestamp_ns: event.kernel_timestamp_ns,
+                                        timestamp_utc_ns: proxy_agent_shared::misc_helpers::get_date_time_unix_nano(),
+                                        local_ipv4: event.local_ipv4,
+                                    };
+                                    if sender.send(record).is_err() {
+                                        return;
+                                    }
+                                }
+                                Err(err) => logger::write_warning(format!(
+                                    "Failed to decode eBPF audit-only event: {err}"
+                                )),
+                            }
+                        }
+                        guard.clear_ready();
+                    }
+                }
+            }
+        });
+        Ok(receiver)
     }
 }
 

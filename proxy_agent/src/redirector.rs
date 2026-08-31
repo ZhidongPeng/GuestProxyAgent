@@ -84,6 +84,13 @@ pub struct AuditEntry {
     pub destination_port: u16, // in network byte order
 }
 
+pub struct AuditOnlyRecord {
+    pub entry: AuditEntry,
+    pub kernel_timestamp_ns: u64,
+    pub timestamp_utc_ns: i128,
+    pub local_ipv4: u32,
+}
+
 impl AuditEntry {
     pub fn empty() -> Self {
         AuditEntry {
@@ -192,6 +199,12 @@ impl Redirector {
         self.attach_bpf_prog(&mut bpf_object)?;
         logger::write_information("Success attached bpf prog.".to_string());
 
+        let audit_only_receiver = if monitor_only {
+            Some(bpf_object.subscribe_audit_only(self.shared_state.get_cancellation_token())?)
+        } else {
+            None
+        };
+
         if let Err(e) = self
             .shared_state
             .get_redirector_shared_state()
@@ -200,9 +213,9 @@ impl Redirector {
         {
             logger::write_error(format!("Failed to update bpf object in shared state: {e}"));
         }
-        if monitor_only {
-            tokio::spawn(poll_audit_only(
-                self.shared_state.get_redirector_shared_state(),
+        if let Some(receiver) = audit_only_receiver {
+            tokio::spawn(process_audit_only_events(
+                receiver,
                 self.shared_state.get_proxy_server_shared_state(),
                 self.shared_state.get_cancellation_token(),
             ));
@@ -268,28 +281,17 @@ impl Redirector {
     }
 }
 
-async fn poll_audit_only(
-    redirector_shared_state: RedirectorSharedState,
+async fn process_audit_only_events(
+    mut receiver: tokio::sync::mpsc::UnboundedReceiver<AuditOnlyRecord>,
     proxy_server_shared_state: ProxyServerSharedState,
     cancellation_token: CancellationToken,
 ) {
-    let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
     loop {
         tokio::select! {
             _ = cancellation_token.cancelled() => return,
-            _ = interval.tick() => {
-                let Some(bpf_object) = redirector_shared_state
-                    .get_bpf_object()
-                    .await
-                    .ok()
-                    .flatten()
-                else {
-                    continue;
-                };
-                let records = bpf_object.lock().unwrap().drain_audit_only();
-                match records {
-                    Ok(records) => {
-                        for entry in records {
+            record = receiver.recv() => {
+                let Some(record) = record else { return; };
+                let entry = record.entry;
                             let destination_ip = entry.destination_ipv4_addr();
                             let destination_port = entry.destination_port_in_host_byte_order();
                             let message = match Claims::from_audit_entry(
@@ -301,7 +303,10 @@ async fn poll_audit_only(
                             .await
                             {
                                 Ok(claims) => format!(
-                                    "eBPF audit-only connection: userName={}, processId={}, processName={}, processFullPath={}, processCmdLine={}, runAsElevated={}, destination={}:{}",
+                                    "eBPF audit-only connection: timestampUtcNs={}, kernelTimestampNs={}, localIp={}, userName={}, processId={}, processName={}, processFullPath={}, processCmdLine={}, runAsElevated={}, destination={}:{}",
+                                    record.timestamp_utc_ns,
+                                    record.kernel_timestamp_ns,
+                                    Ipv4Addr::from_bits(record.local_ipv4.to_be()),
                                     claims.userName,
                                     claims.processId,
                                     claims.processName.to_string_lossy(),
@@ -312,7 +317,10 @@ async fn poll_audit_only(
                                     destination_port,
                                 ),
                                 Err(err) => format!(
-                                    "eBPF audit-only connection: userId={}, processId={}, processDetails=unavailable ({err}), destination={}:{}",
+                                    "eBPF audit-only connection: timestampUtcNs={}, kernelTimestampNs={}, localIp={}, userId={}, processId={}, processDetails=unavailable ({err}), destination={}:{}",
+                                    record.timestamp_utc_ns,
+                                    record.kernel_timestamp_ns,
+                                    Ipv4Addr::from_bits(record.local_ipv4.to_be()),
                                     entry.logon_id,
                                     entry.process_id,
                                     destination_ip,
@@ -322,16 +330,10 @@ async fn poll_audit_only(
                             event_logger::write_event(
                                 LoggerLevel::Warn,
                                 message,
-                                "poll_audit_only",
+                                "process_audit_only_events",
                                 "redirector",
                                 logger::AGENT_LOGGER_KEY,
                             );
-                        }
-                    }
-                    Err(err) => logger::write_warning(format!(
-                        "Failed to drain eBPF audit-only map: {err}"
-                    )),
-                }
             }
         }
     }

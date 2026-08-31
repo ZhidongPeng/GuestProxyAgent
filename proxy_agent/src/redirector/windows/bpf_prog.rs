@@ -10,13 +10,38 @@ use crate::common::{
     result::Result,
 };
 use crate::redirector::shared_ebpf::windows_types::{
-    sock_addr_audit_entry, GPA_CONFIG_LOCAL_IP_BIND_MONITOR_ONLY,
+    audit_only_event, GPA_CONFIG_LOCAL_IP_BIND_MONITOR_ONLY,
 };
-use crate::redirector::AuditEntry;
+use crate::redirector::{AuditEntry, AuditOnlyRecord};
 use proxy_agent_shared::misc_helpers;
 use std::ffi::c_void;
 use std::mem::size_of_val;
 use std::path::Path;
+
+unsafe extern "C" fn audit_only_callback(
+    context: *mut c_void,
+    data: *mut c_void,
+    size: usize,
+) -> i32 {
+    let sender = &*(context as *const tokio::sync::mpsc::UnboundedSender<AuditOnlyRecord>);
+    let bytes = std::slice::from_raw_parts(data as *const u8, size);
+    match audit_only_event::from_bytes(bytes) {
+        Ok(event) => {
+            let record = AuditOnlyRecord {
+                entry: event.to_audit_entry(),
+                kernel_timestamp_ns: event.kernel_timestamp_ns,
+                timestamp_utc_ns: proxy_agent_shared::misc_helpers::get_date_time_unix_nano(),
+                local_ipv4: event.local_ipv4,
+            };
+            if sender.send(record).is_ok() {
+                0
+            } else {
+                -1
+            }
+        }
+        Err(_) => -1,
+    }
+}
 
 // This module contains the logic to interact with the windows eBPF program & maps.
 impl BpfObject {
@@ -366,46 +391,55 @@ impl BpfObject {
         Ok(())
     }
 
-    pub fn drain_audit_only(&self) -> Result<Vec<AuditEntry>> {
+    pub fn subscribe_audit_only(
+        &self,
+        cancellation_token: tokio_util::sync::CancellationToken,
+    ) -> Result<tokio::sync::mpsc::UnboundedReceiver<AuditOnlyRecord>> {
         let map_name = "audit_only_map";
         let map_fd = self.get_bpf_map_fd(map_name)?;
-        let mut keys = Vec::new();
-        let mut previous_key: Option<sock_addr_audit_key_t> = None;
-
-        loop {
-            let mut next_key = sock_addr_audit_key_t::from_array([0; 2]);
-            let previous_key_ptr = previous_key
-                .as_ref()
-                .map_or(std::ptr::null(), |key| key as *const _ as *const c_void);
-            let result = bpf_map_get_next_key(
-                map_fd,
-                previous_key_ptr,
-                &mut next_key as *mut sock_addr_audit_key_t as *mut c_void,
-            )?;
-            if result != 0 {
-                break;
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let context = Box::into_raw(Box::new(sender));
+        let ring = match ring_buffer__new(map_fd, audit_only_callback, context.cast()) {
+            Ok(ring) => ring,
+            Err(err) => {
+                unsafe { drop(Box::from_raw(context)) };
+                return Err(err);
             }
-            previous_key = Some(next_key);
-            keys.push(next_key);
+        };
+        if ring.is_null() {
+            unsafe { drop(Box::from_raw(context)) };
+            return Err(Error::Bpf(BpfErrorType::LoadBpfMapHashMap(
+                map_name.to_string(),
+                "ring_buffer__new returned null".to_string(),
+            )));
         }
-
-        let mut records = Vec::with_capacity(keys.len());
-        for key in keys {
-            let mut value = sock_addr_audit_entry::empty();
-            let result = bpf_map_lookup_elem(
-                map_fd,
-                &key as *const sock_addr_audit_key_t as *const c_void,
-                &mut value as *mut sock_addr_audit_entry as *mut c_void,
-            )?;
-            if result == 0 {
-                records.push(value.to_audit_entry());
-                let _ = bpf_map_delete_elem(
-                    map_fd,
-                    &key as *const sock_addr_audit_key_t as *const c_void,
-                )?;
+        let ring_address = ring as usize;
+        let context_address = context as usize;
+        tokio::task::spawn_blocking(move || {
+            let ring = ring_address as *mut ring_buffer;
+            while !cancellation_token.is_cancelled() {
+                match ring_buffer__poll(ring, 250) {
+                    Ok(result) if result >= 0 => {}
+                    Ok(result) => {
+                        logger::write_warning(format!(
+                            "ring_buffer__poll failed with result {result}"
+                        ));
+                        break;
+                    }
+                    Err(err) => {
+                        logger::write_warning(format!("ring_buffer__poll failed: {err}"));
+                        break;
+                    }
+                }
             }
-        }
-        Ok(records)
+            let _ = ring_buffer__free(ring);
+            unsafe {
+                drop(Box::from_raw(
+                    context_address as *mut tokio::sync::mpsc::UnboundedSender<AuditOnlyRecord>,
+                ));
+            }
+        });
+        Ok(receiver)
     }
 
     /**

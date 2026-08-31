@@ -35,10 +35,10 @@ struct bpf_map_def audit_map = {
 
 #pragma clang section data = "maps"
 struct bpf_map_def audit_only_map = {
-    .type = BPF_MAP_TYPE_LRU_HASH,
-    .key_size = sizeof(sock_addr_audit_key_t),
-    .value_size = sizeof(sock_addr_audit_entry_t),
-    .max_entries = 1000};
+    .type = BPF_MAP_TYPE_RINGBUF,
+    .key_size = 0,
+    .value_size = 0,
+    .max_entries = 256 * 1024};
 
 /*
     check the current pid in the skip_process map.
@@ -101,13 +101,14 @@ update_audit_map_entry(bpf_sock_addr_t *ctx, int audit_only)
     uint16_t source_port = ctx->msg_src_port;
     if (audit_only)
     {
-        sock_addr_audit_key_t key = {0};
-        key.protocol = ctx->protocol;
-        key.source_port = source_port != 0 ? source_port : pid;
-        uint64_t ret = bpf_map_update_elem(&audit_only_map, &key, &entry, 0);
+        struct gpa_audit_only_event event = {0};
+        event.kernel_timestamp_ns = bpf_ktime_get_ns();
+        event.local_ipv4 = ctx->msg_src_ip4;
+        event.audit = entry;
+        uint64_t ret = bpf_ringbuf_output(&audit_only_map, &event, sizeof(event), 0);
         if (ret != 0)
         {
-            bpf_printk("Failed to update audit-only map with results: %u.", ret);
+            bpf_printk("Failed to emit audit-only event with results: %u.", ret);
         }
         return 0;
     }
