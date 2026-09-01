@@ -500,7 +500,7 @@ mod tests {
             reserved: 0,
         };
 
-        let rebuilt = sock_addr_audit_entry::from_array(canonical.as_array());
+        let rebuilt = sock_addr_audit_entry::from_array(canonical.to_array());
 
         assert_eq!(rebuilt.logon_id, canonical.logon_id);
         assert_eq!(rebuilt.process_id, canonical.process_id);

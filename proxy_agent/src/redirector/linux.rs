@@ -679,7 +679,7 @@ mod tests {
                 )
                 .unwrap();
             audit_map
-                .insert(key.as_array(), value.as_array(), 0)
+                .insert(key.as_array(), value.to_array(), 0)
                 .unwrap();
         }
         let audit = bpf.lookup_audit(source_port);
