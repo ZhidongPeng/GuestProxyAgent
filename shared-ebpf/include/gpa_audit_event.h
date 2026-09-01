@@ -13,6 +13,8 @@
 #pragma once
 
 #define GPA_CONFIG_LOCAL_IP_BIND_MONITOR_ONLY 0
+#define GPA_ADDRESS_FAMILY_IPV4 4
+#define GPA_ADDRESS_FAMILY_IPV6 6
 
 // IP address - union allows IPv4 (first element) or IPv6 (all 4 elements)
 // Size: 16 bytes (4 x u32) - matches Rust _ip_address { ip: [u32; 4] }
@@ -44,7 +46,7 @@ struct gpa_audit_key
 };
 
 // Canonical audit event entry - the record stored in the audit map
-// Size: 20 bytes - matches Rust sock_addr_audit_entry -> [u32; 5]
+// Size: 28 bytes - matches Rust sock_addr_audit_entry -> [u32; 7]
 //
 // NOTE: Field names use Linux semantics (logon_id=uid, is_root). The Windows
 // side maps these to its own naming (logon_id, is_admin) at user-space.
@@ -56,6 +58,8 @@ struct gpa_audit_event
     __u32 is_root;          // 1 if root/admin, 0 otherwise
     __u32 destination_ipv4; // Destination IPv4 address
     __u32 destination_port; // Destination port (stored as u32)
+    __u32 address_family;   // GPA_ADDRESS_FAMILY_IPV4 or GPA_ADDRESS_FAMILY_IPV6
+    __u32 reserved;
 };
 
 // Audit-only ring-buffer record. The kernel timestamp is monotonic; user mode
@@ -81,7 +85,7 @@ struct gpa_config_entry
 };
 
 // Local address entry - tracks current connection state in the local_map
-// Size: 28 bytes (7 x u32)
+// Size: 36 bytes (9 x u32)
 struct gpa_sock_addr_local_entry
 {
     __u32 logon_id; // uid
@@ -91,6 +95,8 @@ struct gpa_sock_addr_local_entry
     __u32 destination_port;
     __u32 protocol;
     __u32 audit_only;
+    __u32 address_family;
+    __u32 reserved;
 };
 
 // Compile-time layout assertions to guarantee binary compatibility with Rust loader.
@@ -98,8 +104,8 @@ struct gpa_sock_addr_local_entry
 _Static_assert(sizeof(struct gpa_ip_address) == 16, "ip_address must be 16 bytes ([u32; 4])");
 _Static_assert(sizeof(struct gpa_destination_entry) == 24, "destination_entry must be 24 bytes ([u32; 6])");
 _Static_assert(sizeof(struct gpa_audit_key) == 8, "audit_key must be 8 bytes ([u32; 2])");
-_Static_assert(sizeof(struct gpa_audit_event) == 20, "audit_event must be 20 bytes ([u32; 5])");
-_Static_assert(sizeof(struct gpa_audit_only_event) == 32, "audit_only_event must be 32 bytes");
+_Static_assert(sizeof(struct gpa_audit_event) == 28, "audit_event must be 28 bytes ([u32; 7])");
+_Static_assert(sizeof(struct gpa_audit_only_event) == 40, "audit_only_event must be 40 bytes");
 _Static_assert(sizeof(struct gpa_skip_process_entry) == 4, "skip_process_entry must be 4 bytes ([u32; 1])");
 _Static_assert(sizeof(struct gpa_config_entry) == 4, "config_entry must be 4 bytes ([u32; 1])");
-_Static_assert(sizeof(struct gpa_sock_addr_local_entry) == 28, "sock_addr_local_entry must be 28 bytes ([u32; 7])");
+_Static_assert(sizeof(struct gpa_sock_addr_local_entry) == 36, "sock_addr_local_entry must be 36 bytes ([u32; 9])");

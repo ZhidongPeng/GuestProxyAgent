@@ -69,6 +69,8 @@ pub const IPPROTO_TCP: u32 = 6;
 #[allow(dead_code)]
 pub const IPPROTO_UDP: u32 = 17;
 pub const GPA_CONFIG_LOCAL_IP_BIND_MONITOR_ONLY: u32 = 0;
+pub const GPA_ADDRESS_FAMILY_IPV4: u32 = 4;
+pub const GPA_ADDRESS_FAMILY_IPV6: u32 = 6;
 
 #[repr(C)]
 pub struct sock_addr_skip_process_entry {
@@ -96,6 +98,8 @@ pub struct sock_addr_audit_key {
     pub protocol: u32,
     pub source_port: u32,
 }
+pub type AuditMapKey =
+    [u32; std::mem::size_of::<sock_addr_audit_key>() / std::mem::size_of::<u32>()];
 #[allow(dead_code)]
 impl sock_addr_audit_key {
     #[cfg(windows)]
@@ -114,11 +118,11 @@ impl sock_addr_audit_key {
         }
     }
 
-    pub fn as_array(&self) -> [u32; 2] {
+    pub fn to_array(&self) -> AuditMapKey {
         [self.protocol, self.source_port]
     }
 
-    pub fn from_array(array: [u32; 2]) -> Self {
+    pub fn from_array(array: AuditMapKey) -> Self {
         sock_addr_audit_key {
             protocol: array[0],
             source_port: array[1],
@@ -134,6 +138,8 @@ pub struct sock_addr_audit_entry {
     pub is_root: u32,
     pub destination_ipv4: u32,
     pub destination_port: u32,
+    pub address_family: u32,
+    pub reserved: u32,
 }
 
 #[repr(C)]
@@ -170,9 +176,12 @@ impl audit_only_event {
             is_admin: self.is_root as i32,
             destination_ipv4: self.destination_ipv4,
             destination_port: self.destination_port as u16,
+            address_family: crate::redirector::AddressFamily::IPv4,  //TODO: audit_only_event does not include address_family, so we assume IPv4 for now.
         }
     }
 }
+pub type AuditMapValue =
+    [u32; std::mem::size_of::<sock_addr_audit_entry>() / std::mem::size_of::<u32>()];
 impl sock_addr_audit_entry {
     pub fn empty() -> Self {
         sock_addr_audit_entry {
@@ -181,27 +190,33 @@ impl sock_addr_audit_entry {
             is_root: 0,
             destination_ipv4: 0,
             destination_port: 0,
+            address_family: GPA_ADDRESS_FAMILY_IPV4,
+            reserved: 0,
         }
     }
 
-    pub fn from_array(array: [u32; 5]) -> Self {
+    pub fn from_array(array: AuditMapValue) -> Self {
         sock_addr_audit_entry {
             logon_id: array[0],
             process_id: array[1],
             is_root: array[2],
             destination_ipv4: array[3],
             destination_port: array[4],
+            address_family: array[5],
+            reserved: array[6],
         }
     }
 
     #[allow(dead_code)]
-    pub fn as_array(&self) -> [u32; 5] {
+    pub fn to_array(&self) -> AuditMapValue {
         [
             self.logon_id,
             self.process_id,
             self.is_root,
             self.destination_ipv4,
             self.destination_port,
+            self.address_family,
+            self.reserved,
         ]
     }
 
@@ -212,6 +227,11 @@ impl sock_addr_audit_entry {
             is_admin: self.is_root as i32,
             destination_ipv4: self.destination_ipv4,
             destination_port: self.destination_port as u16,
+            address_family: if self.address_family == GPA_ADDRESS_FAMILY_IPV6 {
+                crate::redirector::AddressFamily::IPv6
+            } else {
+                crate::redirector::AddressFamily::IPv4
+            },
         }
     }
 }
@@ -243,6 +263,7 @@ impl sock_addr_audit_entry_legacy {
             is_admin: self.is_admin,
             destination_ipv4: self.destination_ipv4,
             destination_port: self.destination_port,
+            address_family: crate::redirector::AddressFamily::IPv4,
         }
     }
 }
@@ -401,7 +422,8 @@ impl AuditValueEntry {
 pub mod linux_types {
     pub use super::{
         audit_only_event, destination_entry, sock_addr_audit_entry, sock_addr_audit_key,
-        sock_addr_skip_process_entry, GPA_CONFIG_LOCAL_IP_BIND_MONITOR_ONLY,
+        sock_addr_skip_process_entry, AuditMapKey, AuditMapValue,
+        GPA_CONFIG_LOCAL_IP_BIND_MONITOR_ONLY,
     };
 }
 
@@ -474,6 +496,8 @@ mod tests {
             is_root: 1,
             destination_ipv4: 4,
             destination_port: 5,
+            address_family: GPA_ADDRESS_FAMILY_IPV6,
+            reserved: 0,
         };
 
         let rebuilt = sock_addr_audit_entry::from_array(canonical.as_array());
@@ -483,6 +507,7 @@ mod tests {
         assert_eq!(rebuilt.is_root, canonical.is_root);
         assert_eq!(rebuilt.destination_ipv4, canonical.destination_ipv4);
         assert_eq!(rebuilt.destination_port, canonical.destination_port);
+        assert_eq!(rebuilt.address_family, canonical.address_family);
     }
 
     #[test]
@@ -493,6 +518,8 @@ mod tests {
             is_root: 1,
             destination_ipv4: 0x0102_0304,
             destination_port: u32::from(8080u16.to_be()),
+            address_family: GPA_ADDRESS_FAMILY_IPV6,
+            reserved: 0,
         };
 
         let audit = canonical.to_audit_entry();
@@ -501,6 +528,7 @@ mod tests {
         assert_eq!(audit.is_admin, 1);
         assert_eq!(audit.destination_ipv4, 0x0102_0304);
         assert_eq!(audit.destination_port, 8080u16.to_be());
+        assert_eq!(audit.address_family, crate::redirector::AddressFamily::IPv6);
     }
 
     #[test]
@@ -643,6 +671,8 @@ mod tests {
             is_root: 1,
             destination_ipv4: 0x0A00_0001,
             destination_port: u32::from(443u16.to_be()),
+            address_family: GPA_ADDRESS_FAMILY_IPV6,
+            reserved: 0,
         });
         let audit = new_entry.to_audit_entry().expect("New should convert");
         assert_eq!(audit.logon_id, 11);
@@ -650,6 +680,7 @@ mod tests {
         assert_eq!(audit.is_admin, 1);
         assert_eq!(audit.destination_ipv4, 0x0A00_0001);
         assert_eq!(audit.destination_port, 443u16.to_be());
+        assert_eq!(audit.address_family, crate::redirector::AddressFamily::IPv6);
 
         // Legacy variant converts directly.
         let legacy_entry = AuditValueEntry::Legacy(sock_addr_audit_entry_legacy {
@@ -675,6 +706,8 @@ mod tests {
             is_root: 1,
             destination_ipv4: 0x0808_0808,
             destination_port: u32::from(53u16.to_be()),
+            address_family: GPA_ADDRESS_FAMILY_IPV6,
+            reserved: 0,
         };
         let mut unknown_new = AuditValueEntry::empty(AuditValueEntry::VALUE_SIZE_NEW + 1);
         fill_unknown_buffer(
@@ -693,6 +726,7 @@ mod tests {
         assert_eq!(audit.is_admin, 1);
         assert_eq!(audit.destination_ipv4, 0x0808_0808);
         assert_eq!(audit.destination_port, 53u16.to_be());
+        assert_eq!(audit.address_family, crate::redirector::AddressFamily::IPv6);
 
         // Unknown variant decodes a legacy layout from raw bytes.
         let legacy = sock_addr_audit_entry_legacy {
