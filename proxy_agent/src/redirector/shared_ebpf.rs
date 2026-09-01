@@ -118,7 +118,7 @@ impl sock_addr_audit_key {
         }
     }
 
-    pub fn to_array(&self) -> AuditMapKey {
+    pub fn as_array(&self) -> AuditMapKey {
         [self.protocol, self.source_port]
     }
 
