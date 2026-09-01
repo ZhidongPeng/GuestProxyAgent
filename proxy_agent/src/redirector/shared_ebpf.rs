@@ -176,7 +176,7 @@ impl audit_only_event {
             is_admin: self.is_root as i32,
             destination_ipv4: self.destination_ipv4,
             destination_port: self.destination_port as u16,
-            address_family: crate::redirector::AddressFamily::IPv4,  //TODO: audit_only_event does not include address_family, so we assume IPv4 for now.
+            address_family: crate::redirector::AddressFamily::IPv4, //TODO: audit_only_event does not include address_family, so we assume IPv4 for now.
         }
     }
 }
