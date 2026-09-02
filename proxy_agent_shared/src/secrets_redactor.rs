@@ -4,6 +4,9 @@
 use std::borrow::Cow;
 
 const REDACTED_TEXT: &str = "[REDACTED]";
+// Each Regex keeps a pool of lazy-DFA caches for concurrent searches. Keep each cache small because
+// this module has several expressions and telemetry can redact on multiple runtime threads.
+const REGEX_DFA_SIZE_LIMIT: usize = 64 * 1024;
 /// Common substrings that indicate a secret might be present - for quick pre-filtering
 /// These are not regex patterns, just simple substrings to check for before running the more expensive regexes.
 const SECRET_INDICATORS: [&str; 15] = [
@@ -62,7 +65,10 @@ static REGEX_PATTERNS: once_cell::sync::Lazy<Vec<regex::Regex>> =
 fn init_regex_patterns() -> Vec<regex::Regex> {
     let mut patterns = Vec::new();
     for pattern in CRED_PATTERNS.iter() {
-        if let Ok(re) = regex::Regex::new(pattern) {
+        if let Ok(re) = regex::RegexBuilder::new(pattern)
+            .dfa_size_limit(REGEX_DFA_SIZE_LIMIT)
+            .build()
+        {
             patterns.push(re);
         }
     }

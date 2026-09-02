@@ -4,6 +4,22 @@
 //! This module contains the logic to generate the telemetry data to be send to wire server.
 
 use crate::telemetry::{Event, ExtensionStatusEvent};
+
+// Keep telemetry messages bounded before secret redaction. Besides limiting the wire payload, this
+// prevents externally supplied extension status from causing disproportionate regex work or memory use.
+const MAX_TELEMETRY_MESSAGE_LENGTH: usize = 4 * 1024;
+
+fn truncate_to_char_boundary(text: &mut String, max_bytes: usize) {
+    if text.len() <= max_bytes {
+        return;
+    }
+
+    let mut end = max_bytes;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text.truncate(end);
+}
 use crate::{current_info, misc_helpers};
 use once_cell::sync::Lazy;
 use serde_derive::{Deserialize, Serialize};
@@ -312,7 +328,9 @@ impl TelemetryGenericLogsEvent {
             None => (event_log.Version.clone(), event_name),
         };
         // redact secrets in the message before sending to telemetry
-        let message = event_log.Message.clone();
+        let mut message = event_log.Message.clone();
+        truncate_to_char_boundary(&mut message, MAX_TELEMETRY_MESSAGE_LENGTH);
+
         let message = crate::secrets_redactor::redact_secrets_string(message);
         TelemetryGenericLogsEvent {
             event_name,
@@ -417,7 +435,8 @@ impl TelemetryExtensionEventsEvent {
         ga_version: String,
     ) -> Self {
         // redact secrets in the message before sending to telemetry
-        let message = event.operation_status.message.clone();
+        let mut message = event.operation_status.message.clone();
+        truncate_to_char_boundary(&mut message, MAX_TELEMETRY_MESSAGE_LENGTH);
         let message = crate::secrets_redactor::redact_secrets_string(message);
         TelemetryExtensionEventsEvent {
             ga_version,
@@ -830,6 +849,42 @@ mod tests {
         assert!(xml.contains("Installation successful"));
         assert!(xml.contains("Duration"));
         assert!(xml.contains("500"));
+    }
+
+    #[test]
+    fn test_extension_event_bounds_message_before_redaction() {
+        let mut extension_status_event = create_test_extension_status_event();
+        extension_status_event.operation_status.message = format!(
+            "Authorization: Bearer secret\n{}",
+            "x".repeat(MAX_TELEMETRY_MESSAGE_LENGTH * 16)
+        );
+
+        let telemetry_event = TelemetryExtensionEventsEvent::from_extension_status_event(
+            &extension_status_event,
+            "production".to_string(),
+            "1.0.0".to_string(),
+        );
+
+        assert!(telemetry_event.message.len() <= MAX_TELEMETRY_MESSAGE_LENGTH);
+        assert!(telemetry_event.message.starts_with("[REDACTED]\n"));
+        assert!(!telemetry_event.message.contains("secret"));
+    }
+
+    #[test]
+    fn test_extension_event_truncates_at_utf8_boundary() {
+        let mut extension_status_event = create_test_extension_status_event();
+        extension_status_event.operation_status.message = "é".repeat(MAX_TELEMETRY_MESSAGE_LENGTH);
+
+        let telemetry_event = TelemetryExtensionEventsEvent::from_extension_status_event(
+            &extension_status_event,
+            "production".to_string(),
+            "1.0.0".to_string(),
+        );
+
+        assert_eq!(telemetry_event.message.len(), MAX_TELEMETRY_MESSAGE_LENGTH);
+        assert!(telemetry_event
+            .message
+            .is_char_boundary(telemetry_event.message.len()));
     }
 
     /// Tests TelemetryExtensionEventsEvent with operation failure
