@@ -4,25 +4,13 @@
 //! This module contains the logic to generate the telemetry data to be send to wire server.
 
 use crate::telemetry::{Event, ExtensionStatusEvent};
-
-// Keep telemetry messages bounded before secret redaction. Besides limiting the wire payload, this
-// prevents externally supplied extension status from causing disproportionate regex work or memory use.
-const MAX_TELEMETRY_MESSAGE_LENGTH: usize = 4 * 1024;
-
-fn truncate_to_char_boundary(text: &mut String, max_bytes: usize) {
-    if text.len() <= max_bytes {
-        return;
-    }
-
-    let mut end = max_bytes;
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    text.truncate(end);
-}
 use crate::{current_info, misc_helpers};
 use once_cell::sync::Lazy;
 use serde_derive::{Deserialize, Serialize};
+
+// Keep telemetry messages bounded before secret redaction. Besides limiting the wire payload, this
+// prevents externally supplied extension status from causing disproportionate regex work or memory use.
+pub const MAX_TELEMETRY_MESSAGE_LENGTH: usize = 4 * 1024;
 
 const METRICS_PROVIDER_ID: &str = "FFF0196F-EE4C-4EAF-9AA5-776F622DEB4F";
 const STATUS_PROVIDER_ID: &str = "69B669B9-4AF8-4C50-BDC4-6006FA76E975";
@@ -345,7 +333,7 @@ impl TelemetryGenericLogsEvent {
         };
         // Bound producer work and queue memory here; redaction runs later in the background sender.
         let mut message = event_log.Message.clone();
-        truncate_to_char_boundary(&mut message, MAX_TELEMETRY_MESSAGE_LENGTH);
+        misc_helpers::truncate_to_char_boundary(&mut message, MAX_TELEMETRY_MESSAGE_LENGTH);
 
         TelemetryGenericLogsEvent {
             event_name,
@@ -451,7 +439,7 @@ impl TelemetryExtensionEventsEvent {
     ) -> Self {
         // Bound producer work and queue memory here; redaction runs later in the background sender.
         let mut message = event.operation_status.message.clone();
-        truncate_to_char_boundary(&mut message, MAX_TELEMETRY_MESSAGE_LENGTH);
+        misc_helpers::truncate_to_char_boundary(&mut message, MAX_TELEMETRY_MESSAGE_LENGTH);
 
         TelemetryExtensionEventsEvent {
             ga_version,

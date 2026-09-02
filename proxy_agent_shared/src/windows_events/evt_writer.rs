@@ -7,6 +7,7 @@
 
 use crate::error::Error;
 use crate::logger::LoggerLevel;
+use crate::misc_helpers;
 use crate::result::Result;
 use windows_sys::core::PWSTR;
 use windows_sys::Win32::System::EventLog::{
@@ -90,7 +91,9 @@ impl WindowsEventWriter {
     }
 
     pub fn write_with_event_id(&self, log_level: LoggerLevel, event_id: u32, message: String) {
-        let message = truncate_message(message);
+        let mut message = message;
+        misc_helpers::truncate_to_char_boundary(&mut message, MAX_EVENT_MESSAGE_LENGTH);
+
         if let Some(sender) = &self.sender {
             // Never block a request or runtime thread on redaction, event-log I/O, or queue space.
             if let Err(error) = sender.try_send(EventLogMessage {
@@ -112,18 +115,6 @@ impl Drop for WindowsEventWriter {
             _ = worker.join();
         }
     }
-}
-
-fn truncate_message(message: String) -> String {
-    if message.len() <= MAX_EVENT_MESSAGE_LENGTH {
-        return message;
-    }
-
-    let mut end = MAX_EVENT_MESSAGE_LENGTH;
-    while !message.is_char_boundary(end) {
-        end -= 1;
-    }
-    message[..end].to_string()
 }
 
 /// Runs the event writer in a background thread,
