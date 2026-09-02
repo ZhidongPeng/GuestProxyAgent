@@ -109,10 +109,8 @@ impl EventSender {
             while !TELEMETRY_EVENT_QUEUE.is_empty() && add_more_events {
                 match TELEMETRY_EVENT_QUEUE.pop() {
                     Ok(mut event) => {
-                        // redact secrets in the event before sending to telemetry instead of redacting the secrets when enqueuing/emitting the telemetry events,
-                        // it processes the events in sequential order to avoid the call secrets_redactor::redact_secrets_string concurrently,
-                        // as the redact_secrets_string function uses regex which could create extra cache,
-                        // and each regex pool keeps caches sized to its historical concurrency peak and does not shrink afterward.
+                        // Redact only in this sequential background consumer. Producers stay off the
+                        // blocking regex path, and the redactor's global lock also serializes other sinks.
                         event.redact_secrets();
 
                         telemetry_data.add_event(event.clone());

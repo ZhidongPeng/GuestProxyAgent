@@ -296,15 +296,18 @@ impl TelemetryEvent {
         }
     }
 
-    pub fn redact_secrets(&mut self) {
+    /// Redact an event in the background telemetry-consumer path.
+    pub(crate) fn redact_secrets(&mut self) {
         match self {
             TelemetryEvent::GenericLogsEvent(event) => {
-                event.context1 =
-                    crate::secrets_redactor::redact_secrets_string(event.context1.clone());
+                event.context1 = crate::secrets_redactor::redact_secrets_string(std::mem::take(
+                    &mut event.context1,
+                ));
             }
             TelemetryEvent::ExtensionEvent(event) => {
-                event.message =
-                    crate::secrets_redactor::redact_secrets_string(event.message.clone());
+                event.message = crate::secrets_redactor::redact_secrets_string(std::mem::take(
+                    &mut event.message,
+                ));
             }
         }
     }
@@ -340,13 +343,9 @@ impl TelemetryGenericLogsEvent {
             Some(version) => (version, format!("{}-{}", event_name, event_log.Version)),
             None => (event_log.Version.clone(), event_name),
         };
-        // redact secrets in the message before sending to telemetry
+        // Bound producer work and queue memory here; redaction runs later in the background sender.
         let mut message = event_log.Message.clone();
         truncate_to_char_boundary(&mut message, MAX_TELEMETRY_MESSAGE_LENGTH);
-
-        // do not redact secrets in the message here, because the redact_secrets_string function uses regex which could create extra cache,
-        // and the caller of this function may synchronously call this function.
-        // let message = crate::secrets_redactor::redact_secrets_string(message);
 
         TelemetryGenericLogsEvent {
             event_name,
@@ -450,13 +449,9 @@ impl TelemetryExtensionEventsEvent {
         execution_mode: String,
         ga_version: String,
     ) -> Self {
-        // redact secrets in the message before sending to telemetry
+        // Bound producer work and queue memory here; redaction runs later in the background sender.
         let mut message = event.operation_status.message.clone();
         truncate_to_char_boundary(&mut message, MAX_TELEMETRY_MESSAGE_LENGTH);
-
-        // do not redact secrets in the message here, because the redact_secrets_string function uses regex which could create extra cache,
-        // and the caller of this function may synchronously call this function.
-        // let message = crate::secrets_redactor::redact_secrets_string(message);
 
         TelemetryExtensionEventsEvent {
             ga_version,
@@ -884,7 +879,12 @@ mod tests {
             "production".to_string(),
             "1.0.0".to_string(),
         );
+        let mut telemetry_event = TelemetryEvent::ExtensionEvent(telemetry_event);
+        telemetry_event.redact_secrets();
 
+        let TelemetryEvent::ExtensionEvent(telemetry_event) = telemetry_event else {
+            unreachable!();
+        };
         assert!(telemetry_event.message.len() <= MAX_TELEMETRY_MESSAGE_LENGTH);
         assert!(telemetry_event.message.starts_with("[REDACTED]\n"));
         assert!(!telemetry_event.message.contains("secret"));

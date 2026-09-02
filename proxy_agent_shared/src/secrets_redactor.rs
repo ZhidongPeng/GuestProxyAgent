@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 use std::borrow::Cow;
+use std::sync::Mutex;
 
 const REDACTED_TEXT: &str = "[REDACTED]";
 // Each Regex keeps a pool of lazy-DFA caches for concurrent searches. Keep each cache small because
@@ -61,6 +62,10 @@ const CRED_PATTERNS: [&str; 17] = [
 
 static REGEX_PATTERNS: once_cell::sync::Lazy<Vec<regex::Regex>> =
     once_cell::sync::Lazy::new(init_regex_patterns);
+// regex::Regex maintains a pool of per-search caches sized to peak concurrency. Serializing the
+// searches keeps every regex in REGEX_PATTERNS at one cache while allowing non-regex pre-filtering
+// to remain concurrent.
+static REDACTION_LOCK: Mutex<()> = Mutex::new(());
 
 fn init_regex_patterns() -> Vec<regex::Regex> {
     let mut patterns = Vec::new();
@@ -96,6 +101,11 @@ fn redact_secrets(text: &str) -> Cow<'_, str> {
         return Cow::Borrowed(text);
     }
 
+    // Recover from poisoning because redaction itself does not rely on mutable shared state.
+    let _guard = REDACTION_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
     let mut redacted_text = Cow::Borrowed(text);
     for pattern in REGEX_PATTERNS.iter() {
         if let Cow::Owned(s) = pattern.replace_all(&redacted_text, REDACTED_TEXT) {
@@ -107,6 +117,9 @@ fn redact_secrets(text: &str) -> Cow<'_, str> {
 
 /// Convenience function that takes ownership and returns String
 /// Use this when you already have a String and need a String back
+///
+/// This function serializes regex searches and can therefore block briefly. Call it only from a
+/// non-critical logging or telemetry-consumer path, not while processing a proxied request.
 #[inline]
 pub fn redact_secrets_string(text: String) -> String {
     match redact_secrets(&text) {
