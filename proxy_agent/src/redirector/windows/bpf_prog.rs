@@ -121,10 +121,14 @@ impl BpfObject {
             }
         };
         if program.is_null() {
-            return Err(Error::Bpf(BpfErrorType::AttachBpfProgram(
-                program_name.to_string(),
-                "bpf_object__find_program_by_name return null".to_string(),
-            )));
+            // TODO: we need to return error once native IPv6 support is added to the BPF program
+            // For now, we will just log a warning and skip attaching the program.
+            logger::write_warning(format!("Program {program_name} is null, seems this program is not available in the BPF Program, skipping it."));
+            return Ok(());
+            // return Err(Error::Bpf(BpfErrorType::AttachBpfProgram(
+            //     program_name.to_string(),
+            //     "bpf_object__find_program_by_name return null".to_string(),
+            // )));
         }
 
         let compartment_id = 1;
