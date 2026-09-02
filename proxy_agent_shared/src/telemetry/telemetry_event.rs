@@ -295,6 +295,19 @@ impl TelemetryEvent {
             TelemetryEvent::ExtensionEvent(event) => event.to_xml_event(vm_data),
         }
     }
+
+    pub fn redact_secrets(&mut self) {
+        match self {
+            TelemetryEvent::GenericLogsEvent(event) => {
+                event.context1 =
+                    crate::secrets_redactor::redact_secrets_string(event.context1.clone());
+            }
+            TelemetryEvent::ExtensionEvent(event) => {
+                event.message =
+                    crate::secrets_redactor::redact_secrets_string(event.message.clone());
+            }
+        }
+    }
 }
 
 /// Struct to hold Generic Logs telemetry event data without VM metadata.
@@ -331,7 +344,10 @@ impl TelemetryGenericLogsEvent {
         let mut message = event_log.Message.clone();
         truncate_to_char_boundary(&mut message, MAX_TELEMETRY_MESSAGE_LENGTH);
 
-        let message = crate::secrets_redactor::redact_secrets_string(message);
+        // do not redact secrets in the message here, because the redact_secrets_string function uses regex which could create extra cache,
+        // and the caller of this function may synchronously call this function.
+        // let message = crate::secrets_redactor::redact_secrets_string(message);
+
         TelemetryGenericLogsEvent {
             event_name,
             ga_version,
@@ -437,7 +453,11 @@ impl TelemetryExtensionEventsEvent {
         // redact secrets in the message before sending to telemetry
         let mut message = event.operation_status.message.clone();
         truncate_to_char_boundary(&mut message, MAX_TELEMETRY_MESSAGE_LENGTH);
-        let message = crate::secrets_redactor::redact_secrets_string(message);
+
+        // do not redact secrets in the message here, because the redact_secrets_string function uses regex which could create extra cache,
+        // and the caller of this function may synchronously call this function.
+        // let message = crate::secrets_redactor::redact_secrets_string(message);
+
         TelemetryExtensionEventsEvent {
             ga_version,
             execution_mode,
