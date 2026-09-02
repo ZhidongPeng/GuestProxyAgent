@@ -7,7 +7,8 @@ use std::sync::Mutex;
 const REDACTED_TEXT: &str = "[REDACTED]";
 // Each Regex keeps a pool of lazy-DFA caches for concurrent searches. Keep each cache small because
 // this module has several expressions and telemetry can redact on multiple runtime threads.
-const REGEX_DFA_SIZE_LIMIT: usize = 64 * 1024;
+// starts with 1MB, but can be tuned down if needed.
+const REGEX_DFA_SIZE_LIMIT: usize = 1024 * 1024;
 /// Common substrings that indicate a secret might be present - for quick pre-filtering
 /// These are not regex patterns, just simple substrings to check for before running the more expensive regexes.
 const SECRET_INDICATORS: [&str; 15] = [
