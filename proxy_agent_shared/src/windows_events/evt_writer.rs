@@ -106,7 +106,7 @@ impl WindowsEventWriter {
 
 impl Drop for WindowsEventWriter {
     fn drop(&mut self) {
-        // Closing the channel lets the backend drain queued events before deregistering the source.
+        // Closing the channel lets the backend drain queued events before releasing the source.
         self.sender.take();
         if let Some(worker) = self.worker.take() {
             _ = worker.join();
