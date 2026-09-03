@@ -108,7 +108,11 @@ impl EventSender {
             let mut add_more_events = true;
             while !TELEMETRY_EVENT_QUEUE.is_empty() && add_more_events {
                 match TELEMETRY_EVENT_QUEUE.pop() {
-                    Ok(event) => {
+                    Ok(mut event) => {
+                        // Redact only in this sequential background consumer.
+                        // Producers stay off the blocking regex path.
+                        event.redact_secrets();
+
                         telemetry_data.add_event(event.clone());
 
                         if telemetry_data.get_size() >= MAX_MESSAGE_SIZE {
