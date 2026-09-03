@@ -15,6 +15,12 @@ use std::ffi::c_void;
 use std::mem::size_of_val;
 use std::path::Path;
 
+const AUTHORIZE_CONNECT4_PROGRAM: &str = "authorize_connect4";
+const AUTHORIZE_CONNECT6_PROGRAM: &str = "authorize_connect6";
+const AUDIT_MAP: &str = "audit_map";
+const POLICY_MAP: &str = "policy_map";
+const SKIP_PROCESS_MAP: &str = "skip_process_map";
+
 // This module contains the logic to interact with the windows eBPF program & maps.
 impl BpfObject {
     fn is_null(&self) -> bool {
@@ -103,16 +109,13 @@ impl BpfObject {
         if self.is_null() {
             return Err(Error::Bpf(BpfErrorType::NullBpfObject));
         }
-        self.attach_bpf_prog_by_name("authorize_connect4")?;
-        self.attach_bpf_prog_by_name("authorize_connect6")
+        self.attach_bpf_prog_by_name(AUTHORIZE_CONNECT4_PROGRAM)?;
+        self.attach_bpf_prog_by_name(AUTHORIZE_CONNECT6_PROGRAM)
     }
 
     fn attach_bpf_prog_by_name(&mut self, program_name: &str) -> Result<()> {
         let program = match bpf_object__find_program_by_name(self.0, program_name) {
-            Ok(p) => {
-                logger::write_information(format!("Found {program_name} program."));
-                p
-            }
+            Ok(p) => p,
             Err(e) => {
                 return Err(Error::Bpf(BpfErrorType::AttachBpfProgram(
                     program_name.to_string(),
@@ -121,14 +124,19 @@ impl BpfObject {
             }
         };
         if program.is_null() {
-            // TODO: we need to return error once native IPv6 support is added to the BPF program
-            // For now, we will just log a warning and skip attaching the program.
-            logger::write_warning(format!("Program {program_name} is null, seems this program is not available in the BPF Program, skipping it."));
-            return Ok(());
-            // return Err(Error::Bpf(BpfErrorType::AttachBpfProgram(
-            //     program_name.to_string(),
-            //     "bpf_object__find_program_by_name return null".to_string(),
-            // )));
+            if program_name == AUTHORIZE_CONNECT6_PROGRAM {
+                // TODO: we need to return error once native IPv6 support is added to the BPF program
+                // For now, we will just log a warning and skip attaching the program.
+                logger::write_warning(format!("Program {program_name} is null, seems this program is not available in the BPF Program, skipping it."));
+                return Ok(());
+            }
+
+            return Err(Error::Bpf(BpfErrorType::AttachBpfProgram(
+                program_name.to_string(),
+                "bpf_object__find_program_by_name return null".to_string(),
+            )));
+        } else {
+            logger::write_information(format!("Found {program_name} program."));
         }
 
         let compartment_id = 1;
@@ -185,7 +193,7 @@ impl BpfObject {
         dest_ipv4: u32,
         dest_port: u16,
     ) -> Result<()> {
-        let map_name = "policy_map";
+        let map_name = POLICY_MAP;
         let map_fd = self.get_bpf_map_fd(map_name)?;
 
         let key = destination_entry_t::from_ipv4(dest_ipv4, dest_port);
@@ -264,7 +272,7 @@ impl BpfObject {
         audit entry from audit_map on success. On failure appropriate RESULT is returned.
      */
     pub fn lookup_audit(&self, source_port: u16) -> Result<AuditEntry> {
-        let map_name = "audit_map";
+        let map_name = AUDIT_MAP;
         let (map_fd, value_size) = self.get_bpf_map_fd_and_value_size(map_name)?;
 
         // query by source port.
@@ -306,7 +314,7 @@ impl BpfObject {
         On failure appropriate RESULT is returned.
      */
     pub fn update_skip_process_map(&self, pid: u32) -> Result<()> {
-        let map_name = "skip_process_map";
+        let map_name = SKIP_PROCESS_MAP;
         let map_fd = self.get_bpf_map_fd(map_name)?;
 
         // insert process id entry.
@@ -347,7 +355,7 @@ impl BpfObject {
         On failure appropriate RESULT is returned.
      */
     pub fn remove_policy_elem_bpf_map(&self, dest_ipv4: u32, dest_port: u16) -> Result<()> {
-        let map_name = "policy_map";
+        let map_name = POLICY_MAP;
         let map_fd = self.get_bpf_map_fd(map_name)?;
 
         let key = destination_entry_t::from_ipv4(dest_ipv4, dest_port);
@@ -370,7 +378,7 @@ impl BpfObject {
     }
 
     pub fn remove_audit_map_entry(&self, source_port: u16) -> Result<()> {
-        let audit_map_name = "audit_map";
+        let audit_map_name = AUDIT_MAP;
         let map_fd = self.get_bpf_map_fd(audit_map_name)?;
 
         let key = sock_addr_audit_key_t::from_source_port(source_port);
