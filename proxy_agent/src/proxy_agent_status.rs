@@ -133,12 +133,9 @@ impl ProxyAgentStatusTask {
             extension_type: "Monitoring".to_string(),
         };
         loop {
-            #[cfg(not(windows))]
-            {
-                self.monitor_memory_usage();
-            }
-
             let aggregate_status = self.guest_proxy_agent_aggregate_status_new().await;
+            self.monitor_process_usages().await;
+
             // write proxyAgentStatus event
             if status_report_time.elapsed() >= status_report_duration {
                 let status = match serde_json::to_string(&aggregate_status.proxyAgentStatus) {
@@ -329,6 +326,40 @@ impl ProxyAgentStatusTask {
             ))
             .await;
         }
+    }
+
+    async fn monitor_process_usages(&self) {
+        #[cfg(windows)]
+        const BYTES_PER_MB: usize = 1024 * 1024;
+
+        #[cfg(windows)]
+        let memory = match proxy_agent_shared::windows::get_current_process_memory_status() {
+            Ok(memory) => format!(
+                "privateBytesMb={}, workingSetMb={}, peakWorkingSetMb={}",
+                memory.private_bytes / BYTES_PER_MB, // primary OOM indicator
+                memory.working_set_bytes / BYTES_PER_MB, // current physical RAM
+                memory.peak_working_set_bytes / BYTES_PER_MB,
+            ),
+            Err(e) => format!("memoryError={e}"),
+        };
+
+        #[cfg(not(windows))]
+        let memory = match proxy_agent_shared::linux::read_proc_memory_status(std::process::id()) {
+            Ok(memory) => format!(
+                "workingSetMb={}, peakWorkingSetMb={}",
+                memory
+                    .vmrss_kb
+                    .map(|value| value / 1024)
+                    .map_or_else(|| "unknown".to_string(), |value| value.to_string()),
+                memory
+                    .vmhwm_kb
+                    .map(|value| value / 1024)
+                    .map_or_else(|| "unknown".to_string(), |value| value.to_string()),
+            ),
+            Err(e) => format!("memoryError={e}"),
+        };
+
+        logger::write(format!("GPA process usages: {memory}",));
     }
 
     /// Monitor the memory usage of the current process and log it.
