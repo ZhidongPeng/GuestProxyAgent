@@ -52,6 +52,7 @@ use proxy_agent_shared::telemetry::event_logger;
 use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
+use tokio::sync::{watch, OwnedSemaphorePermit, Semaphore};
 use tokio_util::bytes::BytesMut;
 use tokio_util::sync::CancellationToken;
 use tower::Service;
@@ -59,12 +60,15 @@ use tower_http::{body::Limited, limit::RequestBodyLimitLayer};
 
 const REQUEST_BODY_LOW_LIMIT_SIZE: usize = 1024 * 100; // 100KB
 const REQUEST_BODY_LARGE_LIMIT_SIZE: usize = 1024 * REQUEST_BODY_LOW_LIMIT_SIZE; // 100MB
+const MAX_ACTIVE_TCP_CONNECTIONS: usize = 128;
+const TCP_CONNECTION_IDLE_TIMEOUT: Duration = Duration::from_secs(10);
 const START_LISTENER_RETRY_COUNT: u16 = 5;
 const START_LISTENER_RETRY_SLEEP_DURATION: Duration = Duration::from_secs(1);
 
 #[derive(Clone)]
 pub struct ProxyServer {
     port: u16,
+    connection_idle_timeout: Duration,
     cancellation_token: CancellationToken,
     key_keeper_shared_state: KeyKeeperSharedState,
     common_state: CommonState,
@@ -80,6 +84,7 @@ impl ProxyServer {
     pub fn new(port: u16, shared_state: &SharedState) -> Self {
         ProxyServer {
             port,
+            connection_idle_timeout: TCP_CONNECTION_IDLE_TIMEOUT,
             cancellation_token: shared_state.get_cancellation_token(),
             key_keeper_shared_state: shared_state.get_key_keeper_shared_state(),
             common_state: shared_state.get_common_state(),
@@ -202,8 +207,25 @@ impl ProxyServer {
         })
         .await;
 
+        let connection_semaphore = std::sync::Arc::new(Semaphore::new(MAX_ACTIVE_TCP_CONNECTIONS));
         // We start a loop to continuously accept incoming connections
         loop {
+            let connection_permit = tokio::select! {
+                _ = self.cancellation_token.cancelled() => {
+                    logger::write_warning("cancellation token signal received, stop the listener.".to_string());
+                    let _ = self.agent_status_shared_state
+                        .set_module_state(ModuleState::STOPPED, AgentStatusModule::ProxyServer)
+                        .await;
+                    return;
+                }
+                permit = connection_semaphore.clone().acquire_owned() => {
+                    match permit {
+                        Ok(permit) => permit,
+                        Err(_) => return,
+                    }
+                }
+            };
+
             tokio::select! {
                 _ = self.cancellation_token.cancelled() => {
                     logger::write_warning("cancellation token signal received, stop the listener.".to_string());
@@ -215,7 +237,7 @@ impl ProxyServer {
                 result = listener.accept() => {
                     match result {
                         Ok((stream, client_addr)) =>{
-                           self.handle_new_tcp_connection(stream, client_addr).await;
+                           self.handle_new_tcp_connection(stream, client_addr, connection_permit).await;
                         },
                         Err(e) => {
                             logger::write_error(format!("Failed to accept connection: {e}"));
@@ -230,6 +252,7 @@ impl ProxyServer {
         &self,
         stream: TcpStream,
         client_addr: std::net::SocketAddr,
+        connection_permit: OwnedSemaphorePermit,
     ) {
         let tcp_connection_id = match self
             .agent_status_shared_state
@@ -251,15 +274,15 @@ impl ProxyServer {
             format!("Accepted new tcp connection [{tcp_connection_id}]."),
         );
 
+        let active_tcp_connection = self.agent_status_shared_state.track_active_tcp_connection();
         tokio::spawn({
             let cloned_proxy_server = self.clone();
             async move {
+                let _connection_permit = connection_permit;
+                let _active_tcp_connection = active_tcp_connection;
                 // Get raw socket ID before any conversion (Windows only)
                 #[cfg(windows)]
                 let raw_socket_id = Self::get_stream_raw_socket_id(&stream);
-
-                // Set read timeout directly on the socket without conversion
-                Self::set_stream_read_time_out(&stream, &mut tcp_connection_logger);
 
                 let tcp_connection_context = TcpConnectionContext::new(
                     tcp_connection_id,
@@ -272,6 +295,10 @@ impl ProxyServer {
                 .await;
 
                 let cloned_tcp_connection_context = tcp_connection_context.clone();
+                let (activity_tx, mut activity_rx) =
+                    watch::channel((false, tokio::time::Instant::now()));
+                let connection_idle_timeout = cloned_proxy_server.connection_idle_timeout;
+                let connection_cancellation_token = cloned_proxy_server.cancellation_token.clone();
                 // move client addr, cloned std stream and shared_state to the service_fn
                 let service = service_fn(move |req| {
                     // use tower service as middleware to limit the request body size
@@ -293,24 +320,69 @@ impl ProxyServer {
 
                     let cloned_proxy_server = cloned_proxy_server.clone();
                     let cloned_tcp_connection_context = cloned_tcp_connection_context.clone();
+                    let activity_tx = activity_tx.clone();
                     let mut tower_service =
                         tower_service_layer.service_fn(move |req: Request<_>| {
                             let cloned_proxy_server = cloned_proxy_server.clone();
                             cloned_proxy_server
                                 .handle_new_http_request(req, cloned_tcp_connection_context.clone())
                         });
-                    tower_service.call(req)
+                    async move {
+                        activity_tx.send_replace((true, tokio::time::Instant::now()));
+                        let result = tower_service.call(req).await;
+                        activity_tx.send_replace((false, tokio::time::Instant::now()));
+                        result
+                    }
                 });
 
                 // Use an adapter to access something implementing `tokio::io` traits as if they implement
                 let io = TokioIo::new(stream);
                 // We use the `hyper::server::conn::Http` to serve the connection
                 let mut http = hyper::server::conn::http1::Builder::new();
-                if let Err(e) = http
-                    .keep_alive(true) // set keep_alive to true explicitly
-                    .serve_connection(io, service)
-                    .await
-                {
+                let mut connection = Box::pin(http.keep_alive(true).serve_connection(io, service));
+                let connection_result = loop {
+                    let (request_active, last_activity) = *activity_rx.borrow();
+                    if request_active {
+                        tokio::select! {
+                            biased;
+                            result = &mut connection => break result,
+                            changed = activity_rx.changed() => {
+                                if changed.is_err() {
+                                    connection.as_mut().graceful_shutdown();
+                                    break connection.await;
+                                }
+                            }
+                            _ = connection_cancellation_token.cancelled() => {
+                                connection.as_mut().graceful_shutdown();
+                                break connection.await;
+                            }
+                        }
+                    } else {
+                        tokio::select! {
+                            biased;
+                            result = &mut connection => break result,
+                            changed = activity_rx.changed() => {
+                                if changed.is_err() {
+                                    connection.as_mut().graceful_shutdown();
+                                    break connection.await;
+                                }
+                            }
+                            _ = connection_cancellation_token.cancelled() => {
+                                connection.as_mut().graceful_shutdown();
+                                break connection.await;
+                            }
+                            _ = tokio::time::sleep_until(last_activity + connection_idle_timeout) => {
+                                tcp_connection_logger.write(
+                                    LoggerLevel::Trace,
+                                    format!("Closing idle tcp connection [{tcp_connection_id}]."),
+                                );
+                                connection.as_mut().graceful_shutdown();
+                                break connection.await;
+                            }
+                        }
+                    }
+                };
+                if let Err(e) = connection_result {
                     tcp_connection_logger.write(
                         LoggerLevel::Warn,
                         format!("ProxyListener serve_connection error: {e}"),
@@ -324,21 +396,6 @@ impl ProxyServer {
     fn get_stream_raw_socket_id(stream: &TcpStream) -> usize {
         use std::os::windows::io::AsRawSocket;
         stream.as_raw_socket() as usize
-    }
-
-    // Set the read timeout for the stream
-    // Uses socket2::SockRef to set socket options directly on the tokio stream
-    // socket2 crate already used by tokio internally, so it won't cause extra dependency
-    fn set_stream_read_time_out(stream: &TcpStream, connection_logger: &mut ConnectionLogger) {
-        use socket2::SockRef;
-
-        let sock_ref = SockRef::from(stream);
-        if let Err(e) = sock_ref.set_read_timeout(Some(std::time::Duration::from_secs(10))) {
-            connection_logger.write(
-                LoggerLevel::Warn,
-                format!("Failed to set read timeout: {e}"),
-            );
-        }
     }
 
     async fn handle_new_http_request(
@@ -1103,8 +1160,7 @@ impl ProxyServer {
                 .await
                 .unwrap_or(None),
         ) {
-            let input_to_sign = hyper_client::as_sig_input(head, whole_body);
-            match misc_helpers::compute_signature(&key, input_to_sign.as_slice()) {
+            match hyper_client::compute_request_signature(&key, &head, &whole_body) {
                 Ok(sig) => {
                     let authorization_value = format!(
                         "{} {} {}",
@@ -1391,6 +1447,32 @@ mod tests {
             );
         }
 
+        cancellation_token.cancel();
+    }
+
+    #[tokio::test]
+    async fn idle_connection_is_closed() {
+        let port = 8093;
+        let idle_timeout = Duration::from_millis(500);
+        let shared_state = shared_state::SharedState::start_all();
+        let cancellation_token = shared_state.get_cancellation_token();
+        let agent_status = shared_state.get_agent_status_shared_state();
+        let mut proxy_server = proxy_server::ProxyServer::new(port, &shared_state);
+        proxy_server.connection_idle_timeout = idle_timeout;
+
+        tokio::spawn(async move { proxy_server.start().await });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(1, agent_status.get_active_tcp_connection_count());
+
+        tokio::time::sleep(idle_timeout + Duration::from_millis(100)).await;
+        assert_eq!(0, agent_status.get_active_tcp_connection_count());
+
+        drop(stream);
         cancellation_token.cancel();
     }
 }

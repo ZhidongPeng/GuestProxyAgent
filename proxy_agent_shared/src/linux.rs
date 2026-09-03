@@ -120,15 +120,25 @@ pub fn get_cgroup2_mount_path() -> Result<PathBuf> {
 
 #[cfg(feature = "signing")]
 pub fn compute_signature(hex_encoded_key: &str, input_to_sign: &[u8]) -> Result<String> {
+    compute_signature_chunks(hex_encoded_key, std::iter::once(input_to_sign))
+}
+
+#[cfg(feature = "signing")]
+pub fn compute_signature_chunks<'a, I>(hex_encoded_key: &str, input_chunks: I) -> Result<String>
+where
+    I: IntoIterator<Item = &'a [u8]>,
+{
     match hex::decode(hex_encoded_key) {
         Ok(key) => {
             let pkey = PKey::hmac(&key)
                 .map_err(|e| Error::ComputeSignature("PKey HMAC".to_string(), e))?;
             let mut signer = Signer::new(MessageDigest::sha256(), &pkey)
                 .map_err(|e| Error::ComputeSignature("Signer".to_string(), e))?;
-            signer
-                .update(input_to_sign)
-                .map_err(|e| Error::ComputeSignature("Signer update".to_string(), e))?;
+            for input_chunk in input_chunks {
+                signer
+                    .update(input_chunk)
+                    .map_err(|e| Error::ComputeSignature("Signer update".to_string(), e))?;
+            }
             let signature = signer
                 .sign_to_vec()
                 .map_err(|e| Error::ComputeSignature("Signer sign_to_vec".to_string(), e))?;

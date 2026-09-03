@@ -409,6 +409,24 @@ pub fn as_sig_input(head: Parts, body: Bytes) -> Vec<u8> {
     data
 }
 
+pub fn compute_request_signature(key: &str, head: &Parts, body: &Bytes) -> Result<String> {
+    let canonicalized_headers = headers_to_canonicalized_string(&head.headers);
+    let (path, canonicalized_parameters) = get_path_and_canonicalized_parameters(&head.uri);
+    misc_helpers::compute_signature_chunks(
+        key,
+        [
+            head.method.as_str().as_bytes(),
+            LF.as_bytes(),
+            body.as_ref(),
+            LF.as_bytes(),
+            canonicalized_headers.as_bytes(),
+            path.as_bytes(),
+            LF.as_bytes(),
+            canonicalized_parameters.as_bytes(),
+        ],
+    )
+}
+
 #[cfg(feature = "signing")]
 fn request_to_sign_input(
     request_builder: &http::request::Builder,
@@ -603,6 +621,28 @@ mod tests {
         let url_str = "/vmAgentLog";
         let url = url_str.parse::<hyper::Uri>().unwrap();
         assert!(!super::should_skip_sig(&hyper::Method::GET, &url));
+    }
+
+    #[test]
+    fn chunked_request_signature_matches_contiguous_input() {
+        let key = "4A404E635266556A586E3272357538782F413F4428472B4B6250645367566B59";
+        let request = hyper::Request::builder()
+            .method(hyper::Method::POST)
+            .uri("/machine?comp=config&incarnation=1")
+            .header("Metadata", "true")
+            .body(())
+            .unwrap();
+        let (head, _) = request.into_parts();
+        let body = hyper::body::Bytes::from_static(b"request body");
+
+        let expected = misc_helpers::compute_signature(
+            key,
+            super::as_sig_input(head.clone(), body.clone()).as_slice(),
+        )
+        .unwrap();
+        let actual = super::compute_request_signature(key, &head, &body).unwrap();
+
+        assert_eq!(expected, actual);
     }
 
     #[tokio::test]

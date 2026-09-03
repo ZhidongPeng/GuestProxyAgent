@@ -667,9 +667,9 @@ pub fn resolve_env_variables(input: &str) -> String {
 /// let signature = misc_helpers::compute_signature(hex_encoded_key, input_to_sign).unwrap();
 /// ```
 #[cfg(all(not(windows), feature = "signing"))]
-pub use linux::compute_signature;
+pub use linux::{compute_signature, compute_signature_chunks};
 #[cfg(windows)]
-pub use windows::compute_signature;
+pub use windows::{compute_signature, compute_signature_chunks};
 
 // replace xml escape characters
 pub fn xml_escape(s: String) -> String {

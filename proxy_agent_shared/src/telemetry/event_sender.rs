@@ -26,6 +26,10 @@ const WIRE_SERVER_PORT: u16 = 80u16;
 const IMDS_IP: &str = "169.254.169.254";
 const IMDS_PORT: u16 = 80u16;
 
+pub fn queue_len() -> usize {
+    TELEMETRY_EVENT_QUEUE.len()
+}
+
 pub struct EventSender {
     common_state: CommonState,
 }

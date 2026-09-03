@@ -22,6 +22,10 @@ static DIRECT_SEND_CONFIG: tokio::sync::OnceCell<DirectSendConfig> =
     tokio::sync::OnceCell::const_new();
 const MAX_EXTENSION_EVENT_FILE_COUNT: usize = 1000;
 
+pub fn queue_len() -> usize {
+    EVENT_QUEUE.len()
+}
+
 #[derive(Clone, Debug)]
 pub struct DirectSendConfig {
     execution_mode: String,

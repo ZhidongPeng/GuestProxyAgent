@@ -133,12 +133,8 @@ impl ProxyAgentStatusTask {
             extension_type: "Monitoring".to_string(),
         };
         loop {
-            #[cfg(not(windows))]
-            {
-                self.monitor_memory_usage();
-            }
-
             let aggregate_status = self.guest_proxy_agent_aggregate_status_new().await;
+            self.monitor_process_usages(&aggregate_status).await;
             // write proxyAgentStatus event
             if status_report_time.elapsed() >= status_report_duration {
                 let status = match serde_json::to_string(&aggregate_status.proxyAgentStatus) {
@@ -331,44 +327,57 @@ impl ProxyAgentStatusTask {
         }
     }
 
-    /// Monitor the memory usage of the current process and log it.
-    /// If the memory usage exceeds the limit, log a warning.
-    /// If the memory usage exceeds the limits for multiple times, take action (e.g., restart the process).
-    #[cfg(not(windows))]
-    fn monitor_memory_usage(&self) {
-        const RAM_LIMIT_IN_MB: u64 = 20;
-        match proxy_agent_shared::linux::read_proc_memory_status(std::process::id()) {
-            Ok(memory_status) => {
-                if let Some(vmrss_kb) = memory_status.vmrss_kb {
-                    let ram_in_mb = vmrss_kb / 1024;
-                    logger::write_information(format!(
-                        "Current process memory usage: {ram_in_mb} MB",
-                    ));
+    /// monitor process usages, including:
+    /// private bytes
+    /// total accepted TCP/HTTP connections
+    /// queue lengths
+    /// connection-summary bucket counts
+    async fn monitor_process_usages(&self, status: &GuestProxyAgentAggregateStatus) {
+        #[cfg(windows)]
+        const BYTES_PER_MB: usize = 1024 * 1024;
 
-                    if ram_in_mb > RAM_LIMIT_IN_MB {
-                        logger::write_warning(format!(
-                            "Current process memory usage {ram_in_mb} MB exceeds the limit of {RAM_LIMIT_IN_MB} MB.",
-                        ));
-                        // take action if needed, e.g., restart the process
-                    }
-                } else {
-                    logger::write_information("Current process memory usage: Unknown".to_string());
-                }
-                if let Some(vmhwm_kb) = memory_status.vmhwm_kb {
-                    logger::write_information(format!(
-                        "Current process peak memory usage: {} MB",
-                        vmhwm_kb / 1024
-                    ));
-                } else {
-                    logger::write_information(
-                        "Current process peak memory usage: Unknown".to_string(),
-                    );
-                }
-            }
-            Err(e) => {
-                logger::write_error(format!("Error reading process memory status: {e}"));
-            }
-        }
+        #[cfg(windows)]
+        let memory = match proxy_agent_shared::windows::get_current_process_memory_status() {
+            Ok(memory) => format!(
+                "privateBytesMb={}, workingSetMb={}, peakWorkingSetMb={}",
+                memory.private_bytes / BYTES_PER_MB, // primary OOM indicator
+                memory.working_set_bytes / BYTES_PER_MB, // current physical RAM
+                memory.peak_working_set_bytes / BYTES_PER_MB,
+            ),
+            Err(e) => format!("memoryError={e}"),
+        };
+
+        #[cfg(not(windows))]
+        let memory = match proxy_agent_shared::linux::read_proc_memory_status(std::process::id()) {
+            Ok(memory) => format!(
+                "workingSetMb={}, peakWorkingSetMb={}",
+                memory
+                    .vmrss_kb
+                    .map(|value| value / 1024)
+                    .map_or_else(|| "unknown".to_string(), |value| value.to_string()),
+                memory
+                    .vmhwm_kb
+                    .map(|value| value / 1024)
+                    .map_or_else(|| "unknown".to_string(), |value| value.to_string()),
+            ),
+            Err(e) => format!("memoryError={e}"),
+        };
+
+        let tcp_connections = self
+            .agent_status_shared_state
+            .get_tcp_connection_count()
+            .await
+            .map_or_else(|_| "unknown".to_string(), |count| count.to_string());
+
+        logger::write(format!(
+            "GPA process usages: {memory}, tcpConnectionsActive={}, tcpConnectionsTotal={tcp_connections}, httpConnectionsTotal={}, eventQueueLength={}, telemetryQueueLength={}, connectionSummaryBuckets={}, failedAuthenticationSummaryBuckets={}",
+            self.agent_status_shared_state.get_active_tcp_connection_count(),
+            status.proxyAgentStatus.proxyConnectionsCount,
+            event_logger::queue_len(),
+            proxy_agent_shared::telemetry::event_sender::queue_len(),
+            status.proxyConnectionSummary.len(),
+            status.failedAuthenticateSummary.len(),
+        ));
     }
 }
 

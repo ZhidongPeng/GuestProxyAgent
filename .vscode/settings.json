@@ -35,5 +35,8 @@
     ],
     "chat.tools.terminal.autoApprove": {
         "./build-linux.sh": true
-    }
+    },
+    "vscode-nmake-tools.installOsRepoRustHelperExtension": false,
+    "vscode-nmake-tools.installRazzleSourcesFormatterExtension": false,
+    "sarif-viewer.connectToGithubCodeScanning": "off"
 }

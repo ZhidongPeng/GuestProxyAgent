@@ -11,6 +11,10 @@ use crate::common::result::Result;
 use proxy_agent_shared::logger::LoggerLevel;
 use proxy_agent_shared::proxy_agent_aggregate_status::{ModuleState, ProxyAgentDetailStatus};
 use proxy_agent_shared::telemetry::event_logger;
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
 use tokio::sync::{mpsc, oneshot};
 
 const MAX_STATUS_MESSAGE_LENGTH: usize = 1024;
@@ -37,6 +41,9 @@ enum AgentStatusAction {
     GetConnectionCount {
         response: oneshot::Sender<u128>,
     },
+    GetTcpConnectionCount {
+        response: oneshot::Sender<u128>,
+    },
     IncreaseConnectionCount {
         response: oneshot::Sender<u128>,
     },
@@ -56,7 +63,15 @@ pub enum AgentStatusModule {
 }
 
 #[derive(Clone, Debug)]
-pub struct AgentStatusSharedState(mpsc::Sender<AgentStatusAction>);
+pub struct AgentStatusSharedState(mpsc::Sender<AgentStatusAction>, Arc<AtomicUsize>);
+
+pub struct ActiveTcpConnectionGuard(Arc<AtomicUsize>);
+
+impl Drop for ActiveTcpConnectionGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
 
 impl AgentStatusSharedState {
     pub fn start_new() -> Self {
@@ -207,6 +222,13 @@ impl AgentStatusSharedState {
                             ));
                         }
                     }
+                    AgentStatusAction::GetTcpConnectionCount { response } => {
+                        if let Err(count) = response.send(tcp_connection_count) {
+                            logger::write_warning(format!(
+                                "Failed to send response to AgentStatusAction::GetTcpConnectionCount with count '{count:?}'"
+                            ));
+                        }
+                    }
                     AgentStatusAction::IncreaseConnectionCount { response } => {
                         // if overflow, reset to 0 and continue increase the count
                         http_connection_count = http_connection_count.overflowing_add(1).0;
@@ -229,7 +251,16 @@ impl AgentStatusSharedState {
             }
         });
 
-        AgentStatusSharedState(tx)
+        AgentStatusSharedState(tx, Arc::new(AtomicUsize::new(0)))
+    }
+
+    pub fn track_active_tcp_connection(&self) -> ActiveTcpConnectionGuard {
+        self.1.fetch_add(1, Ordering::Relaxed);
+        ActiveTcpConnectionGuard(self.1.clone())
+    }
+
+    pub fn get_active_tcp_connection_count(&self) -> usize {
+        self.1.load(Ordering::Relaxed)
     }
 
     async fn get_module_state(&self, module: AgentStatusModule) -> Result<ModuleState> {
@@ -398,6 +429,24 @@ impl AgentStatusSharedState {
             .map_err(|e| Error::RecvError("AgentStatusAction::GetConnectionCount".to_string(), e))
     }
 
+    pub async fn get_tcp_connection_count(&self) -> Result<u128> {
+        let (response_tx, response_rx) = oneshot::channel();
+        self.0
+            .send(AgentStatusAction::GetTcpConnectionCount {
+                response: response_tx,
+            })
+            .await
+            .map_err(|e| {
+                Error::SendError(
+                    "AgentStatusAction::GetTcpConnectionCount".to_string(),
+                    e.to_string(),
+                )
+            })?;
+        response_rx.await.map_err(|e| {
+            Error::RecvError("AgentStatusAction::GetTcpConnectionCount".to_string(), e)
+        })
+    }
+
     pub async fn increase_connection_count(&self) -> Result<u128> {
         let (response_tx, response_rx) = oneshot::channel();
         self.0
@@ -496,6 +545,26 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(1, tcp_id);
+        let tcp_connection_count = agent_status_shared_state
+            .get_tcp_connection_count()
+            .await
+            .unwrap();
+        assert_eq!(1, tcp_connection_count);
+        assert_eq!(
+            0,
+            agent_status_shared_state.get_active_tcp_connection_count()
+        );
+        {
+            let _active_connection = agent_status_shared_state.track_active_tcp_connection();
+            assert_eq!(
+                1,
+                agent_status_shared_state.get_active_tcp_connection_count()
+            );
+        }
+        assert_eq!(
+            0,
+            agent_status_shared_state.get_active_tcp_connection_count()
+        );
 
         let connection_id = agent_status_shared_state
             .increase_connection_count()
