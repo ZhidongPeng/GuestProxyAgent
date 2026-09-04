@@ -49,9 +49,13 @@ use proxy_agent_shared::logger::LoggerLevel;
 use proxy_agent_shared::misc_helpers;
 use proxy_agent_shared::proxy_agent_aggregate_status::ModuleState;
 use proxy_agent_shared::telemetry::event_logger;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use std::time::Duration;
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
+use tokio::sync::watch;
 use tokio_util::bytes::BytesMut;
 use tokio_util::sync::CancellationToken;
 use tower::Service;
@@ -61,6 +65,92 @@ const REQUEST_BODY_LOW_LIMIT_SIZE: usize = 1024 * 100; // 100KB
 const REQUEST_BODY_LARGE_LIMIT_SIZE: usize = 1024 * REQUEST_BODY_LOW_LIMIT_SIZE; // 100MB
 const START_LISTENER_RETRY_COUNT: u16 = 5;
 const START_LISTENER_RETRY_SLEEP_DURATION: Duration = Duration::from_secs(1);
+/// Maximum time an inbound HTTP connection may have no successful socket reads or writes.
+/// This is an idle timeout, not a limit on the total lifetime of a keep-alive connection.
+const HTTP_CONNECTION_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Wraps asynchronous I/O and reports successful byte transfers to the connection owner.
+///
+/// A `watch` channel is used because the owner only needs to know that activity occurred;
+/// it does not need one queued event per read or write. Multiple transfers may therefore be
+/// coalesced without growing an activity queue under heavy traffic.
+struct ActivityTrackedIo<T> {
+    inner: T,
+    activity_tx: watch::Sender<()>,
+}
+
+impl<T> ActivityTrackedIo<T> {
+    /// Creates a wrapper that forwards all I/O to `inner` and reports activity through
+    /// `activity_tx`.
+    fn new(inner: T, activity_tx: watch::Sender<()>) -> Self {
+        Self { inner, activity_tx }
+    }
+
+    /// Advances the watch channel version without storing an activity history.
+    fn notify_activity(&self) {
+        self.activity_tx.send_modify(|_| {});
+    }
+}
+
+impl<T: AsyncRead + Unpin> AsyncRead for ActivityTrackedIo<T> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        let filled_len = buf.filled().len();
+        let result = Pin::new(&mut this.inner).poll_read(cx, buf);
+        // `AsyncRead` returns `Ok(())` for both data and EOF. Only reset the idle timer when
+        // the filled portion grows, proving that the socket delivered at least one byte.
+        if matches!(result, Poll::Ready(Ok(()))) && buf.filled().len() > filled_len {
+            this.notify_activity();
+        }
+        result
+    }
+}
+
+impl<T: AsyncWrite + Unpin> AsyncWrite for ActivityTrackedIo<T> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        let this = self.get_mut();
+        let result = Pin::new(&mut this.inner).poll_write(cx, buf);
+        // Pending, failed, and zero-byte writes do not represent connection activity.
+        if matches!(result, Poll::Ready(Ok(written)) if written > 0) {
+            this.notify_activity();
+        }
+        result
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_shutdown(cx)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.inner.is_write_vectored()
+    }
+
+    fn poll_write_vectored(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[std::io::IoSlice<'_>],
+    ) -> Poll<std::io::Result<usize>> {
+        let this = self.get_mut();
+        let result = Pin::new(&mut this.inner).poll_write_vectored(cx, bufs);
+        // Hyper may use vectored writes, so they must follow the same progress rule as writes.
+        if matches!(result, Poll::Ready(Ok(written)) if written > 0) {
+            this.notify_activity();
+        }
+        result
+    }
+}
 
 #[derive(Clone)]
 pub struct ProxyServer {
@@ -258,9 +348,6 @@ impl ProxyServer {
                 #[cfg(windows)]
                 let raw_socket_id = Self::get_stream_raw_socket_id(&stream);
 
-                // Set read timeout directly on the socket without conversion
-                Self::set_stream_read_time_out(&stream, &mut tcp_connection_logger);
-
                 let tcp_connection_context = TcpConnectionContext::new(
                     tcp_connection_id,
                     client_addr,
@@ -302,19 +389,58 @@ impl ProxyServer {
                     tower_service.call(req)
                 });
 
-                // Use an adapter to access something implementing `tokio::io` traits as if they implement
-                let io = TokioIo::new(stream);
-                // We use the `hyper::server::conn::Http` to serve the connection
+                // Track byte-level activity below Hyper so request bodies, responses, and traffic
+                // between keep-alive requests all refresh the same connection idle deadline.
+                let (activity_tx, mut activity_rx) = watch::channel(());
+                let io = TokioIo::new(ActivityTrackedIo::new(stream, activity_tx));
+
+                // Keep HTTP persistence enabled; the independent idle timer bounds how long an
+                // unused connection and its Hyper buffers remain alive.
                 let mut http = hyper::server::conn::http1::Builder::new();
-                if let Err(e) = http
-                    .keep_alive(true) // set keep_alive to true explicitly
-                    .serve_connection(io, service)
-                    .await
-                {
-                    tcp_connection_logger.write(
-                        LoggerLevel::Warn,
-                        format!("ProxyListener serve_connection error: {e}"),
-                    );
+                let connection = http.keep_alive(true).serve_connection(io, service);
+                tokio::pin!(connection);
+
+                let idle_timer = tokio::time::sleep(HTTP_CONNECTION_IDLE_TIMEOUT);
+                tokio::pin!(idle_timer);
+
+                loop {
+                    tokio::select! {
+                        // If I/O activity and the deadline become ready together, process the
+                        // connection or activity first instead of closing an active connection.
+                        biased;
+                        result = &mut connection => {
+                            if let Err(e) = result {
+                                tcp_connection_logger.write(
+                                    LoggerLevel::Warn,
+                                    format!("ProxyListener serve_connection error: {e}"),
+                                );
+                            }
+                            break;
+                        }
+                        changed = activity_rx.changed() => {
+                            if changed.is_err() {
+                                // The I/O wrapper was dropped, so no future activity can arrive.
+                                break;
+                            }
+                            // Reset from the time activity is observed. The watch channel may
+                            // coalesce bursts, but each observed version extends the deadline.
+                            idle_timer.as_mut().reset(
+                                tokio::time::Instant::now() + HTTP_CONNECTION_IDLE_TIMEOUT,
+                            );
+                        }
+                        _ = &mut idle_timer => {
+                            // Dropping `connection` also drops the wrapped stream, closing the
+                            // inbound socket and releasing state retained by Hyper.
+                            tcp_connection_logger.write(
+                                LoggerLevel::Info,
+                                format!(
+                                    "Closing TCP connection after {} seconds of inactivity.",
+                                    HTTP_CONNECTION_IDLE_TIMEOUT.as_secs(),
+                                ),
+                            );
+                            break;
+                        }
+                    }
                 }
             }
         });
@@ -324,21 +450,6 @@ impl ProxyServer {
     fn get_stream_raw_socket_id(stream: &TcpStream) -> usize {
         use std::os::windows::io::AsRawSocket;
         stream.as_raw_socket() as usize
-    }
-
-    // Set the read timeout for the stream
-    // Uses socket2::SockRef to set socket options directly on the tokio stream
-    // socket2 crate already used by tokio internally, so it won't cause extra dependency
-    fn set_stream_read_time_out(stream: &TcpStream, connection_logger: &mut ConnectionLogger) {
-        use socket2::SockRef;
-
-        let sock_ref = SockRef::from(stream);
-        if let Err(e) = sock_ref.set_read_timeout(Some(std::time::Duration::from_secs(10))) {
-            connection_logger.write(
-                LoggerLevel::Warn,
-                format!("Failed to set read timeout: {e}"),
-            );
-        }
     }
 
     async fn handle_new_http_request(
@@ -1197,6 +1308,7 @@ impl ProxyServer {
 
 #[cfg(test)]
 mod tests {
+    use super::ActivityTrackedIo;
     use crate::common::logger;
     use crate::proxy::proxy_server;
     use crate::shared_state;
@@ -1204,6 +1316,27 @@ mod tests {
     use proxy_agent_shared::{hyper_client, proxy_agent_aggregate_status};
     use std::collections::HashMap;
     use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::sync::watch;
+
+    #[tokio::test]
+    async fn activity_tracked_io_notifies_on_reads_and_writes() {
+        let (stream, mut peer) = tokio::io::duplex(64);
+        let (activity_tx, mut activity_rx) = watch::channel(());
+        let mut tracked = ActivityTrackedIo::new(stream, activity_tx);
+
+        tracked.write_all(b"response").await.unwrap();
+        activity_rx.changed().await.unwrap();
+        let mut response = [0; 8];
+        peer.read_exact(&mut response).await.unwrap();
+        assert_eq!(&response, b"response");
+
+        peer.write_all(b"request").await.unwrap();
+        let mut request = [0; 7];
+        tracked.read_exact(&mut request).await.unwrap();
+        activity_rx.changed().await.unwrap();
+        assert_eq!(&request, b"request");
+    }
 
     #[tokio::test]
     async fn direct_request_test() {

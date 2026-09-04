@@ -17,7 +17,7 @@ serde_json = "1.0.91"         # json Deserializer
 serde-xml-rs = "0.8.1"        # xml Deserializer with xml attribute
 bitflags = "2.6.0"            # support bitflag enum
 regex = "1.11"                # match process name in cmdline
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "time",  "net", "macros", "sync"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "time", "net", "macros", "sync", "io-util"] }
 tokio-util = "0.7.11"
 http = "1.1.0"
 http-body-util = "0.1"
@@ -28,7 +28,6 @@ tower-http = { version = "0.6.2", features = ["limit"] }
 clap = { version = "4.5.17", features =["derive"] } # Command Line Argument Parser 
 thiserror = "1.0.64"
 libc = "0.2.147"
-socket2 = "0.5"               # Set socket options without tokio/std conversion
 base64 = "0.22"
 percent-encoding = "2.3"
 # Optional: only compiled when the `proptests` feature is enabled (see

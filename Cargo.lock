@@ -175,7 +175,6 @@ dependencies = [
  "serde-xml-rs",
  "serde_derive",
  "serde_json",
- "socket2",
  "static_vcruntime",
  "sysinfo",
  "thiserror 1.0.64",
@@ -1465,6 +1464,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "492a604e2fd7f814268a378409e6c92b5525d747d10db9a229723f55a417958c"
 dependencies = [
  "backtrace",
+ "bytes",
  "libc",
  "mio",
  "pin-project-lite",
