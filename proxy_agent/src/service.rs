@@ -57,10 +57,11 @@ pub async fn start_service(shared_state: SharedState) {
     }
 
     let start_message = format!(
-        "============== GuestProxyAgent ({}) is starting on {}({}), elapsed: {}",
+        "============== GuestProxyAgent ({}) is starting on {}({}) with {} worker threads, elapsed: {}",
         current_info::get_current_exe_version(),
         current_info::get_long_os_version(),
         current_info::get_cpu_arch(),
+        helpers::get_worker_threads(),
         helpers::get_elapsed_time_in_millisec()
     );
     logger::write_information(start_message.clone());
