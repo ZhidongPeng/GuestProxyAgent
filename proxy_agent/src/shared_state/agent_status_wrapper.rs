@@ -43,6 +43,20 @@ enum AgentStatusAction {
     IncreaseTcpConnectionCount {
         response: oneshot::Sender<u128>,
     },
+    SetSoftAuditMode {
+        enable_soft_audit: bool,
+        response: oneshot::Sender<bool>,
+    },
+    GetSoftAuditMode {
+        response: oneshot::Sender<bool>,
+    },
+    SetFallbackReason {
+        reason: Option<String>,
+        response: oneshot::Sender<Option<String>>,
+    },
+    GetFallbackReason {
+        response: oneshot::Sender<Option<String>>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -74,6 +88,8 @@ impl AgentStatusSharedState {
             let mut proxy_server_status_message = super::UNKNOWN_STATUS_MESSAGE.to_string();
             let mut proxy_agent_status_state = ModuleState::UNKNOWN;
             let mut proxy_agent_status_message = super::UNKNOWN_STATUS_MESSAGE.to_string();
+            let mut soft_audit_mode_enabled: bool = false;
+            let mut fallback_reason: Option<String> = None;
 
             // The proxied connection count for the listener
             let mut tcp_connection_count: u128 = 0;
@@ -223,6 +239,56 @@ impl AgentStatusSharedState {
                             logger::write_warning(format!(
                                 "Failed to send response to AgentStatusAction::IncreaseTcpConnectionCount with count '{count:?}'"
                             ));
+                        }
+                    }
+                    AgentStatusAction::SetSoftAuditMode {
+                        enable_soft_audit,
+                        response,
+                    } => {
+                        soft_audit_mode_enabled = enable_soft_audit;
+                        if !soft_audit_mode_enabled && fallback_reason.is_some() {
+                            logger::write_warning(
+                                "Soft audit mode has been disabled, reset fallback reason."
+                                    .to_string(),
+                            );
+                            fallback_reason = None;
+                        }
+                        if let Err(value) = response.send(soft_audit_mode_enabled) {
+                            logger::write_warning(format!("Failed to send response to AgentStatusAction::SetSoftAuditMode with value '{value}'"));
+                        }
+                    }
+                    AgentStatusAction::GetSoftAuditMode { response } => {
+                        if let Err(value) = response.send(soft_audit_mode_enabled) {
+                            logger::write_warning(format!("Failed to send response to AgentStatusAction::GetSoftAuditMode with value '{value}'"));
+                        }
+                    }
+                    AgentStatusAction::SetFallbackReason { reason, response } => {
+                        if !soft_audit_mode_enabled {
+                            // telemetry events only and no actual fallback reason should be set.
+                            logger::write_warning(
+                                "SetFallbackReason called while soft audit mode is disabled."
+                                    .to_string(),
+                            );
+                            if let Err(value) = response.send(None) {
+                                logger::write_warning(format!("Failed to send response to AgentStatusAction::SetFallbackReason with value '{value:?}'"));
+                            }
+                        } else {
+                            fallback_reason = reason;
+                            if let Err(value) = response.send(fallback_reason.clone()) {
+                                logger::write_warning(format!("Failed to send response to AgentStatusAction::SetFallbackReason with value '{value:?}'"));
+                            }
+                        }
+                    }
+                    AgentStatusAction::GetFallbackReason { response } => {
+                        if let Err(value) = {
+                            if !soft_audit_mode_enabled {
+                                // if soft audit mode is disabled, always return None as the fallback reason.
+                                response.send(None)
+                            } else {
+                                response.send(fallback_reason.clone())
+                            }
+                        } {
+                            logger::write_warning(format!("Failed to send response to AgentStatusAction::GetFallbackReason with value '{value:?}'"));
                         }
                     }
                 }
@@ -436,6 +502,82 @@ impl AgentStatusSharedState {
             )
         })
     }
+
+    pub async fn set_soft_audit_mode(&self, enabled: bool) -> Result<()> {
+        let (response_tx, response_rx) = oneshot::channel();
+        self.0
+            .send(AgentStatusAction::SetSoftAuditMode {
+                enable_soft_audit: enabled,
+                response: response_tx,
+            })
+            .await
+            .map_err(|e| {
+                Error::SendError(
+                    "AgentStatusAction::SetSoftAuditMode".to_string(),
+                    e.to_string(),
+                )
+            })?;
+        response_rx
+            .await
+            .map_err(|e| Error::RecvError("AgentStatusAction::SetSoftAuditMode".to_string(), e))?;
+        Ok(())
+    }
+
+    pub async fn get_soft_audit_mode(&self) -> Result<bool> {
+        let (response_tx, response_rx) = oneshot::channel();
+        self.0
+            .send(AgentStatusAction::GetSoftAuditMode {
+                response: response_tx,
+            })
+            .await
+            .map_err(|e| {
+                Error::SendError(
+                    "AgentStatusAction::GetSoftAuditMode".to_string(),
+                    e.to_string(),
+                )
+            })?;
+        response_rx
+            .await
+            .map_err(|e| Error::RecvError("AgentStatusAction::GetSoftAuditMode".to_string(), e))
+    }
+
+    pub async fn get_fallback_reason(&self) -> Result<Option<String>> {
+        let (response_tx, response_rx) = oneshot::channel();
+        self.0
+            .send(AgentStatusAction::GetFallbackReason {
+                response: response_tx,
+            })
+            .await
+            .map_err(|e| {
+                Error::SendError(
+                    "AgentStatusAction::GetFallbackReason".to_string(),
+                    e.to_string(),
+                )
+            })?;
+        response_rx
+            .await
+            .map_err(|e| Error::RecvError("AgentStatusAction::GetFallbackReason".to_string(), e))
+    }
+
+    pub async fn set_fallback_reason(&self, reason: Option<String>) -> Result<()> {
+        let (response_tx, response_rx) = oneshot::channel();
+        self.0
+            .send(AgentStatusAction::SetFallbackReason {
+                reason,
+                response: response_tx,
+            })
+            .await
+            .map_err(|e| {
+                Error::SendError(
+                    "AgentStatusAction::SetFallbackReason".to_string(),
+                    e.to_string(),
+                )
+            })?;
+        response_rx
+            .await
+            .map_err(|e| Error::RecvError("AgentStatusAction::SetFallbackReason".to_string(), e))?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -513,5 +655,88 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(2, connection_id);
+
+        assert!(!agent_status_shared_state
+            .get_soft_audit_mode()
+            .await
+            .unwrap());
+        agent_status_shared_state
+            .set_soft_audit_mode(true)
+            .await
+            .unwrap();
+        assert!(agent_status_shared_state
+            .get_soft_audit_mode()
+            .await
+            .unwrap());
+        agent_status_shared_state
+            .set_soft_audit_mode(false)
+            .await
+            .unwrap();
+        assert!(!agent_status_shared_state
+            .get_soft_audit_mode()
+            .await
+            .unwrap());
+
+        assert_eq!(
+            None,
+            agent_status_shared_state
+                .get_fallback_reason()
+                .await
+                .unwrap()
+        );
+        agent_status_shared_state
+            .set_fallback_reason(Some("ignored while disabled".to_string()))
+            .await
+            .unwrap();
+        assert_eq!(
+            None,
+            agent_status_shared_state
+                .get_fallback_reason()
+                .await
+                .unwrap()
+        );
+
+        agent_status_shared_state
+            .set_soft_audit_mode(true)
+            .await
+            .unwrap();
+        agent_status_shared_state
+            .set_fallback_reason(Some("test fallback".to_string()))
+            .await
+            .unwrap();
+        assert_eq!(
+            Some("test fallback".to_string()),
+            agent_status_shared_state
+                .get_fallback_reason()
+                .await
+                .unwrap()
+        );
+        agent_status_shared_state
+            .set_fallback_reason(None)
+            .await
+            .unwrap();
+        assert_eq!(
+            None,
+            agent_status_shared_state
+                .get_fallback_reason()
+                .await
+                .unwrap()
+        );
+
+        agent_status_shared_state
+            .set_fallback_reason(Some("reset on disable".to_string()))
+            .await
+            .unwrap();
+        agent_status_shared_state
+            .set_soft_audit_mode(false)
+            .await
+            .unwrap();
+        assert_eq!(
+            None,
+            agent_status_shared_state
+                .get_fallback_reason()
+                .await
+                .unwrap()
+        );
     }
 }

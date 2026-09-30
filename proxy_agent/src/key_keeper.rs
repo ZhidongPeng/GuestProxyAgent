@@ -537,17 +537,29 @@ impl KeyKeeper {
             }
         }
 
+        let remote_wire_server_rules = status.get_wireserver_rules();
+        let rule_id_descriptor = key::parse_rule_id_descriptor(
+            remote_wire_server_rules
+                .as_ref()
+                .map(|item| item.id.as_str()),
+        );
         let (wireserver_rules, wireserver_local_state_changed) = resolve_effective_rules(
             &self.rules_dir,
-            status.get_wireserver_rules(),
+            remote_wire_server_rules,
+            &rule_id_descriptor,
             LocalRuleTarget::WireServer,
             &mut local_rule_state_tracker.wireserver,
             wireserver_rule_id_changed,
         )
         .await;
+
+        let remote_imds_rules = status.get_imds_rules();
+        let imds_rule_id_descriptor =
+            key::parse_rule_id_descriptor(remote_imds_rules.as_ref().map(|item| item.id.as_str()));
         let (imds_rules, imds_local_state_changed) = resolve_effective_rules(
             &self.rules_dir,
-            status.get_imds_rules(),
+            remote_imds_rules,
+            &imds_rule_id_descriptor,
             LocalRuleTarget::Imds,
             &mut local_rule_state_tracker.imds,
             imds_rule_id_changed,
