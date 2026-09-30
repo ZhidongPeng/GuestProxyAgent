@@ -440,7 +440,8 @@ pub async fn start_event_threads(event_threads_shared_state: EventThreadsSharedS
 ///  if status.tag file exists, it means provision finished
 ///  if status.tag file does not exist, it means provision still in progress
 ///  the content of the status.tag file is the provision error message,
-///  empty means provision success, otherwise provision failed with error message
+///  empty means provision success or soft audit mode suppressed the failure,
+///  otherwise provision failed with error message
 async fn write_provision_state(
     provision_dir: Option<PathBuf>,
     provision_shared_state: ProvisionSharedState,
@@ -533,6 +534,16 @@ async fn get_provision_failed_state_message(
     provision_shared_state: ProvisionSharedState,
     agent_status_shared_state: AgentStatusSharedState,
 ) -> String {
+    match agent_status_shared_state.get_soft_audit_mode().await {
+        Ok(true) => return String::new(),
+        Ok(false) => {}
+        Err(e) => {
+            logger::write_warning(format!(
+                "Failed to get soft audit mode while building provision status: {e}"
+            ));
+        }
+    }
+
     let provision_state = match provision_shared_state.get_state().await {
         Ok(state) => state,
         Err(e) => {
@@ -1005,6 +1016,32 @@ mod tests {
         assert_eq!(
             "keyLatchStatus - keyLatchStatus - Failed to acquire key details: Key(KeyResponse(&quot;acquire&quot;, 403))\r\n",
             status_file_content
+        );
+
+        agent_status_shared_state
+            .set_soft_audit_mode(true)
+            .await
+            .unwrap();
+        let failed_state_message = super::get_provision_failed_state_message(
+            provision_shared_state.clone(),
+            agent_status_shared_state.clone(),
+        )
+        .await;
+        assert!(
+            failed_state_message.is_empty(),
+            "soft audit mode must suppress provisioning failure reports"
+        );
+
+        super::provision_timeout(
+            Some(temp_test_path.clone()),
+            provision_shared_state.clone(),
+            agent_status_shared_state.clone(),
+        )
+        .await;
+        assert_eq!(
+            0,
+            status_file.metadata().unwrap().len(),
+            "soft audit status.tag file must not report a provisioning failure"
         );
 
         cancellation_token.cancel();
