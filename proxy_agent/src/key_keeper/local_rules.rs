@@ -661,7 +661,7 @@ pub(crate) async fn resolve_effective_rules(
         );
 
         let fail_closed_rules =
-            build_fail_closed_rules(normalized_remote_rules, &rule_id_descriptor);
+            build_fail_closed_rules(normalized_remote_rules, rule_id_descriptor);
         tracker.parse_failed = true;
         tracker.effective_rules = fail_closed_rules.clone();
         return (
@@ -673,7 +673,7 @@ pub(crate) async fn resolve_effective_rules(
     match read_local_rules_file(&local_rules_file, target).await {
         Ok(local_rules) => {
             let effective_rules =
-                merge_authorization_item(normalized_remote_rules, local_rules, &rule_id_descriptor);
+                merge_authorization_item(normalized_remote_rules, local_rules, rule_id_descriptor);
             tracker.parse_failed = false;
             tracker.effective_rules = effective_rules.clone();
             (
@@ -696,7 +696,7 @@ pub(crate) async fn resolve_effective_rules(
             );
 
             let fail_closed_rules =
-                build_fail_closed_rules(normalized_remote_rules, &rule_id_descriptor);
+                build_fail_closed_rules(normalized_remote_rules, rule_id_descriptor);
             tracker.parse_failed = true;
             tracker.effective_rules = fail_closed_rules.clone();
             (

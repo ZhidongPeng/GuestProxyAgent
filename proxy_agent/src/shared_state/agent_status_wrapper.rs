@@ -245,7 +245,10 @@ impl AgentStatusSharedState {
                         enable_soft_audit,
                         response,
                     } => {
-                        soft_audit_mode_enabled = enable_soft_audit;
+                        if soft_audit_mode_enabled != enable_soft_audit {
+                            logger::write_warning(format!("enableSoftAudit value changed from {soft_audit_mode_enabled} to {enable_soft_audit} "));
+                            soft_audit_mode_enabled = enable_soft_audit;
+                        }
                         if !soft_audit_mode_enabled && fallback_reason.is_some() {
                             logger::write_warning(
                                 "Soft audit mode has been disabled, reset fallback reason."
