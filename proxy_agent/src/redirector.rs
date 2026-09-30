@@ -190,13 +190,27 @@ impl AlertOnlyEventRateLimiter {
 pub struct Redirector {
     local_port: u16,
     shared_state: SharedState,
+    cancellation_token: CancellationToken,
 }
 
 impl Redirector {
     pub fn new(local_port: u16, shared_state: &SharedState) -> Self {
+        Self::new_with_cancellation_token(
+            local_port,
+            shared_state,
+            shared_state.get_cancellation_token(),
+        )
+    }
+
+    pub fn new_with_cancellation_token(
+        local_port: u16,
+        shared_state: &SharedState,
+        cancellation_token: CancellationToken,
+    ) -> Self {
         Redirector {
             local_port,
             shared_state: shared_state.clone(),
+            cancellation_token,
         }
     }
 
@@ -204,6 +218,10 @@ impl Redirector {
     const RETRY_INTERVAL_MS: u64 = 10;
 
     pub async fn start(&self) {
+        if self.cancellation_token.is_cancelled() {
+            return;
+        }
+
         let message = "eBPF redirector is starting";
         if let Err(e) = self
             .shared_state
@@ -217,8 +235,23 @@ impl Redirector {
         }
 
         let level = match self.start_impl().await {
-            Ok(_) => LoggerLevel::Info,
-            Err(_) => LoggerLevel::Error,
+            Ok(_) if !self.cancellation_token.is_cancelled() => LoggerLevel::Info,
+            Ok(_) => {
+                close(
+                    self.shared_state.get_redirector_shared_state(),
+                    self.shared_state.get_agent_status_shared_state(),
+                )
+                .await;
+                LoggerLevel::Info
+            }
+            Err(_) => {
+                let _ = self
+                    .shared_state
+                    .get_agent_status_shared_state()
+                    .set_module_state(ModuleState::STOPPED, AgentStatusModule::Redirector)
+                    .await;
+                LoggerLevel::Error
+            }
         };
         event_logger::write_event(
             level,
@@ -231,6 +264,9 @@ impl Redirector {
 
     async fn start_impl(&self) -> Result<()> {
         for _ in 0..Self::MAX_RETRIES {
+            if self.cancellation_token.is_cancelled() {
+                return Err(Error::Bpf(BpfErrorType::FailedToStartRedirector));
+            }
             match self.start_internal().await {
                 Ok(_) => return Ok(()),
                 Err(e) => {
@@ -268,13 +304,13 @@ impl Redirector {
         self.attach_bpf_prog(&mut bpf_object)?;
         logger::write_information("Success attached bpf prog.".to_string());
 
-        match bpf_object.subscribe_alert_only(self.shared_state.get_cancellation_token().clone()) {
+        match bpf_object.subscribe_alert_only(self.cancellation_token.clone()) {
             Ok(receiver) => {
                 // Handle the received alert-only events here, spawn a task to process them
                 tokio::spawn(process_alert_only_events(
                     receiver,
                     self.shared_state.get_proxy_server_shared_state(),
-                    self.shared_state.get_cancellation_token(),
+                    self.cancellation_token.clone(),
                 ));
             }
             Err(e) => {
@@ -548,6 +584,12 @@ pub async fn close(
     #[cfg(windows)]
     {
         windows::close_bpf_object(redirector_shared_state.clone()).await;
+    }
+
+    #[cfg(not(windows))]
+    {
+        // TODO:: we need to implement the Linux equivalent of closing the BPF program/maps
+        //   linux::close_bpf_object(redirector_shared_state.clone()).await;
     }
     let _ = redirector_shared_state.clear_bpf_object().await;
 }

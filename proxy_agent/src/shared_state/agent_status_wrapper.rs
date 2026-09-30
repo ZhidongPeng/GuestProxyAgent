@@ -11,7 +11,7 @@ use crate::common::result::Result;
 use proxy_agent_shared::logger::LoggerLevel;
 use proxy_agent_shared::proxy_agent_aggregate_status::{ModuleState, ProxyAgentDetailStatus};
 use proxy_agent_shared::telemetry::event_logger;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 
 const MAX_STATUS_MESSAGE_LENGTH: usize = 1024;
 
@@ -69,12 +69,34 @@ pub enum AgentStatusModule {
     ProxyAgentStatus,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct RuntimeStatusSnapshot {
+    pub soft_audit_enabled: bool,
+    pub proxy_server_state: ModuleState,
+    pub redirector_state: ModuleState,
+}
+
+impl Default for RuntimeStatusSnapshot {
+    fn default() -> Self {
+        Self {
+            soft_audit_enabled: false,
+            proxy_server_state: ModuleState::UNKNOWN,
+            redirector_state: ModuleState::UNKNOWN,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
-pub struct AgentStatusSharedState(mpsc::Sender<AgentStatusAction>);
+pub struct AgentStatusSharedState(
+    mpsc::Sender<AgentStatusAction>,
+    watch::Receiver<RuntimeStatusSnapshot>,
+);
 
 impl AgentStatusSharedState {
     pub fn start_new() -> Self {
         let (tx, mut rx) = mpsc::channel(100);
+        let (runtime_status_tx, runtime_status_rx) =
+            watch::channel(RuntimeStatusSnapshot::default());
         tokio::spawn(async move {
             let mut key_keeper_state: ModuleState = ModuleState::UNKNOWN;
             let mut key_keeper_status_message: String = super::UNKNOWN_STATUS_MESSAGE.to_string();
@@ -197,6 +219,19 @@ impl AgentStatusSharedState {
                                 proxy_agent_status_state = state.clone();
                             }
                         }
+                        runtime_status_tx.send_if_modified(|snapshot| {
+                            let updated = RuntimeStatusSnapshot {
+                                soft_audit_enabled: soft_audit_mode_enabled,
+                                proxy_server_state: proxy_server_state.clone(),
+                                redirector_state: redirector_state.clone(),
+                            };
+                            if *snapshot == updated {
+                                false
+                            } else {
+                                *snapshot = updated;
+                                true
+                            }
+                        });
                         if let Err(state) = response.send(state) {
                             logger::write_warning(format!("Failed to send response to AgentStatusAction::SetState '{state:?}' for module '{module:?}'"));
                         }
@@ -248,6 +283,19 @@ impl AgentStatusSharedState {
                         if soft_audit_mode_enabled != enable_soft_audit {
                             logger::write_warning(format!("enableSoftAudit value changed from {soft_audit_mode_enabled} to {enable_soft_audit} "));
                             soft_audit_mode_enabled = enable_soft_audit;
+                            runtime_status_tx.send_if_modified(|snapshot| {
+                                let updated = RuntimeStatusSnapshot {
+                                    soft_audit_enabled: soft_audit_mode_enabled,
+                                    proxy_server_state: proxy_server_state.clone(),
+                                    redirector_state: redirector_state.clone(),
+                                };
+                                if *snapshot == updated {
+                                    false
+                                } else {
+                                    *snapshot = updated;
+                                    true
+                                }
+                            });
                         }
                         if !soft_audit_mode_enabled && fallback_reason.is_some() {
                             logger::write_warning(
@@ -298,7 +346,11 @@ impl AgentStatusSharedState {
             }
         });
 
-        AgentStatusSharedState(tx)
+        AgentStatusSharedState(tx, runtime_status_rx)
+    }
+
+    pub fn subscribe_runtime_status(&self) -> watch::Receiver<RuntimeStatusSnapshot> {
+        self.1.clone()
     }
 
     async fn get_module_state(&self, module: AgentStatusModule) -> Result<ModuleState> {
@@ -592,6 +644,11 @@ mod tests {
     #[tokio::test]
     async fn test_agent_status_shared_state() {
         let agent_status_shared_state = AgentStatusSharedState::start_new();
+        let mut runtime_status_rx = agent_status_shared_state.subscribe_runtime_status();
+        assert_eq!(
+            RuntimeStatusSnapshot::default(),
+            runtime_status_rx.borrow().clone()
+        );
 
         let modules = vec![
             AgentStatusModule::KeyKeeper,
@@ -635,6 +692,14 @@ mod tests {
             assert_eq!(state, get_state);
             assert_eq!(status_message, get_status_message);
         }
+        assert_eq!(
+            ModuleState::RUNNING,
+            runtime_status_rx.borrow().proxy_server_state.clone()
+        );
+        assert_eq!(
+            ModuleState::RUNNING,
+            runtime_status_rx.borrow().redirector_state.clone()
+        );
 
         let tcp_id = agent_status_shared_state
             .increase_tcp_connection_count()
@@ -667,6 +732,8 @@ mod tests {
             .set_soft_audit_mode(true)
             .await
             .unwrap();
+        runtime_status_rx.changed().await.unwrap();
+        assert!(runtime_status_rx.borrow().soft_audit_enabled);
         assert!(agent_status_shared_state
             .get_soft_audit_mode()
             .await
