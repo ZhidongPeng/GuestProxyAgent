@@ -26,8 +26,15 @@ pub fn get_proxy_agent_aggregate_status_folder() -> std::path::PathBuf {
 #[derive(Deserialize, Serialize, Debug, PartialEq, Clone)]
 pub enum ModuleState {
     UNKNOWN,
+    STARTING,
     RUNNING,
     STOPPED,
+}
+
+impl ModuleState {
+    pub fn is_ultimate_state(&self) -> bool {
+        matches!(self, ModuleState::RUNNING | ModuleState::STOPPED)
+    }
 }
 
 #[derive(Deserialize, Serialize, Debug, PartialEq, Clone)]

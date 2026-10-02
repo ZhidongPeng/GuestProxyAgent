@@ -86,6 +86,22 @@ impl Default for RuntimeStatusSnapshot {
     }
 }
 
+impl RuntimeStatusSnapshot {
+    pub fn both_running(&self) -> bool {
+        self.proxy_server_state == ModuleState::RUNNING
+            && self.redirector_state == ModuleState::RUNNING
+    }
+
+    pub fn either_stopped(&self) -> bool {
+        self.proxy_server_state == ModuleState::STOPPED
+            || self.redirector_state == ModuleState::STOPPED
+    }
+
+    pub fn both_at_ultimate_state(&self) -> bool {
+        self.proxy_server_state.is_ultimate_state() && self.redirector_state.is_ultimate_state()
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct AgentStatusSharedState(
     mpsc::Sender<AgentStatusAction>,
