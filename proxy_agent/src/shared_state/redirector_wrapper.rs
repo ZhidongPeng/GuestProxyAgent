@@ -170,6 +170,8 @@ impl RedirectorSharedState {
         self.set_bpf_object(None).await
     }
 
+    /// Retrieves the current BPF object without modifying the shared state.
+    /// Returns the BPF object if it exists, otherwise returns None.
     pub async fn get_bpf_object(&self) -> Result<Option<Arc<Mutex<redirector::BpfObject>>>> {
         let (response_tx, response_rx) = oneshot::channel();
         self.0
@@ -185,6 +187,8 @@ impl RedirectorSharedState {
             .map_err(|e| Error::RecvError("RedirectorAction::GetBpfObject".to_string(), e))
     }
 
+    /// Moves the stored Arc to the caller and replaces the shared-state value with None
+    /// Returns the BPF object if it exists, otherwise returns None.
     pub async fn take_bpf_object(&self) -> Result<Option<Arc<Mutex<redirector::BpfObject>>>> {
         let (response_tx, response_rx) = oneshot::channel();
         self.0
