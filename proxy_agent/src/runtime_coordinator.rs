@@ -12,9 +12,11 @@ use proxy_agent_shared::proxy_agent_aggregate_status::ModuleState;
 use std::thread::JoinHandle as ThreadJoinHandle;
 use std::time::Duration;
 use tokio::task::JoinHandle;
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 const RECONCILE_INTERVAL: Duration = Duration::from_secs(1);
+const STARTING_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Policy for managing the runtime pair based on soft audit status changes.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -47,6 +49,22 @@ fn evaluate_status(
     }
 }
 
+/// Checks if the starting of a module has timed out based on its state and the time it has been in the STARTING state.
+fn starting_timed_out(
+    state: &ModuleState,
+    starting_since: &mut Option<Instant>,
+    now: Instant,
+    time_out_duration: Duration,
+) -> bool {
+    if state != &ModuleState::STARTING {
+        *starting_since = None;
+        return false;
+    }
+
+    let started = starting_since.get_or_insert(now);
+    now.duration_since(*started) >= time_out_duration
+}
+
 struct ProxyServerRuntime {
     cancellation_token: CancellationToken,
     thread: ThreadJoinHandle<()>,
@@ -61,6 +79,10 @@ pub struct RuntimeCoordinator {
     shared_state: SharedState,
     proxy_server_runtime: Option<ProxyServerRuntime>,
     redirector_runtime: Option<RedirectorRuntime>,
+    /// Tracks when the proxy server entered the STARTING state.
+    proxy_starting_since: Option<Instant>,
+    /// Tracks when the redirector entered the STARTING state.
+    redirector_starting_since: Option<Instant>,
 }
 
 impl RuntimeCoordinator {
@@ -70,6 +92,8 @@ impl RuntimeCoordinator {
                 shared_state,
                 proxy_server_runtime: None,
                 redirector_runtime: None,
+                proxy_starting_since: None,
+                redirector_starting_since: None,
             }
             .run()
             .await;
@@ -111,6 +135,12 @@ impl RuntimeCoordinator {
 
             let status = runtime_status_rx.borrow_and_update().clone();
 
+            // Handle any starting timeouts for the proxy server and redirector.
+            if self.handle_starting_timeouts(&status).await {
+                // If any starting timeouts were handled, skip the rest of the reconciliation loop.
+                continue;
+            }
+
             // Only reconcile the runtime pair if both modules are at their ultimate state.
             // This ensures that we only take actions when both the proxy server and redirector have reached a stable state,
             // it prevents premature actions based on transient states.
@@ -129,8 +159,48 @@ impl RuntimeCoordinator {
         }
 
         // Stop the runtime pair before exiting the run.
-        self.stop_redirector().await;
-        self.stop_proxy_server().await;
+        self.stop_redirector("RuntimeCoordinator stopping Redirector".to_string())
+            .await;
+        self.stop_proxy_server("RuntimeCoordinator stopping ProxyServer".to_string())
+            .await;
+    }
+
+    async fn handle_starting_timeouts(&mut self, status: &RuntimeStatusSnapshot) -> bool {
+        let mut handled_timed_out = false;
+        let now = Instant::now();
+        if starting_timed_out(
+            &status.proxy_server_state,
+            &mut self.proxy_starting_since,
+            now,
+            STARTING_TIMEOUT,
+        ) {
+            logger::write_warning(format!(
+                    "ProxyServer remained in STARTING for {STARTING_TIMEOUT:?}; treating it as stopped."
+                ));
+            handled_timed_out = true;
+            self.proxy_starting_since = None;
+            self.stop_proxy_server(
+                "RuntimeCoordinator stopped ProxyServer due to timeout".to_string(),
+            )
+            .await;
+        }
+        if starting_timed_out(
+            &status.redirector_state,
+            &mut self.redirector_starting_since,
+            now,
+            STARTING_TIMEOUT,
+        ) {
+            logger::write_warning(format!(
+                "Redirector remained in STARTING for {STARTING_TIMEOUT:?}; treating it as stopped."
+            ));
+            handled_timed_out = true;
+            self.redirector_starting_since = None;
+            self.stop_redirector(
+                "RuntimeCoordinator stopped Redirector due to timeout".to_string(),
+            )
+            .await;
+        }
+        handled_timed_out
     }
 
     /// Starts the runtime pair, including the proxy server and redirector, if they are not already running.
@@ -145,6 +215,11 @@ impl RuntimeCoordinator {
 
     /// Starts the proxy server if it is not already running.
     async fn start_proxy_server(&mut self) {
+        self.stop_proxy_server(
+            "RuntimeCoordinator cleanup Stopped ProxyServer state before its startup".to_string(),
+        )
+        .await;
+
         let agent_status = self.shared_state.get_agent_status_shared_state();
         if let Err(e) = agent_status
             .set_module_state(ModuleState::STARTING, AgentStatusModule::ProxyServer)
@@ -179,10 +254,18 @@ impl RuntimeCoordinator {
             cancellation_token: proxy_cancellation_token,
             thread: proxy_thread,
         });
+
+        // set the starting time to track potential starting timeouts
+        self.proxy_starting_since = Some(Instant::now());
     }
 
     /// Starts the redirector if it is not already running.
     async fn start_redirector(&mut self) {
+        self.stop_redirector(
+            "RuntimeCoordinator cleanup Stopped Redirector state before its startup".to_string(),
+        )
+        .await;
+
         let agent_status = self.shared_state.get_agent_status_shared_state();
         if let Err(e) = agent_status
             .set_module_state(ModuleState::STARTING, AgentStatusModule::Redirector)
@@ -207,23 +290,32 @@ impl RuntimeCoordinator {
             cancellation_token: redirector_cancellation_token,
             start_task: redirector_task,
         });
+
+        // set the starting time to track potential starting timeouts
+        self.redirector_starting_since = Some(Instant::now());
     }
 
-    /// Stops both the redirector and the proxy server if they are running.
+    /// Stops the pair due to other module stopped.
     /// It ensures that both components are properly stopped before returning.
     async fn stop_pair(&mut self, status: &RuntimeStatusSnapshot) {
         if status.redirector_state == ModuleState::RUNNING {
-            self.stop_redirector().await;
+            self.stop_redirector(
+                "RuntimeCoordinator stopped Redirector due to other module stopped".to_string(),
+            )
+            .await;
         }
 
         if status.proxy_server_state == ModuleState::RUNNING {
-            self.stop_proxy_server().await;
+            self.stop_proxy_server(
+                "RuntimeCoordinator stopped ProxyServer due to other module stopped".to_string(),
+            )
+            .await;
         }
     }
 
     /// It ensures that the redirector is properly stopped before returning.
     /// It also sets the appropriate status message in the agent status shared state.
-    async fn stop_redirector(&mut self) {
+    async fn stop_redirector(&mut self, message: String) {
         if let Some(runtime) = self.redirector_runtime.take() {
             runtime.cancellation_token.cancel();
             if let Err(e) = runtime.start_task.await {
@@ -239,10 +331,7 @@ impl RuntimeCoordinator {
         if let Err(e) = self
             .shared_state
             .get_agent_status_shared_state()
-            .set_module_status_message(
-                "RuntimeCoordinator stopped Redirector".to_string(),
-                AgentStatusModule::Redirector,
-            )
+            .set_module_status_message(message, AgentStatusModule::Redirector)
             .await
         {
             logger::write_warning(format!(
@@ -253,7 +342,7 @@ impl RuntimeCoordinator {
 
     /// It ensures that the proxy server is properly stopped before returning.
     /// It also sets the appropriate status message in the agent status shared state.
-    async fn stop_proxy_server(&mut self) {
+    async fn stop_proxy_server(&mut self, message: String) {
         if let Some(runtime) = self.proxy_server_runtime.take() {
             runtime.cancellation_token.cancel();
             match tokio::task::spawn_blocking(move || runtime.thread.join()).await {
@@ -271,10 +360,7 @@ impl RuntimeCoordinator {
             if let Err(e) = self
                 .shared_state
                 .get_agent_status_shared_state()
-                .set_module_status_message(
-                    "RuntimeCoordinator stopped ProxyServer".to_string(),
-                    AgentStatusModule::ProxyServer,
-                )
+                .set_module_status_message(message, AgentStatusModule::ProxyServer)
                 .await
             {
                 logger::write_warning(format!(
@@ -287,9 +373,11 @@ impl RuntimeCoordinator {
 
 #[cfg(test)]
 mod tests {
-    use super::{evaluate_status, PairAction};
+    use super::{evaluate_status, starting_timed_out, PairAction, STARTING_TIMEOUT};
     use crate::shared_state::agent_status_wrapper::RuntimeStatusSnapshot;
     use proxy_agent_shared::proxy_agent_aggregate_status::ModuleState;
+    use std::time::Duration;
+    use tokio::time::Instant;
 
     fn status(
         soft_audit_enabled: bool,
@@ -362,8 +450,48 @@ mod tests {
         assert!(
             !status(false, ModuleState::STARTING, ModuleState::RUNNING).both_at_ultimate_state()
         );
+        assert!(
+            !status(false, ModuleState::STOPPED, ModuleState::STARTING).both_at_ultimate_state()
+        );
+        assert!(
+            !status(false, ModuleState::STARTING, ModuleState::STOPPED).both_at_ultimate_state()
+        );
         assert!(!status(false, ModuleState::RUNNING, ModuleState::UNKNOWN).both_at_ultimate_state());
         assert!(status(false, ModuleState::RUNNING, ModuleState::STOPPED).both_at_ultimate_state());
         assert!(status(false, ModuleState::STOPPED, ModuleState::STOPPED).both_at_ultimate_state());
+    }
+
+    #[test]
+    fn starting_module_is_not_actionable_before_timeout() {
+        let now = Instant::now();
+        let mut starting_since = Some(now - STARTING_TIMEOUT + Duration::from_secs(1));
+
+        assert!(!starting_timed_out(
+            &ModuleState::STARTING,
+            &mut starting_since,
+            now,
+            STARTING_TIMEOUT,
+        ));
+    }
+
+    #[test]
+    fn starting_module_is_stopped_after_timeout() {
+        let now = Instant::now();
+        let mut starting_since = Some(now - STARTING_TIMEOUT);
+
+        assert!(starting_timed_out(
+            &ModuleState::STARTING,
+            &mut starting_since,
+            now,
+            STARTING_TIMEOUT,
+        ));
+
+        assert!(!starting_timed_out(
+            &ModuleState::RUNNING,
+            &mut starting_since,
+            now,
+            STARTING_TIMEOUT,
+        ));
+        assert_eq!(None, starting_since);
     }
 }
