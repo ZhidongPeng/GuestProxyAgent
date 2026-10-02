@@ -36,7 +36,7 @@
 //! let status = agent_status_shared_state.get_status(AgentStatusModule::Redirector).await;
 //!
 //! // Close the redirector to offload the eBPF program
-//! redirector::close(redirector_shared_state.clone(), agent_tatus_shared_state.closne()).await.unwrap();
+//! redirector::close(redirector_shared_state.clone(), agent_status_shared_state.clone()).await.unwrap();
 //! ```
 
 #[cfg(windows)]
