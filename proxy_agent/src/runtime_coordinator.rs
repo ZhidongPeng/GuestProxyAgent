@@ -280,11 +280,9 @@ impl RuntimeCoordinator {
 
 #[cfg(test)]
 mod tests {
-    use super::PairAction;
+    use super::{evaluate_status, PairAction};
     use crate::shared_state::agent_status_wrapper::RuntimeStatusSnapshot;
     use proxy_agent_shared::proxy_agent_aggregate_status::ModuleState;
-    use std::time::Duration;
-    use tokio::time::Instant;
 
     fn status(
         soft_audit_enabled: bool,
@@ -299,148 +297,48 @@ mod tests {
     }
 
     #[test]
-    fn startup_waits_until_both_modules_are_running() {
-        let now = Instant::now();
-        let mut policy = PairPolicy::new();
-        policy.on_starting();
-
+    fn running_pair_requires_no_action() {
         assert_eq!(
             PairAction::None,
-            policy.evaluate(
-                &status(false, ModuleState::RUNNING, ModuleState::UNKNOWN),
-                now,
-            )
+            evaluate_status(&status(false, ModuleState::RUNNING, ModuleState::RUNNING,))
         );
-        assert_eq!(PairPhase::Starting, policy.phase);
         assert_eq!(
             PairAction::None,
-            policy.evaluate(
-                &status(false, ModuleState::RUNNING, ModuleState::RUNNING),
-                now,
-            )
+            evaluate_status(&status(true, ModuleState::RUNNING, ModuleState::RUNNING,))
         );
-        assert_eq!(PairPhase::Running, policy.phase);
     }
 
     #[test]
-    fn stopped_module_stops_pair_in_soft_audit() {
-        let now = Instant::now();
-        let mut policy = PairPolicy::new();
-        policy.on_starting();
-
+    fn soft_audit_stops_a_non_running_pair() {
         assert_eq!(
             PairAction::StopPair,
-            policy.evaluate(
-                &status(true, ModuleState::RUNNING, ModuleState::STOPPED),
-                now,
-            )
+            evaluate_status(&status(true, ModuleState::RUNNING, ModuleState::STOPPED,))
         );
-        assert_eq!(PairPhase::Stopping, policy.phase);
-    }
-
-    #[test]
-    fn healthy_pair_keeps_running_in_soft_audit() {
-        let now = Instant::now();
-        let mut policy = PairPolicy::new();
-        policy.on_starting();
-
-        assert_eq!(
-            PairAction::None,
-            policy.evaluate(
-                &status(true, ModuleState::RUNNING, ModuleState::RUNNING),
-                now,
-            )
-        );
-        assert_eq!(PairPhase::Running, policy.phase);
-    }
-
-    #[test]
-    fn normal_mode_retries_stopped_pair_after_delay() {
-        let now = Instant::now();
-        let mut policy = PairPolicy::new();
-        policy.on_starting();
         assert_eq!(
             PairAction::StopPair,
-            policy.evaluate(
-                &status(false, ModuleState::STOPPED, ModuleState::RUNNING),
-                now,
-            )
+            evaluate_status(&status(true, ModuleState::STOPPED, ModuleState::STOPPED,))
         );
-        policy.on_stopped(true, now);
+    }
 
+    #[test]
+    fn normal_mode_starts_a_non_running_pair() {
         assert_eq!(
-            PairAction::None,
-            policy.evaluate(
-                &status(false, ModuleState::STOPPED, ModuleState::STOPPED),
-                now + RETRY_DELAY - Duration::from_millis(1),
-            )
+            PairAction::StartPair,
+            evaluate_status(&status(false, ModuleState::STOPPED, ModuleState::RUNNING,))
         );
         assert_eq!(
             PairAction::StartPair,
-            policy.evaluate(
-                &status(false, ModuleState::STOPPED, ModuleState::STOPPED),
-                now + RETRY_DELAY,
-            )
+            evaluate_status(&status(false, ModuleState::RUNNING, ModuleState::STARTING,))
         );
     }
 
     #[test]
-    fn disabling_soft_audit_restarts_stopped_pair_immediately() {
-        let now = Instant::now();
-        let mut policy = PairPolicy::new();
-        policy.previous_soft_audit_enabled = true;
-        policy.on_stopped(false, now);
-
-        assert_eq!(
-            PairAction::None,
-            policy.evaluate(
-                &status(true, ModuleState::STOPPED, ModuleState::STOPPED),
-                now,
-            )
+    fn ultimate_state_requires_both_modules_to_be_running_or_stopped() {
+        assert!(
+            !status(false, ModuleState::STARTING, ModuleState::RUNNING).both_at_ultimate_state()
         );
-        assert_eq!(
-            PairAction::StartPair,
-            policy.evaluate(
-                &status(false, ModuleState::STOPPED, ModuleState::STOPPED),
-                now,
-            )
-        );
-    }
-
-    #[test]
-    fn rapid_mode_changes_use_latest_value() {
-        let now = Instant::now();
-        let mut policy = PairPolicy::new();
-        policy.on_starting();
-
-        assert_eq!(
-            PairAction::StopPair,
-            policy.evaluate(
-                &status(true, ModuleState::STOPPED, ModuleState::RUNNING),
-                now,
-            )
-        );
-        policy.on_stopped(false, now);
-        assert_eq!(
-            PairAction::StartPair,
-            policy.evaluate(
-                &status(false, ModuleState::STOPPED, ModuleState::STOPPED),
-                now,
-            )
-        );
-        assert_eq!(
-            PairAction::None,
-            policy.evaluate(
-                &status(true, ModuleState::UNKNOWN, ModuleState::UNKNOWN),
-                now,
-            )
-        );
-        assert_eq!(
-            PairAction::StopPair,
-            policy.evaluate(
-                &status(true, ModuleState::RUNNING, ModuleState::STOPPED),
-                now,
-            )
-        );
+        assert!(!status(false, ModuleState::RUNNING, ModuleState::UNKNOWN).both_at_ultimate_state());
+        assert!(status(false, ModuleState::RUNNING, ModuleState::STOPPED).both_at_ultimate_state());
+        assert!(status(false, ModuleState::STOPPED, ModuleState::STOPPED).both_at_ultimate_state());
     }
 }
