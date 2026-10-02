@@ -27,7 +27,10 @@ enum PairAction {
     StopPair,
 }
 
-fn evaluate_status(status: &RuntimeStatusSnapshot) -> PairAction {
+fn evaluate_status(
+    status: &RuntimeStatusSnapshot,
+    previous_soft_audit_enabled: bool,
+) -> PairAction {
     if status.both_running() {
         // If both modules are running, we don't need to take any action.
         return PairAction::None;
@@ -36,9 +39,11 @@ fn evaluate_status(status: &RuntimeStatusSnapshot) -> PairAction {
     if status.soft_audit_enabled {
         // If soft audit is enabled and either module is stopped, we should stop the pair.
         PairAction::StopPair
-    } else {
-        // If soft audit is not enabled, we should start the pair immediately.
+    } else if previous_soft_audit_enabled {
+        // Restart once when soft audit changes from enabled to disabled.
         PairAction::StartPair
+    } else {
+        PairAction::None
     }
 }
 
@@ -77,6 +82,7 @@ impl RuntimeCoordinator {
             .shared_state
             .get_agent_status_shared_state()
             .subscribe_runtime_status();
+        let mut previous_soft_audit_enabled = runtime_status_rx.borrow().soft_audit_enabled;
 
         if !service_cancellation_token.is_cancelled() {
             // Start both the proxy server and redirector initially.
@@ -109,7 +115,7 @@ impl RuntimeCoordinator {
             // This ensures that we only take actions when both the proxy server and redirector have reached a stable state,
             // it prevents premature actions based on transient states.
             if status.both_at_ultimate_state() {
-                match evaluate_status(&status) {
+                match evaluate_status(&status, previous_soft_audit_enabled) {
                     PairAction::None => {}
                     PairAction::StartPair => {
                         self.start_pair(&status).await;
@@ -118,6 +124,7 @@ impl RuntimeCoordinator {
                         self.stop_pair(&status).await;
                     }
                 }
+                previous_soft_audit_enabled = status.soft_audit_enabled;
             }
         }
 
@@ -300,11 +307,17 @@ mod tests {
     fn running_pair_requires_no_action() {
         assert_eq!(
             PairAction::None,
-            evaluate_status(&status(false, ModuleState::RUNNING, ModuleState::RUNNING,))
+            evaluate_status(
+                &status(false, ModuleState::RUNNING, ModuleState::RUNNING,),
+                true,
+            )
         );
         assert_eq!(
             PairAction::None,
-            evaluate_status(&status(true, ModuleState::RUNNING, ModuleState::RUNNING,))
+            evaluate_status(
+                &status(true, ModuleState::RUNNING, ModuleState::RUNNING,),
+                false,
+            )
         );
     }
 
@@ -312,23 +325,35 @@ mod tests {
     fn soft_audit_stops_a_non_running_pair() {
         assert_eq!(
             PairAction::StopPair,
-            evaluate_status(&status(true, ModuleState::RUNNING, ModuleState::STOPPED,))
+            evaluate_status(
+                &status(true, ModuleState::RUNNING, ModuleState::STOPPED,),
+                false,
+            )
         );
         assert_eq!(
             PairAction::StopPair,
-            evaluate_status(&status(true, ModuleState::STOPPED, ModuleState::STOPPED,))
+            evaluate_status(
+                &status(true, ModuleState::STOPPED, ModuleState::STOPPED,),
+                true,
+            )
         );
     }
 
     #[test]
-    fn normal_mode_starts_a_non_running_pair() {
+    fn disabling_soft_audit_restarts_a_non_running_pair_once() {
         assert_eq!(
             PairAction::StartPair,
-            evaluate_status(&status(false, ModuleState::STOPPED, ModuleState::RUNNING,))
+            evaluate_status(
+                &status(false, ModuleState::STOPPED, ModuleState::RUNNING,),
+                true,
+            )
         );
         assert_eq!(
-            PairAction::StartPair,
-            evaluate_status(&status(false, ModuleState::RUNNING, ModuleState::STARTING,))
+            PairAction::None,
+            evaluate_status(
+                &status(false, ModuleState::STOPPED, ModuleState::RUNNING,),
+                false,
+            )
         );
     }
 
