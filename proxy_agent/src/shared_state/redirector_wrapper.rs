@@ -41,6 +41,9 @@ enum RedirectorAction {
     GetBpfObject {
         response: oneshot::Sender<Option<Arc<Mutex<redirector::BpfObject>>>>,
     },
+    TakeBpfObject {
+        response: oneshot::Sender<Option<Arc<Mutex<redirector::BpfObject>>>>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -88,6 +91,14 @@ impl RedirectorSharedState {
                         if response.send(bpf_object.clone()).is_err() {
                             logger::write_warning(
                                 "Failed to send response to RedirectorAction::GetBpfObject"
+                                    .to_string(),
+                            );
+                        }
+                    }
+                    RedirectorAction::TakeBpfObject { response } => {
+                        if response.send(bpf_object.take()).is_err() {
+                            logger::write_warning(
+                                "Failed to send response to RedirectorAction::TakeBpfObject"
                                     .to_string(),
                             );
                         }
@@ -172,5 +183,20 @@ impl RedirectorSharedState {
         response_rx
             .await
             .map_err(|e| Error::RecvError("RedirectorAction::GetBpfObject".to_string(), e))
+    }
+
+    pub async fn take_bpf_object(&self) -> Result<Option<Arc<Mutex<redirector::BpfObject>>>> {
+        let (response_tx, response_rx) = oneshot::channel();
+        self.0
+            .send(RedirectorAction::TakeBpfObject {
+                response: response_tx,
+            })
+            .await
+            .map_err(|e| {
+                Error::SendError("RedirectorAction::TakeBpfObject".to_string(), e.to_string())
+            })?;
+        response_rx
+            .await
+            .map_err(|e| Error::RecvError("RedirectorAction::TakeBpfObject".to_string(), e))
     }
 }

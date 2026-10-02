@@ -36,7 +36,7 @@
 //! let status = agent_status_shared_state.get_status(AgentStatusModule::Redirector).await;
 //!
 //! // Close the redirector to offload the eBPF program
-//! redirector::close(redirector_shared_state.clone(), agent_status_shared_state.clone()).await;
+//! redirector::close(redirector_shared_state.clone(), agent_tatus_shared_state.closne()).await.unwrap();
 //! ```
 
 #[cfg(windows)]
@@ -68,9 +68,71 @@ use std::net::Ipv4Addr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 const ALERT_ONLY_EVENT_LOG_INTERVAL: Duration = Duration::from_secs(60 * 15); // 15 minutes
+
+/// Runtime structure for managing event handling tasks associated with a BPF object.
+#[derive(Default)]
+pub(crate) struct EventTaskRuntime {
+    event_cancellation_token: Option<CancellationToken>,
+    /// Event handling tasks associated with this BPF object.
+    /// 1. The event-processing task created during start_internal.
+    /// 2. The platform ring-buffer reader task created during subscribe_alert_only.
+    event_tasks: Vec<JoinHandle<()>>,
+}
+
+impl EventTaskRuntime {
+    fn set_cancellation_token(&mut self, cancellation_token: CancellationToken) {
+        self.event_cancellation_token = Some(cancellation_token);
+    }
+
+    fn add_task(&mut self, task: JoinHandle<()>) {
+        self.event_tasks.push(task);
+    }
+
+    /// Shuts down all event handling tasks associated with this BPF object.
+    /// Cancels the event cancellation token and awaits the completion of all tasks.
+    /// Returns the first error encountered, if any.
+    pub(crate) async fn shutdown(mut self) -> Result<()> {
+        if let Some(cancellation_token) = self.event_cancellation_token.take() {
+            cancellation_token.cancel();
+        }
+
+        let mut first_error = None;
+        for task in self.event_tasks.drain(..) {
+            if let Err(e) = task.await {
+                let error = Error::Bpf(BpfErrorType::CloseBpfObject(format!(
+                    "eBPF event task failed while stopping: {e}"
+                )));
+                logger::write_error(error.to_string());
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
+            }
+        }
+
+        if let Some(error) = first_error {
+            return Err(error);
+        }
+
+        Ok(())
+    }
+}
+
+/// Implements the `Drop` trait for `EventTaskRuntime`.
+/// Ensures that all event handling tasks are aborted and the cancellation token is triggered when the runtime is dropped.
+impl Drop for EventTaskRuntime {
+    fn drop(&mut self) {
+        if let Some(cancellation_token) = self.event_cancellation_token.take() {
+            cancellation_token.cancel();
+        }
+        for task in self.event_tasks.drain(..) {
+            task.abort();
+        }
+    }
+}
 
 #[cfg(not(windows))]
 pub use linux::BpfObject;
@@ -194,14 +256,6 @@ pub struct Redirector {
 }
 
 impl Redirector {
-    pub fn new(local_port: u16, shared_state: &SharedState) -> Self {
-        Self::new_with_cancellation_token(
-            local_port,
-            shared_state,
-            shared_state.get_cancellation_token(),
-        )
-    }
-
     pub fn new_with_cancellation_token(
         local_port: u16,
         shared_state: &SharedState,
@@ -237,12 +291,19 @@ impl Redirector {
         let level = match self.start_impl().await {
             Ok(_) if !self.cancellation_token.is_cancelled() => LoggerLevel::Info,
             Ok(_) => {
-                close(
+                if let Err(e) = close(
                     self.shared_state.get_redirector_shared_state(),
                     self.shared_state.get_agent_status_shared_state(),
                 )
-                .await;
-                LoggerLevel::Info
+                .await
+                {
+                    logger::write_error(format!(
+                        "Failed to close redirector after startup cancellation: {e}"
+                    ));
+                    LoggerLevel::Error
+                } else {
+                    LoggerLevel::Info
+                }
             }
             Err(_) => {
                 let _ = self
@@ -304,14 +365,21 @@ impl Redirector {
         self.attach_bpf_prog(&mut bpf_object)?;
         logger::write_information("Success attached bpf prog.".to_string());
 
-        match bpf_object.subscribe_alert_only(self.cancellation_token.clone()) {
+        let event_cancellation_token = self.cancellation_token.child_token();
+        bpf_object
+            .event_runtime_mut()
+            .set_cancellation_token(event_cancellation_token.clone());
+        match bpf_object.subscribe_alert_only(event_cancellation_token.clone()) {
             Ok(receiver) => {
                 // Handle the received alert-only events here, spawn a task to process them
-                tokio::spawn(process_alert_only_events(
+                let event_processor_task = tokio::spawn(process_alert_only_events(
                     receiver,
                     self.shared_state.get_proxy_server_shared_state(),
-                    self.cancellation_token.clone(),
+                    event_cancellation_token,
                 ));
+                bpf_object
+                    .event_runtime_mut()
+                    .add_task(event_processor_task);
             }
             Err(e) => {
                 logger::write_error(format!("Failed to subscribe to alert-only events: {e}"));
@@ -575,23 +643,21 @@ pub async fn update_local_ip_bind_monitor_only(
 pub async fn close(
     redirector_shared_state: RedirectorSharedState,
     agent_status_shared_state: AgentStatusSharedState,
-) {
-    let _ = agent_status_shared_state
-        .set_module_state(ModuleState::STOPPED, AgentStatusModule::Redirector)
-        .await;
-
-    // reset ebpf object
+) -> Result<()> {
     #[cfg(windows)]
     {
-        windows::close_bpf_object(redirector_shared_state.clone()).await;
+        windows::close_bpf_object(redirector_shared_state).await?;
     }
 
     #[cfg(not(windows))]
     {
-        // TODO:: we need to implement the Linux equivalent of closing the BPF program/maps
-        //   linux::close_bpf_object(redirector_shared_state.clone()).await;
+        linux::close_bpf_object(redirector_shared_state).await?;
     }
-    let _ = redirector_shared_state.clear_bpf_object().await;
+
+    agent_status_shared_state
+        .set_module_state(ModuleState::STOPPED, AgentStatusModule::Redirector)
+        .await?;
+    Ok(())
 }
 
 #[cfg(not(windows))]

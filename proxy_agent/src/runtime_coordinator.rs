@@ -322,12 +322,19 @@ impl RuntimeCoordinator {
                 logger::write_warning(format!("Redirector start task failed while stopping: {e}"));
             }
         }
-        redirector::close(
+        let stop_result = redirector::close(
             self.shared_state.get_redirector_shared_state(),
             self.shared_state.get_agent_status_shared_state(),
         )
         .await;
 
+        let message = match stop_result {
+            Ok(()) => message,
+            Err(e) => {
+                logger::write_error(format!("Failed to stop Redirector: {e}"));
+                format!("{message}. - Failed to stop Redirector: {e}")
+            }
+        };
         if let Err(e) = self
             .shared_state
             .get_agent_status_shared_state()
