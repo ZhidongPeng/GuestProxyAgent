@@ -66,7 +66,8 @@ const START_LISTENER_RETRY_SLEEP_DURATION: Duration = Duration::from_secs(1);
 #[derive(Clone)]
 pub struct ProxyServer {
     port: u16,
-    cancellation_token: CancellationToken,
+    service_cancellation_token: CancellationToken,
+    listener_cancellation_token: CancellationToken,
     key_keeper_shared_state: KeyKeeperSharedState,
     common_state: CommonState,
     provision_shared_state: ProvisionSharedState,
@@ -78,10 +79,24 @@ pub struct ProxyServer {
 }
 
 impl ProxyServer {
+    #[cfg(test)]
     pub fn new(port: u16, shared_state: &SharedState) -> Self {
+        Self::new_with_listener_cancellation_token(
+            port,
+            shared_state,
+            shared_state.get_cancellation_token(),
+        )
+    }
+
+    pub fn new_with_listener_cancellation_token(
+        port: u16,
+        shared_state: &SharedState,
+        listener_cancellation_token: CancellationToken,
+    ) -> Self {
         ProxyServer {
             port,
-            cancellation_token: shared_state.get_cancellation_token(),
+            service_cancellation_token: shared_state.get_cancellation_token(),
+            listener_cancellation_token,
             key_keeper_shared_state: shared_state.get_key_keeper_shared_state(),
             common_state: shared_state.get_common_state(),
             provision_shared_state: shared_state.get_provision_shared_state(),
@@ -221,7 +236,7 @@ impl ProxyServer {
             logger::write_warning(format!("Failed to set module state: {e}"));
         }
         provision::listener_started(EventThreadsSharedState {
-            cancellation_token: self.cancellation_token.clone(),
+            cancellation_token: self.service_cancellation_token.clone(),
             common_state: self.common_state.clone(),
             access_control_shared_state: self.access_control_shared_state.clone(),
             redirector_shared_state: self.redirector_shared_state.clone(),
@@ -235,7 +250,7 @@ impl ProxyServer {
         // We start a loop to continuously accept incoming connections
         loop {
             tokio::select! {
-                _ = self.cancellation_token.cancelled() => {
+                _ = self.listener_cancellation_token.cancelled() => {
                     logger::write_warning("cancellation token signal received, stop the listener.".to_string());
                     let _= self.agent_status_shared_state
                         .set_module_state(ModuleState::STOPPED, AgentStatusModule::ProxyServer)
