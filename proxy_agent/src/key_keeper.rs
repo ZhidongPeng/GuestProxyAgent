@@ -1175,7 +1175,9 @@ mod tests {
         let enabled_descriptor = rule_id_descriptor(true);
         let disabled_descriptor = rule_id_descriptor(false);
         let audit_rules = authorization_item("Audit");
+        let mixed_case_audit_rules = authorization_item("aUdIt");
         let enforce_rules = authorization_item("enforce");
+        let disabled_rules = authorization_item("disabled");
 
         assert!(should_enable_soft_audit(
             &audit_rules,
@@ -1189,6 +1191,12 @@ mod tests {
             &audit_rules,
             &enabled_descriptor,
         ));
+        assert!(should_enable_soft_audit(
+            &mixed_case_audit_rules,
+            &enabled_descriptor,
+            &disabled_rules,
+            &disabled_descriptor,
+        ));
         assert!(!should_enable_soft_audit(
             &audit_rules,
             &disabled_descriptor,
@@ -1200,6 +1208,24 @@ mod tests {
             &enabled_descriptor,
             &audit_rules,
             &disabled_descriptor,
+        ));
+        assert!(!should_enable_soft_audit(
+            &disabled_rules,
+            &enabled_descriptor,
+            &enforce_rules,
+            &enabled_descriptor,
+        ));
+        assert!(!should_enable_soft_audit(
+            &None,
+            &enabled_descriptor,
+            &audit_rules,
+            &disabled_descriptor,
+        ));
+        assert!(!should_enable_soft_audit(
+            &audit_rules,
+            &disabled_descriptor,
+            &None,
+            &enabled_descriptor,
         ));
         assert!(!should_enable_soft_audit(
             &None,
