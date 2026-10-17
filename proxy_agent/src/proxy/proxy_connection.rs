@@ -161,7 +161,12 @@ impl TcpConnectionContext {
             Ok(data) => {
                 logger.write(
                     LoggerLevel::Trace,
-                    format!("Found audit entry for TCP peer '{client_addr}' successfully"),
+                    format!(
+                        "Found audit entry for TCP peer '{client_addr}' successfully: pid={}, destination={}:{}",
+                        data.process_id,
+                        data.destination_ipv4_addr(),
+                        data.destination_port_in_host_byte_order()
+                    ),
                 );
                 match redirector::remove_audit(client_addr, redirector_shared_state).await {
                     Ok(_) => logger.write(
@@ -200,7 +205,12 @@ impl TcpConnectionContext {
                         Ok(data) => {
                             logger.write(
                                 LoggerLevel::Trace,
-                                "Found audit entry from socket stream successfully".to_string(),
+                                format!(
+                                    "Found audit entry from socket stream successfully for TCP peer '{client_addr}': pid={}, destination={}:{}",
+                                    data.process_id,
+                                    data.destination_ipv4_addr(),
+                                    data.destination_port_in_host_byte_order()
+                                ),
                             );
                             Ok(data)
                         }

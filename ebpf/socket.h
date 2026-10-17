@@ -22,3 +22,12 @@ typedef struct gpa_destination_entry destination_entry_t;
 typedef struct gpa_audit_key sock_addr_audit_key_t;
 typedef struct gpa_audit_event sock_addr_audit_entry_t;
 typedef struct gpa_skip_process_entry sock_addr_skip_process_entry;
+typedef struct gpa_windows_local_audit_entry
+{
+    uint32_t protocol;
+    sock_addr_audit_entry_t audit;
+    uint32_t redirect_ipv4;
+    uint32_t redirect_port;
+} local_audit_entry_t;
+
+_Static_assert(sizeof(local_audit_entry_t) == 40, "Windows local audit entry must be 40 bytes");

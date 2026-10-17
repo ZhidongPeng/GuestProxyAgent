@@ -55,7 +55,7 @@ struct
 struct
 {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
-    __type(key, __u64); // pid-tgid or socket cookie
+    __type(key, __u64); // socket cookie
     __type(value, struct gpa_linux_sock_addr_local_entry);
     __uint(max_entries, 200);
 } local_map SEC(".maps");
@@ -119,15 +119,13 @@ capture_executable_identity(struct gpa_linux_executable_identity *identity)
 }
 
 /*
-    update audit map entry if not skip redirecting.
-    return 0 if the entry is updated, otherwise
-    return 1 if pid found in the skip_process_map.
+    Stage the caller identity before redirecting.
+    Return 1 only if the PID is in skip_process_map; otherwise return 0.
 */
 static __always_inline int
 update_local_map_entry(struct bpf_sock_addr *ctx, __be32 destination_ipv4, __u32 address_family, __u32 alert_only, __u32 local_ipv4)
 {
-    __u64 pid_tip = bpf_get_current_pid_tgid();
-    __u32 pid = (__u32)(pid_tip >> 32);
+    __u32 pid = (__u32)(bpf_get_current_pid_tgid() >> 32);
 
     if (check_skip_process_map_entry(pid) == 1)
     {
@@ -159,18 +157,25 @@ update_local_map_entry(struct bpf_sock_addr *ctx, __be32 destination_ipv4, __u32
         return 0;
     }
 
+    __u64 cookie = bpf_get_socket_cookie(ctx);
+    if (cookie == 0)
+    {
+        bpf_printk("update_local_map_entry: Failed to obtain socket cookie.");
+        return 0;
+    }
+
     struct gpa_linux_sock_addr_local_entry entry = {0};
     entry.audit.audit = audit;
     capture_executable_identity(&entry.audit.executable);
     entry.protocol = ctx->protocol;
-    __u64 ret = bpf_map_update_elem(&local_map, &pid_tip, &entry, 0);
+    long ret = bpf_map_update_elem(&local_map, &cookie, &entry, BPF_ANY);
     if (ret != 0)
     {
-        bpf_printk("update_local_map_entry: Failed to update local map entry with results:%u.", ret);
+        bpf_printk("update_local_map_entry: Failed to update local map entry with results:%ld.", ret);
     }
     else
     {
-        bpf_printk("update_local_map_entry: Updated local map entry with key:%u.", pid_tip);
+        bpf_printk("update_local_map_entry: Updated local map entry with cookie:%llu.", cookie);
     }
 
     return 0;
@@ -344,34 +349,33 @@ update_audit_map_entry_sk(struct sock *sk, struct gpa_linux_sock_addr_local_entr
 static __always_inline int
 trace_tcp_connect(struct sock *sk)
 {
-    // CO-RE relocatable reads of kernel struct sock fields.
-    // BPF_CORE_READ relocates each field offset on the KERNEL-side type
-    // (struct sock, which carries preserve_access_index in socket.h) to the
-    // running kernel's layout at load time. The destinations below are plain
-    // local scalars (no preserve_access_index), so their offsets are NOT
-    // relocated - this is required, otherwise the verifier rejects writes that
-    // would land outside our local stack copy.
-    __u64 pid_tgid = bpf_get_current_pid_tgid();
-    __u32 pid = (__u32)(pid_tgid >> 32);
-    if (check_skip_process_map_entry(pid) == 1)
+    // The cgroup helper initialized this cookie. The kprobe must read the
+    // stored value, not pass a struct sock to a context-taking helper.
+    __u64 cookie = 0;
+    long ret = BPF_CORE_READ_INTO(&cookie, sk, __sk_common.skc_cookie.counter);
+    if (ret != 0)
     {
-        bpf_printk("trace_tcp_connect: Found skip process entry %u, skip the trace.", pid);
+        bpf_printk("trace_tcp_connect: Failed to read socket cookie with results:%ld.", ret);
+        return 0;
+    }
+    if (cookie == 0)
+    {
         return 0;
     }
 
     // Find the entry in the local map.
-    struct gpa_linux_sock_addr_local_entry *local_entry = bpf_map_lookup_elem(&local_map, &pid_tgid);
+    struct gpa_linux_sock_addr_local_entry *local_entry = bpf_map_lookup_elem(&local_map, &cookie);
     if (local_entry != NULL)
     {
         update_audit_map_entry_sk(sk, local_entry);
-        __u64 ret = bpf_map_delete_elem(&local_map, &pid_tgid);
+        ret = bpf_map_delete_elem(&local_map, &cookie);
         if (ret != 0)
         {
-            bpf_printk("trace_tcp_connect: Failed to delete local map entry with results:%u.", ret);
+            bpf_printk("trace_tcp_connect: Failed to delete local map entry with results:%ld.", ret);
         }
         else
         {
-            bpf_printk("trace_tcp_connect: Deleted local map entry with key:%u.", pid_tgid);
+            bpf_printk("trace_tcp_connect: Deleted local map entry with cookie:%llu.", cookie);
         }
         return 0;
     }

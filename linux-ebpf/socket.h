@@ -102,6 +102,9 @@ struct sock_common {
     };
     short unsigned int skc_family;
     struct in6_addr skc_v6_rcv_saddr;
+    struct {
+        __s64 counter;
+    } skc_cookie;
 };
 
 // Minimal sock wrapper - we only access __sk_common.

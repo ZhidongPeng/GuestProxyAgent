@@ -22,6 +22,9 @@ use std::path::Path;
 
 const AUTHORIZE_CONNECT4_PROGRAM: &str = "authorize_connect4";
 const AUTHORIZE_CONNECT6_PROGRAM: &str = "authorize_connect6";
+const AUDIT_AUTHORIZATION4_PROGRAM: &str = "audit_authorization4";
+const AUDIT_AUTHORIZATION6_PROGRAM: &str = "audit_authorization6";
+const LOCAL_AUDIT_MAP_NAME: &str = "local_map";
 
 /// Callback function for handling alert-only events from the eBPF program.
 /// # Safety
@@ -135,7 +138,7 @@ impl BpfObject {
     /**
     Routine Description:
 
-        This routine attaches the IPv4 and IPv6 connect programs to bpf.
+        This routine attaches authorization programs before the connect redirect programs.
 
     Arguments:
 
@@ -146,6 +149,22 @@ impl BpfObject {
     pub fn attach_bpf_prog(&mut self) -> Result<()> {
         if self.is_null() {
             return Err(Error::Bpf(BpfErrorType::NullBpfObject));
+        }
+        let local_map =
+            bpf_object__find_map_by_name(self.0, LOCAL_AUDIT_MAP_NAME).map_err(|e| {
+                Error::Bpf(BpfErrorType::GetBpfMap(
+                    LOCAL_AUDIT_MAP_NAME.to_string(),
+                    e.to_string(),
+                ))
+            })?;
+        if !local_map.is_null() {
+            self.attach_bpf_prog_by_name(AUDIT_AUTHORIZATION4_PROGRAM)?;
+            self.attach_bpf_prog_by_name(AUDIT_AUTHORIZATION6_PROGRAM)?;
+        } else {
+            logger::write_information(
+                "Legacy eBPF object has no local_map; using existing audit correlation."
+                    .to_string(),
+            );
         }
         self.attach_bpf_prog_by_name(AUTHORIZE_CONNECT4_PROGRAM)?;
         self.attach_bpf_prog_by_name(AUTHORIZE_CONNECT6_PROGRAM)
