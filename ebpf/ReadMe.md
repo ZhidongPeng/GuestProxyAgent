@@ -85,7 +85,11 @@ the supported Linux kernels.
 
 ## Windows two-stage cookie prototype
 
-The new program requires eBPF-for-Windows 1.6.0. It uses two hook pairs:
+The prototype is built against the eBPF-for-Windows 1.6.0 SDK.
+CONNECT_AUTHORIZATION also exists in 1.5.0; successful loading and attachment
+alone do not establish runtime compatibility or callback execution.
+Record both the EbpfApi.dll and installed NetEbpfExt driver versions when
+comparing behavior with upstream source. It uses two hook pairs:
 
 1. `authorize_connect4` / `authorize_connect6` capture the caller identity and
    original destination, and stage the audit entry and expected redirect
@@ -127,6 +131,45 @@ Windows `local_map` value is now 40 bytes; the listener audit key/value ABI
 is unchanged.
 
 ### Comparing the hook tuples with the accepted peer
+
+At startup, the agent queries each loaded program with
+`bpf_program__get_expected_attach_type` before attaching it. The authorization
+programs must report `BPF_CGROUP_INET4_CONNECT_AUTHORIZATION (12)` and
+`BPF_CGROUP_INET6_CONNECT_AUTHORIZATION (13)`. Redirect programs must report
+`BPF_CGROUP_INET4_CONNECT (3)` and `BPF_CGROUP_INET6_CONNECT (4)`.
+A mismatch fails attachment and reports the actual and expected types; rebuild
+and sign the native driver after refreshing the SDK program information.
+The `Verified ... attach type` log checks the loaded metadata, not just the
+program name. A successful attach still does not prove callback execution.
+
+If staging appears but neither `Entered audit_authorization4.` nor
+`Entered audit_authorization6.` appears:
+
+1. Confirm the startup type-verification and attachment logs above.
+2. Capture the NetEbpfExt provider as well as eBPF printk and WFP events for
+   the same transport endpoint handle (the socket cookie). WFP's
+   `RedirectedAuthConnect` alone is not evidence of eBPF program invocation.
+3. Check for NetEbpfExt `auth_connect_classify` and invocation errors.
+   In the matching runtime source, trace the AUTH_CONNECT filter context,
+   compartment, action-write rights, cached redirect verdict, and selected
+   authorization clients. No classification event points to filter dispatch
+   or tracing configuration; classification without program entry points to
+   provider gating/client selection or invocation failure.
+
+Use an elevated `netsh wfp show state` on the test VM to inspect the installed
+ALE_AUTH_CONNECT_V4/V6 filters and their callouts, sublayers, weights, and
+compartment conditions. Redirect hooks also install AUTH_CONNECT filters.
+Filter arbitration is a possibility to verify, not an established root cause.
+In the inspected 1.5.0 and 1.6.0 providers, both hook types install AUTH_CONNECT filters
+in the default sublayer, invocation selects clients from the current filter
+context, and even a soft proceed verdict becomes `FWP_ACTION_PERMIT`.
+Check whether the redirect hook's AUTH_CONNECT filter runs first with only
+redirect clients, selects no authorization client, and permits before the
+separate authorization filter runs. Confirm this with filter IDs and client
+attach types on the VM; do not rely on attach order as a fix. If confirmed,
+the correction belongs in the provider's filter/client dispatch so the
+authorization programs run before the final permit decision.
+Do not change cookie matching or add a fallback to mask missing hook execution.
 
 Enable eBPF-for-Windows tracing as described in the upstream
 [tracing guide](https://github.com/microsoft/ebpf-for-windows/blob/v1.6.0/docs/GettingStarted.md#using-tracing)

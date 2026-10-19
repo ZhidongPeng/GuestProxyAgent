@@ -72,6 +72,7 @@ pub enum ebpf_execution_type_t {
 }
 
 #[allow(dead_code)]
+#[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub enum bpf_attach_type {
     BPF_ATTACH_TYPE_UNSPEC, //< Unspecified attach type.
@@ -127,6 +128,9 @@ pub enum bpf_attach_type {
      * **Program type:** \ref BPF_PROG_TYPE_SAMPLE
      */
     BPF_ATTACH_TYPE_SAMPLE,
+
+    BPF_CGROUP_INET4_CONNECT_AUTHORIZATION = 12,
+    BPF_CGROUP_INET6_CONNECT_AUTHORIZATION = 13,
 
     __MAX_BPF_ATTACH_TYPE,
 }

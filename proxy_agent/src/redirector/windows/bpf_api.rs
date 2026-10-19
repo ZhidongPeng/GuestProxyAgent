@@ -153,6 +153,8 @@ type BpfObjectClose = unsafe extern "C" fn(obj: *mut bpf_object) -> c_void;
 // Program
 type BpfObjectFindProgramByName =
     unsafe extern "C" fn(obj: *const bpf_object, name: *const c_char) -> *mut ebpf_program_t;
+// Keep the result as an integer so unknown SDK enum values remain valid FFI results.
+type BpfProgramGetExpectedAttachType = unsafe extern "C" fn(prog: *const ebpf_program_t) -> c_int;
 // type BpfProgramFd = unsafe extern "C" fn(prog: *const ebpf_program_t) -> c_int;
 // type BpfProgAttach = unsafe extern "C" fn(
 //     prog_fd: c_int,
@@ -232,6 +234,13 @@ pub fn bpf_object__find_program_by_name(
     // lifetime of the value must be longer than the lifetime of the pointer returned by as_ptr
     let c_string = get_cstring(name)?;
     Ok(unsafe { find_program_by_name(obj, c_string.as_ptr()) })
+}
+
+pub fn bpf_program__get_expected_attach_type(prog: *const ebpf_program_t) -> Result<c_int> {
+    let ebpf_api = get_ebpf_api()?;
+    let get_expected_attach_type: Symbol<BpfProgramGetExpectedAttachType> =
+        get_ebpf_api_fun(ebpf_api, "bpf_program__get_expected_attach_type\0")?;
+    Ok(unsafe { get_expected_attach_type(prog) })
 }
 
 pub fn ebpf_program_attach(

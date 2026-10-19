@@ -26,6 +26,24 @@ const AUDIT_AUTHORIZATION4_PROGRAM: &str = "audit_authorization4";
 const AUDIT_AUTHORIZATION6_PROGRAM: &str = "audit_authorization6";
 const LOCAL_AUDIT_MAP_NAME: &str = "local_map";
 
+fn validate_program_attach_type(
+    program_name: &str,
+    actual: i32,
+    expected: bpf_attach_type,
+) -> Result<()> {
+    if actual != expected as i32 {
+        return Err(Error::Bpf(BpfErrorType::AttachBpfProgram(
+            program_name.to_string(),
+            format!(
+                "Loaded program reports attach type {actual}, expected {expected:?} ({}). \
+                 Rebuild the native driver with the correct section metadata and SDK program information.",
+                expected as i32
+            ),
+        )));
+    }
+    Ok(())
+}
+
 /// Callback function for handling alert-only events from the eBPF program.
 /// # Safety
 ///
@@ -158,19 +176,35 @@ impl BpfObject {
                 ))
             })?;
         if !local_map.is_null() {
-            self.attach_bpf_prog_by_name(AUDIT_AUTHORIZATION4_PROGRAM)?;
-            self.attach_bpf_prog_by_name(AUDIT_AUTHORIZATION6_PROGRAM)?;
+            self.attach_bpf_prog_by_name(
+                AUDIT_AUTHORIZATION4_PROGRAM,
+                bpf_attach_type::BPF_CGROUP_INET4_CONNECT_AUTHORIZATION,
+            )?;
+            self.attach_bpf_prog_by_name(
+                AUDIT_AUTHORIZATION6_PROGRAM,
+                bpf_attach_type::BPF_CGROUP_INET6_CONNECT_AUTHORIZATION,
+            )?;
         } else {
             logger::write_information(
                 "Legacy eBPF object has no local_map; using existing audit correlation."
                     .to_string(),
             );
         }
-        self.attach_bpf_prog_by_name(AUTHORIZE_CONNECT4_PROGRAM)?;
-        self.attach_bpf_prog_by_name(AUTHORIZE_CONNECT6_PROGRAM)
+        self.attach_bpf_prog_by_name(
+            AUTHORIZE_CONNECT4_PROGRAM,
+            bpf_attach_type::BPF_CGROUP_INET4_CONNECT,
+        )?;
+        self.attach_bpf_prog_by_name(
+            AUTHORIZE_CONNECT6_PROGRAM,
+            bpf_attach_type::BPF_CGROUP_INET6_CONNECT,
+        )
     }
 
-    fn attach_bpf_prog_by_name(&mut self, program_name: &str) -> Result<()> {
+    fn attach_bpf_prog_by_name(
+        &mut self,
+        program_name: &str,
+        expected_attach_type: bpf_attach_type,
+    ) -> Result<()> {
         let program = match bpf_object__find_program_by_name(self.0, program_name) {
             Ok(p) => p,
             Err(e) => {
@@ -196,13 +230,23 @@ impl BpfObject {
             logger::write_information(format!("Found {program_name} program."));
         }
 
-        let compartment_id = 1;
-        let mut link: ebpf_link_t = ebpf_link_t::empty();
-        let mut link: *mut ebpf_link_t = &mut link as *mut ebpf_link_t;
+        let actual_attach_type = bpf_program__get_expected_attach_type(program).map_err(|e| {
+            Error::Bpf(BpfErrorType::AttachBpfProgram(
+                program_name.to_string(),
+                format!("Failed to query expected attach type: {e}"),
+            ))
+        })?;
+        validate_program_attach_type(program_name, actual_attach_type, expected_attach_type)?;
+
+        let compartment_id: u32 = 1;
+        logger::write_information(format!(
+            "Verified {program_name} attach type: {expected_attach_type:?} ({actual_attach_type}), compartment {compartment_id}."
+        ));
+        let mut link: *mut ebpf_link_t = std::ptr::null_mut();
         match ebpf_program_attach(
             program,
             std::ptr::null(),
-            &compartment_id as *const i32 as *const c_void,
+            &compartment_id as *const u32 as *const c_void,
             size_of_val(&compartment_id),
             &mut link as *mut *mut ebpf_link_t,
         ) {
@@ -213,9 +257,16 @@ impl BpfObject {
                         format!("ebpf_program_attach return with error code '{r}'"),
                     )));
                 }
+                if link.is_null() {
+                    return Err(Error::Bpf(BpfErrorType::AttachBpfProgram(
+                        program_name.to_string(),
+                        "ebpf_program_attach succeeded but returned a null link".to_string(),
+                    )));
+                }
                 logger::write_information(format!("Successfully attached {program_name} program."));
                 self.1.push(link);
             }
+
             Err(e) => {
                 return Err(Error::Bpf(BpfErrorType::AttachBpfProgram(
                     program_name.to_string(),
@@ -566,5 +617,60 @@ impl BpfObject {
             bpf_map_key_size(bpf_map),
             bpf_map_value_size(bpf_map),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn attach_type_accepts_matching_sdk_values() {
+        for (name, actual, expected) in [
+            (
+                AUTHORIZE_CONNECT4_PROGRAM,
+                3,
+                bpf_attach_type::BPF_CGROUP_INET4_CONNECT,
+            ),
+            (
+                AUTHORIZE_CONNECT6_PROGRAM,
+                4,
+                bpf_attach_type::BPF_CGROUP_INET6_CONNECT,
+            ),
+            (
+                AUDIT_AUTHORIZATION4_PROGRAM,
+                12,
+                bpf_attach_type::BPF_CGROUP_INET4_CONNECT_AUTHORIZATION,
+            ),
+            (
+                AUDIT_AUTHORIZATION6_PROGRAM,
+                13,
+                bpf_attach_type::BPF_CGROUP_INET6_CONNECT_AUTHORIZATION,
+            ),
+        ] {
+            assert!(validate_program_attach_type(name, actual, expected).is_ok());
+        }
+    }
+
+    #[test]
+    fn attach_type_rejects_redirect_unspecified_wrong_family_and_unknown_metadata() {
+        for actual in [0, 3, 4, 13, -1, i32::MAX] {
+            let err = validate_program_attach_type(
+                AUDIT_AUTHORIZATION4_PROGRAM,
+                actual,
+                bpf_attach_type::BPF_CGROUP_INET4_CONNECT_AUTHORIZATION,
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(err.contains(AUDIT_AUTHORIZATION4_PROGRAM));
+            assert!(err.contains(&format!("attach type {actual}")));
+            assert!(err.contains("BPF_CGROUP_INET4_CONNECT_AUTHORIZATION (12)"));
+        }
+        assert!(validate_program_attach_type(
+            AUDIT_AUTHORIZATION6_PROGRAM,
+            12,
+            bpf_attach_type::BPF_CGROUP_INET6_CONNECT_AUTHORIZATION,
+        )
+        .is_err());
     }
 }
